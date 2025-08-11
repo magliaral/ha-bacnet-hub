@@ -48,7 +48,7 @@ objects:
 MIT — see [LICENSE](LICENSE).
 
 ---
-© 2025 Your Name
+© 2025 Alessio Magliarella
 
 
 ### Note on bacpypes3 versions
