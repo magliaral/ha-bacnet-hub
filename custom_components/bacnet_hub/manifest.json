@@ -2,8 +2,8 @@
   "domain": "bacnet_hub",
   "name": "BACnet Hub",
   "version": "0.1.0",
-  "documentation": "https://github.com/DEINUSER/ha-bacnet-hub",
-  "issue_tracker": "https://github.com/DEINUSER/ha-bacnet-hub/issues",
+  "documentation": "https://github.com/magliaral/ha-bacnet-hub",
+  "issue_tracker": "https://github.com/magliaral/ha-bacnet-hub/issues",
   "requirements": [
     "bacpypes3>=0.0.92"
   ],
