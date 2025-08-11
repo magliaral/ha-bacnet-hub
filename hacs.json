@@ -4,5 +4,6 @@
   "domains": [
     "bacnet_hub"
   ],
-  "render_readme": true
+  "render_readme": true,
+  "image": "https://raw.githubusercontent.com/magliaral/ha-bacnet-hub/main/brands/bacnet_hub/icon.png"
 }
