@@ -22,5 +22,8 @@
         "description": "Definiere die Zuordnung von HA-Entit\u00e4ten zu BACnet-Objekten (MVP: JSON-Liste)."
       }
     }
+  },
+    "abort": {
+    "single_instance_allowed": "Es ist bereits eine BACnet Hub-Instanz konfiguriert."
   }
 }
