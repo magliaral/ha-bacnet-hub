@@ -13,6 +13,6 @@
   "iot_class": "local_push",
   "integration_type": "hub",
   "config_flow": true,
-  "logo": "/brands/bacnet_hub/logo.png",
-  "icon": "/brands/bacnet_hub/icon.png"
+  "logo": "./brands/bacnet_hub/logo.png",
+  "icon": "./brands/bacnet_hub/icon.png"
 }
