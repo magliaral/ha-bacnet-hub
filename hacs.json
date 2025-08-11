@@ -1,0 +1,8 @@
+{
+  "name": "BACnet Hub",
+  "country": "CH",
+  "domains": [
+    "bacnet_hub"
+  ],
+  "render_readme": true
+}
