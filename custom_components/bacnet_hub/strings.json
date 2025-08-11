@@ -1,0 +1,26 @@
+{
+  "title": "BACnet Hub",
+  "config": {
+    "step": {
+      "user": {
+        "title": "BACnet Hub einrichten",
+        "description": "Basisparameter f\u00fcr BACnet/IP",
+        "data": {
+          "device_id": "Device-ID",
+          "address": "Bind-Adresse",
+          "port": "UDP-Port",
+          "bbmd_ip": "BBMD IP (optional)",
+          "bbmd_ttl": "BBMD TTL"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "BACnet-Objekte",
+        "description": "Definiere die Zuordnung von HA-Entit\u00e4ten zu BACnet-Objekten (MVP: JSON-Liste)."
+      }
+    }
+  }
+}
