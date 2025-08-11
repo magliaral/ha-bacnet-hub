@@ -4,7 +4,5 @@
   "domains": [
     "bacnet_hub"
   ],
-  "render_readme": true,
-  "logo": "brands/bacnet_hub/logo.png",
-  "icon": "brands/bacnet_hub/icon.png"
+  "render_readme": true
 }
