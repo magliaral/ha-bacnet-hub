@@ -34,7 +34,8 @@ try:
     # Common bacpypes3 imports (names may vary slightly by version)
     from bacpypes3.app import Application
     from bacpypes3.local.device import DeviceObject
-    from bacpypes3.local.object import AnalogValueObject, BinaryValueObject
+    from bacpypes3.local.analog import AnalogValueObject
+    from bacpypes3.local.binary import BinaryValueObject
     from bacpypes3.primitivedata import Real, Boolean, Null
     from bacpypes3.pdu import Address
 except Exception as exc:  # pragma: no cover - import guard
