@@ -1,64 +1,68 @@
-from __future__ import annotations
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
-from homeassistant.helpers import selector
-from .const import DOMAIN
 
-STEP_USER_SCHEMA = vol.Schema(
-    {
-        vol.Required("address"): str,
-        vol.Optional("port", default=47808): int,
-        vol.Optional("broadcastAddress"): str,
-        vol.Optional("instance", default=500000): int,
-        vol.Optional("device_name", default="BACnet Hub"): str,
-        vol.Optional("objects_yaml"): selector.Selector(
-            {"text": {"multiline": True}}
-        ),
-    }
+from .const import (
+    DOMAIN,
+    CONF_ADDRESS,
+    CONF_PORT,
+    CONF_INSTANCE,
+    CONF_DEVICE_NAME,
+    CONF_BBMD_IP,
+    CONF_BBMD_TTL,
+    CONF_OBJECTS_YAML,
 )
 
 
-class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+class BacnetHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+    """Handle a config flow for BACnet Hub."""
+
     VERSION = 1
 
     async def async_step_user(self, user_input=None):
         if user_input is not None:
             return self.async_create_entry(
-                title=user_input.get("device_name") or "BACnet Hub",
+                title=user_input.get(CONF_DEVICE_NAME) or "BACnet Hub",
                 data=user_input,
             )
-        return self.async_show_form(step_id="user", data_schema=STEP_USER_SCHEMA)
 
-    async def async_step_import(self, user_input=None):
-        return await self.async_step_user(user_input)
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_ADDRESS, default="0.0.0.0"): str,
+                vol.Required(CONF_PORT, default=47808): int,
+                vol.Required(CONF_INSTANCE, default=12345): int,
+                vol.Required(CONF_DEVICE_NAME, default="BACnet Hub"): str,
+                vol.Optional(CONF_BBMD_IP, default=""): str,
+                vol.Optional(CONF_BBMD_TTL, default=300): int,
+                vol.Optional(CONF_OBJECTS_YAML, default=""): str,
+            }
+        )
+
+        return self.async_show_form(step_id="user", data_schema=schema)
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry):
+        return BacnetHubOptionsFlowHandler(config_entry)
 
 
-class OptionsFlowHandler(config_entries.OptionsFlow):
-    def __init__(self, config_entry: config_entries.ConfigEntry):
+class BacnetHubOptionsFlowHandler(config_entries.OptionsFlow):
+    """Options for BACnet Hub."""
+
+    def __init__(self, config_entry):
         self.config_entry = config_entry
 
     async def async_step_init(self, user_input=None):
-        return await self.async_step_edit()
-
-    async def async_step_edit(self, user_input=None):
-        data = self.config_entry.data | self.config_entry.options
-        schema = vol.Schema(
-            {
-                vol.Required("address", default=data.get("address", "")): str,
-                vol.Optional("port", default=data.get("port", 47808)): int,
-                vol.Optional(
-                    "broadcastAddress", default=data.get("broadcastAddress", "")
-                ): str,
-                vol.Optional("instance", default=data.get("instance", 500000)): int,
-                vol.Optional(
-                    "device_name", default=data.get("device_name", "BACnet Hub")
-                ): str,
-                vol.Optional("objects_yaml", default=data.get("objects_yaml", "")): selector.Selector(
-                    {"text": {"multiline": True}}
-                ),
-            }
-        )
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
-        return self.async_show_form(step_id="edit", data_schema=schema)
+
+        schema = vol.Schema(
+            {
+                vol.Optional(
+                    CONF_OBJECTS_YAML,
+                    default=self.config_entry.options.get(CONF_OBJECTS_YAML, ""),
+                ): str,
+            }
+        )
+
+        return self.async_show_form(step_id="init", data_schema=schema)
