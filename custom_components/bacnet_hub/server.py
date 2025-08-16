@@ -1,116 +1,234 @@
 from __future__ import annotations
-import asyncio
+
+import ipaddress
 import logging
-import types as _types
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from argparse import Namespace
+from typing import Any, Dict, Optional
 
 import yaml
-from homeassistant.core import HomeAssistant, State, callback
-from homeassistant.const import EVENT_STATE_CHANGED
+from bacpypes3.app import Application
+from bacpypes3.vendor import get_vendor_info
+
+from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
-
-ENGINEERING_UNITS_ENUM = {"degreesCelsius": 62, "percent": 98, "noUnits": 95}
-SUPPORTED_TYPES = {"analogValue", "binaryValue"}
+_LOGGER.addHandler(logging.NullHandler())
 
 
-@dataclass
-class Mapping:
-    entity_id: str
-    object_type: str
-    instance: int
-    units: Optional[str] = None
-    writable: bool = False
-    mode: str = "state"       # state | attr
-    attr: Optional[str] = None
-    name: Optional[str] = None
-    write: Optional[Dict[str, Any]] = None
-    read_value_map: Optional[Dict[Any, Any]] = None
-    write_value_map: Optional[Dict[Any, Any]] = None
+def _coerce_network_port_kwargs(val: Any) -> Dict[str, Any]:
+    """Erlaubt dict, YAML/JSON-String oder leer für network_port_object."""
+    if not val:
+        return {}
+    if isinstance(val, dict):
+        return val
+    if isinstance(val, str):
+        try:
+            data = yaml.safe_load(val) or {}
+        except yaml.YAMLError as e:
+            _LOGGER.warning("network_port_object konnte nicht geparst werden: %s", e)
+            return {}
+        return data if isinstance(data, dict) else {}
+    _LOGGER.debug("Ignoriere network_port_object Typ %s", type(val).__name__)
+    return {}
+
+
+def _address_looks_ok(addr: str) -> bool:
+    """Akzeptiere 0.0.0.0/127.0.0.1 oder gültige IP."""
+    if addr in ("0.0.0.0", "127.0.0.1"):
+        return True
+    try:
+        ipaddress.ip_address(addr)
+        return True
+    except Exception:
+        return False
+
+
+def _safe_load_objects_source(source: Any) -> Dict[str, Any]:
+    """
+    Quelle für BACnet-Objekte laden:
+      - None / ""  -> leere Liste
+      - Pfad zu YAML-Datei
+      - Inline-YAML (String)
+      - bereits strukturiert: dict oder list
+    Rückgabe-Form: {"objects": [ ... ]}
+    """
+    if source is None:
+        _LOGGER.debug("objects_yaml ist None -> verwende leere Liste.")
+        return {"objects": []}
+    if isinstance(source, str) and source.strip() == "":
+        _LOGGER.debug("objects_yaml ist leerer String -> verwende leere Liste.")
+        return {"objects": []}
+
+    if isinstance(source, dict):
+        objs = source.get("objects")
+        if objs is None:
+            return {"objects": []}
+        if isinstance(objs, list):
+            return {"objects": objs}
+        if isinstance(objs, dict):
+            return {"objects": [objs]}
+        raise TypeError(f"'objects' muss Liste/Mapping sein, erhalten: {type(objs).__name__}")
+
+    if isinstance(source, list):
+        return {"objects": source}
+
+    if isinstance(source, str):
+        text = source.strip()
+        # Inline-Heuristik
+        if "\n" in text or text.lstrip().startswith(("objects", "-")) or ":" in text:
+            _LOGGER.debug("objects_yaml: Inline-YAML erkannt, parse direkt")
+            try:
+                data = yaml.safe_load(text) or {}
+            except yaml.YAMLError as e:
+                raise TypeError(f"objects_yaml konnte nicht geparst werden: {e}") from e
+
+            if isinstance(data, list):
+                return {"objects": data}
+            if isinstance(data, dict):
+                if "objects" not in data or data["objects"] is None:
+                    return {"objects": []}
+                if isinstance(data["objects"], list):
+                    return {"objects": data["objects"]}
+                if isinstance(data["objects"], dict):
+                    return {"objects": [data["objects"]]}
+                raise TypeError(f"'objects' muss Liste/Mapping sein, erhalten: {type(data['objects']).__name__}")
+            if isinstance(data, (str, int, float)) or data is None:
+                return {"objects": []}
+            raise TypeError(f"Inline-YAML muss Mapping/Liste sein, erhalten: {type(data).__name__}")
+        else:
+            # Pfad zur Datei
+            try:
+                with open(text, "r", encoding="utf-8") as f:
+                    data = yaml.safe_load(f) or {}
+            except FileNotFoundError:
+                _LOGGER.warning("objects_yaml nicht gefunden unter: %s – verwende leere Liste.", text)
+                return {"objects": []}
+            except yaml.YAMLError as e:
+                raise TypeError(f"objects_yaml konnte nicht geparst werden: {e}") from e
+
+            if isinstance(data, list):
+                return {"objects": data}
+            if isinstance(data, dict):
+                objs = data.get("objects")
+                if objs is None:
+                    return {"objects": []}
+                if isinstance(objs, list):
+                    return {"objects": objs}
+                if isinstance(objs, dict):
+                    return {"objects": [objs]}
+                raise TypeError(f"'objects' muss Liste/Mapping sein, erhalten: {type(objs).__name__}")
+            return {"objects": []}
+
+    raise TypeError(f"Ungültiger Typ für objects_yaml: {type(source).__name__}")
 
 
 class BacnetHubServer:
-    """BACnet-Server, vollständig aus dem ConfigEntry konfiguriert."""
+    """Kapselt die bacpypes3 Application und die Konvertierung der Konfiguration."""
 
-    def __init__(self, hass: HomeAssistant, config: Dict[str, Any]):
+    def __init__(self, hass, merged_config: Dict[str, Any]) -> None:
         self.hass = hass
-        self.config = config
-        self.mappings: List[Mapping] = []
-        self.app = None
-        self.device = None
-        self._state_unsub = None
-        self._stop_event: asyncio.Event | None = None
-        self.entity_index: Dict[str, Any] = {}
+        self.cfg = merged_config or {}
 
-    # -------- Config normalisieren --------
-    def _parse_config(self) -> Dict[str, Any]:
-        cfg: Dict[str, Any] = {
-            "options": {
-                "instance": int(self.config.get("instance") or 500000),
-                "name": self.config.get("device_name") or "BACnet Hub",
-            },
-            "bacpypes": {"options": {}},
-            "objects": [],
-        }
+        self.objects_source: Any = (
+            self.cfg.get("objects_yaml")
+            or self.cfg.get("objects_yaml_path")
+            or ""
+        )
 
-        def _norm_addr(addr: str | None) -> Optional[str]:
-            if not addr:
-                return None
-            addr = addr.strip()
-            # bacpypes erwartet <ip>/<prefix>; ergänze /24, wenn nicht vorhanden
-            if "/" not in addr and addr != "0.0.0.0":
-                return f"{addr}/24"
-            return addr
+        self.bind: str = str(self.cfg.get("bind", "0.0.0.0"))
+        self.port: int = int(self.cfg.get("port", 47808))
 
-        bp = cfg["bacpypes"]["options"]
-        if self.config.get("address"):
-            bp["address"] = _norm_addr(self.config.get("address"))
-        if self.config.get("port") is not None:
-            bp["port"] = int(self.config["port"])
-        if self.config.get("broadcastAddress"):
-            bp["broadcastAddress"] = self.config["broadcastAddress"]
+        nn = self.cfg.get("network_number", None)
+        self.network_number: Optional[int] = int(nn) if nn not in (None, "") else None
 
-        text = (self.config.get("objects_yaml") or "").strip()
-        if text:
+        self.network_port_object: Dict[str, Any] = _coerce_network_port_kwargs(
+            self.cfg.get("network_port_object")
+        )
+
+        # Device/Hersteller
+        self.name: str = str(self.cfg.get("name", "BACnetHub"))
+        self.instance: int = int(self.cfg.get("instance", 1234))
+        self.vendoridentifier: int = int(self.cfg.get("vendoridentifier", 999))
+        self.vendorname: str = str(self.cfg.get("vendorname", "Home Assistant BACnet Hub"))
+
+        # Sichtbare Felder
+        self.description: str = str(self.cfg.get("description", "BACnet Hub for Home Assistant"))
+        self.model_name: str = str(self.cfg.get("model_name", "Home Assistant"))
+        self.application_software_version: str = str(self.cfg.get("application_software_version", "0.1.0"))
+        self.firmware_revision: Optional[str] = self.cfg.get("firmware_revision") or None
+
+        # Optional: Foreign/BBMD/Broadcast
+        self.foreign: Optional[str] = (self.cfg.get("foreign") or None)
+        self.ttl: int = int(self.cfg.get("ttl", 30))
+        self.bbmd: Optional[str] = (self.cfg.get("bbmd") or None)
+        self.broadcast: Optional[str] = (self.cfg.get("broadcast") or None)
+
+        self.app: Optional[Application] = None
+        self.objects_def: Dict[str, Any] = {}
+
+    async def start(self) -> None:
+        """Erzeuge und starte die bacpypes3-Application."""
+        self.objects_def = _safe_load_objects_source(self.objects_source)
+
+        if not _address_looks_ok(self.bind):
+            _LOGGER.warning("Bind-Adresse ungültig (%s), fallback auf 0.0.0.0", self.bind)
+            self.bind = "0.0.0.0"
+
+        args = Namespace()
+        setattr(args, "address", f"{self.bind}:{self.port}")
+
+        if self.network_number is not None:
+            setattr(args, "network", int(self.network_number))
+            setattr(args, "network_number_quality", "configured")
+        else:
+            setattr(args, "network", 1)
+            setattr(args, "network_number_quality", "unknown")
+
+        setattr(args, "network_port_object", self.network_port_object)
+
+        setattr(args, "instance", int(self.instance))
+        setattr(args, "name", self.name)
+        setattr(args, "vendoridentifier", int(self.vendoridentifier))
+        setattr(args, "vendorname", self.vendorname)
+
+        setattr(args, "description", self.description)
+        setattr(args, "modelName", self.model_name)
+        setattr(args, "applicationSoftwareVersion", self.application_software_version)
+        setattr(args, "firmwareRevision", self.firmware_revision)
+
+        setattr(args, "foreign", self.foreign if self.foreign else None)
+        setattr(args, "ttl", int(self.ttl))
+        setattr(args, "bbmd", self.bbmd if self.bbmd else None)
+        setattr(args, "broadcast", self.broadcast if self.broadcast else None)
+
+        _LOGGER.debug(
+            "Starte BACnet Application mit args: address=%s, network=%s, quality=%s, "
+            "vendoridentifier=%s, vendorname=%s, instance=%s, name=%s, extra=%s",
+            getattr(args, "address", None),
+            getattr(args, "network", None),
+            getattr(args, "network_number_quality", None),
+            getattr(args, "vendoridentifier", None),
+            getattr(args, "vendorname", None),
+            getattr(args, "instance", None),
+            getattr(args, "name", None),
+            self.network_port_object,
+        )
+
+        try:
+            _ = get_vendor_info(int(self.vendoridentifier))
+            self.app = Application.from_args(args)
+        except Exception as err:
+            _LOGGER.error("Fehler beim Erzeugen der BACnet Application: %s", err, exc_info=True)
+            raise
+
+        _LOGGER.info("BACnet Hub gestartet auf %s", getattr(args, "address", None))
+
+    async def stop(self) -> None:
+        """Application sauber schließen."""
+        if self.app is not None:
             try:
-                loaded = yaml.safe_load(text)
-                if isinstance(loaded, list):
-                    cfg["objects"] = loaded
-                elif isinstance(loaded, dict) and "objects" in loaded:
-                    cfg["objects"] = loaded.get("objects") or []
-            except Exception as e:
-                _LOGGER.error("Konnte objects_yaml nicht parsen: %r", e)
-
-        return cfg
-
-    def _load_mappings(self):
-        cfg = self._parse_config()
-        objs = cfg.get("objects", []) or []
-        self.mappings = [Mapping(**o) for o in objs if isinstance(o, dict)]
-
-    # -------- HA helpers --------
-    def _ha_get_value(self, entity_id: str, mode="state", attr: Optional[str] = None, analog=False):
-        st: State | None = self.hass.states.get(entity_id)
-        if not st:
-            return 0.0 if analog else False
-        val = st.attributes.get(attr) if mode == "attr" and attr else st.state
-        if analog:
-            try:
-                return float(val)
+                await self.app.close()  # type: ignore[func-returns-value]
             except Exception:
-                return 0.0
-        s = str(val).lower()
-        if s in ("on", "true", "1", "open", "heat", "cool"):
-            return True
-        if s in ("off", "false", "0", "closed"):
-            return False
-        return False
-
-    async def _ha_call_service(self, domain: str, service: str, data: Dict[str, Any]):
-        await self.hass.services.async_call(domain, service, data, blocking=False)
-
-    # -------- bacpypes --------
-    def _import_bacpypes(self):
-        from importlib import import_module
-        _Application = import_module(
+                pass
+            self.app = None
+        _LOGGER.info("BACnet Hub gestoppt")
