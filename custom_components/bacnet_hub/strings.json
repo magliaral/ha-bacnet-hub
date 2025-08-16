@@ -1,31 +1,22 @@
 {
-  "title": "BACnet Hub",
   "config": {
     "step": {
       "user": {
-        "title": "BACnet Hub einrichten",
-        "description": "Basisparameter für BACnet/IP",
-        "data": {
-          "address": "Bind-Adresse",
-          "port": "UDP-Port",
-          "instance": "Device-ID (Instance)",
-          "device_name": "Gerätename",
-          "bbmd_ip": "BBMD IP (optional)",
-          "bbmd_ttl": "BBMD TTL (Sekunden)",
-          "objects_yaml": "BACnet-Objekte (YAML-Text)"
-        }
+        "title": "BACnet Hub",
+        "description": "Legt sofort einen Eintrag an. Der Server startet mit Default-Werten.",
+        "data": {}
       }
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "BACnet-Objekte",
-        "description": "Definiere die Zuordnung von HA-Entitäten zu BACnet-Objekten (als YAML-Text)."
+        "title": "BACnet Hub – Optionen",
+        "description": "Minimaler Test: ein einzelnes Toggle-Feld.",
+        "data": {
+          "debug_mode": "Debug-Modus aktivieren"
+        }
       }
     }
-  },
-  "abort": {
-    "single_instance_allowed": "Es ist bereits eine BACnet Hub-Instanz konfiguriert."
   }
 }
