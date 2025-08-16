@@ -1,28 +1,35 @@
 from __future__ import annotations
-from homeassistant.config_entries import ConfigEntry
+import logging
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from .const import DOMAIN
-from .server import BacnetServer
+from .server import BacnetHubServer
 
-PLATFORMS: list[str] = []
+_LOGGER = logging.getLogger(__name__)
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    server = BacnetServer(hass, entry)
-    try:
-        await server.start()
-    except Exception as err:
-        raise ConfigEntryNotReady(str(err))
 
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = server
-
-    async def _options_updated(hass_: HomeAssistant, updated_entry: ConfigEntry):
-        await server.reload(updated_entry.options)
-
-    entry.async_on_unload(entry.add_update_listener(_options_updated))
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+    # keine YAML-Konfig mehr – nur Config Flow
     return True
 
+
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    server = BacnetHubServer(hass, config=entry.data | entry.options)
+    await server.start()
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = server
+
+    async def _stop(_event):
+        await server.stop()
+
+    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _stop)
+
+    _LOGGER.info("BACnet Hub gestartet (Entry %s)", entry.title or entry.entry_id)
+    return True
+
+
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    server: BacnetServer = hass.data[DOMAIN].pop(entry.entry_id)
-    await server.stop()
+    server: BacnetHubServer | None = hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
+    if server:
+        await server.stop()
     return True
