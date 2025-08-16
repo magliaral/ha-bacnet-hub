@@ -1,8 +1,2 @@
 DOMAIN = "bacnet_hub"
 DEFAULT_NAME = "BACnet Hub"
-CONF_DEVICE_ID = "device_id"
-CONF_ADDRESS = "address"
-CONF_PORT = "port"
-CONF_BBMD_IP = "bbmd_ip"
-CONF_BBMD_TTL = "bbmd_ttl"
-CONF_OBJECTS = "objects"
