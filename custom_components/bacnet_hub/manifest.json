@@ -1,11 +1,17 @@
 {
   "domain": "bacnet_hub",
   "name": "BACnet Hub",
-  "version": "0.1.2",
-  "config_flow": true,
-  "documentation": "https://example.invalid",
-  "requirements": ["bacpypes3>=0.0.84", "PyYAML>=6.0.1"],
+  "version": "0.1.0",
+  "documentation": "https://github.com/magliaral/ha-bacnet-hub",
+  "issue_tracker": "https://github.com/magliaral/ha-bacnet-hub/issues",
   "codeowners": ["@magliaral"],
   "iot_class": "local_push",
+  "integration_type": "hub",
+  "config_flow": true,
+  "single_config_entry": true,
+  "requirements": [
+    "bacpypes3==0.0.84",
+    "PyYAML>=6.0.1"
+  ],
   "loggers": ["bacpypes3", "custom_components.bacnet_hub"]
 }
