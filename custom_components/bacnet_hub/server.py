@@ -5,6 +5,7 @@ import logging
 from argparse import Namespace
 from typing import Any, Dict, Optional
 
+import re
 import yaml
 from bacpypes3.app import Application
 from bacpypes3.vendor import get_vendor_info
@@ -74,13 +75,18 @@ def _safe_load_objects_source(source: Any) -> Dict[str, Any]:
 
     if isinstance(source, str):
         text = source.strip()
-        # Inline-Heuristik
-        if "\n" in text or text.lstrip().startswith(("objects", "-")) or ":" in text:
+        # Inline-Heuristik mit Unterstützung für Windows-Pfade
+        is_windows_path = re.match(r"^[A-Za-z]:[\\/]", text) is not None
+        if "\n" in text or text.lstrip().startswith(("objects", "-")) or (
+            ":" in text and not is_windows_path
+        ):
             _LOGGER.debug("objects_yaml: Inline-YAML erkannt, parse direkt")
             try:
                 data = yaml.safe_load(text) or {}
             except yaml.YAMLError as e:
-                raise TypeError(f"objects_yaml konnte nicht geparst werden: {e}") from e
+                raise TypeError(
+                    f"objects_yaml konnte nicht geparst werden: {e}"
+                ) from e
 
             if isinstance(data, list):
                 return {"objects": data}
@@ -91,20 +97,28 @@ def _safe_load_objects_source(source: Any) -> Dict[str, Any]:
                     return {"objects": data["objects"]}
                 if isinstance(data["objects"], dict):
                     return {"objects": [data["objects"]]}
-                raise TypeError(f"'objects' muss Liste/Mapping sein, erhalten: {type(data['objects']).__name__}")
+                raise TypeError(
+                    f"'objects' muss Liste/Mapping sein, erhalten: {type(data['objects']).__name__}"
+                )
             if isinstance(data, (str, int, float)) or data is None:
                 return {"objects": []}
-            raise TypeError(f"Inline-YAML muss Mapping/Liste sein, erhalten: {type(data).__name__}")
+            raise TypeError(
+                f"Inline-YAML muss Mapping/Liste sein, erhalten: {type(data).__name__}"
+            )
         else:
-            # Pfad zur Datei
             try:
                 with open(text, "r", encoding="utf-8") as f:
                     data = yaml.safe_load(f) or {}
             except FileNotFoundError:
-                _LOGGER.warning("objects_yaml nicht gefunden unter: %s – verwende leere Liste.", text)
+                _LOGGER.warning(
+                    "objects_yaml nicht gefunden unter: %s – verwende leere Liste.",
+                    text,
+                )
                 return {"objects": []}
             except yaml.YAMLError as e:
-                raise TypeError(f"objects_yaml konnte nicht geparst werden: {e}") from e
+                raise TypeError(
+                    f"objects_yaml konnte nicht geparst werden: {e}"
+                ) from e
 
             if isinstance(data, list):
                 return {"objects": data}
@@ -116,7 +130,9 @@ def _safe_load_objects_source(source: Any) -> Dict[str, Any]:
                     return {"objects": objs}
                 if isinstance(objs, dict):
                     return {"objects": [objs]}
-                raise TypeError(f"'objects' muss Liste/Mapping sein, erhalten: {type(objs).__name__}")
+                raise TypeError(
+                    f"'objects' muss Liste/Mapping sein, erhalten: {type(objs).__name__}"
+                )
             return {"objects": []}
 
     raise TypeError(f"Ungültiger Typ für objects_yaml: {type(source).__name__}")
