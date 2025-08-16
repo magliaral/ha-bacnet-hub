@@ -1,3 +1,4 @@
+from __future__ import annotations
 import logging
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
@@ -10,12 +11,12 @@ _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
-    """Nur für YAML-Setup (nicht genutzt)."""
+    # keine YAML-Konfiguration – alles per UI
     return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Setup der Integration über den Config Flow."""
+    """Startet den BACnet-Server für diesen Entry."""
     hass.data.setdefault(DOMAIN, {})
 
     server = BacnetHubServer(hass, entry.data | entry.options)
@@ -26,14 +27,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await server.stop()
 
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _on_stop)
-
     _LOGGER.info("BACnet Hub gestartet (Entry %s)", entry.title or entry.entry_id)
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Wird beim Entfernen der Integration aufgerufen."""
-    server: BacnetHubServer | None = hass.data[DOMAIN].pop(entry.entry_id, None)
+    """Stoppt den Server beim Entfernen/Neustarten des Entries."""
+    server: BacnetHubServer | None = hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
     if server:
         await server.stop()
     return True
