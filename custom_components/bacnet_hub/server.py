@@ -60,191 +60,97 @@ ENGINEERING_UNITS_ENUM: Dict[str, int] = {
 SUPPORTED_TYPES = {"analogValue", "binaryValue"}
 
 
-class BacnetServer:
-    def __init__(self, hass: HomeAssistant, entry):
+# ... imports bleiben ähnlich; entferne DEFAULT_* Imports
+
+@dataclass
+class Mapping:
+    entity_id: str
+    object_type: str
+    instance: int
+    units: Optional[str] = None
+    writable: bool = False
+    mode: str = "state"
+    attr: Optional[str] = None
+    name: Optional[str] = None
+    write: Optional[Dict[str, Any]] = None
+    read_value_map: Optional[Dict[Any, Any]] = None
+    write_value_map: Optional[Dict[Any, Any]] = None
+
+
+class BacnetHubServer:
+    """Server, der vollständig aus einem ConfigEntry (Dict) konfiguriert wird."""
+
+    def __init__(self, hass: HomeAssistant, config: Dict[str, Any]):
         self.hass = hass
-        self.entry = entry
-        self._running = False
-        self._app: Application | None = None
-        self._device: DeviceObject | None = None
-        self._objects: Dict[Tuple[str, int], Mapping] = {}
-        self._whois_task: asyncio.Task | None = None
-        self._ha_unsub = None
+        self.config = config  # <-- aus dem Config Flow
+        self.mappings: List[Mapping] = []
+        self.app = None
+        self.device = None
+        self._state_unsub = None
+        self._stop_event: asyncio.Event | None = None
+        self.entity_index: Dict[str, Any] = {}
 
-    async def start(self):
-        opts = self.entry.data | (self.entry.options or {})
-        if Application is None:
-            _LOGGER.error("bacpypes3 is not available. Check installation and manifest requirements.")
-            return
+    # ---------- config ----------
+    def _parse_config(self) -> Dict[str, Any]:
+        """Normalisiert das ConfigEntry in das frühere YAML-Strukturformat."""
+        cfg: Dict[str, Any] = {
+            "options": {
+                "instance": int(self.config.get("instance") or 500000),
+                "name": self.config.get("device_name") or "BACnet Hub",
+            },
+            "bacpypes": {"options": {}},
+            "objects": [],
+        }
+        bp = cfg["bacpypes"]["options"]
+        if self.config.get("address"):           bp["address"] = self.config["address"]
+        if self.config.get("port") is not None:  bp["port"] = int(self.config["port"])
+        if self.config.get("broadcastAddress"):  bp["broadcastAddress"] = self.config["broadcastAddress"]
 
-        address = f"{opts.get('address','0.0.0.0')}:{opts.get('port', 47808)}"
-        device_id = int(opts.get('device_id', 500000))
-        device_name = "BACnet Hub"
-
-        # Create DeviceObject and Application
-        self._device = DeviceObject(
-            objectIdentifier=("device", device_id),
-            objectName=device_name,
-            maxAPDULengthAccepted=1024,
-            segmentationSupported="noSegmentation",
-            vendorIdentifier=999,
-        )
-        self._app = Application(self._device, Address(address))
-        _LOGGER.info("BACnet Hub bound to %s (device-id=%s)", address, device_id)
-
-        # Optional BBMD
-        bbmd_ip = opts.get("bbmd_ip")
-        if bbmd_ip:
-            try:
-                ttl = int(opts.get("bbmd_ttl", 600))
-                await self._app.register_bbmd(Address(bbmd_ip), ttl)  # type: ignore[attr-defined]
-                _LOGGER.info("Registered BBMD %s TTL=%s", bbmd_ip, ttl)
-            except Exception as exc:
-                _LOGGER.warning("BBMD registration failed: %s", exc)
-
-        # Build objects from options
-        for raw in opts.get(CONF_OBJECTS, []) or []:
-            try:
-                m = Mapping(**raw)
-            except TypeError as exc:
-                _LOGGER.warning("Invalid mapping %s: %s", raw, exc)
-                continue
-            if m.object_type not in SUPPORTED_TYPES:
-                _LOGGER.warning("Unsupported object_type '%s' (MVP supports: %s)", m.object_type, SUPPORTED_TYPES)
-                continue
-            await self._add_object(m)
-
-        # Hook property handlers (API may vary; using Application callbacks if available)
-        # In some bacpypes3 versions, you can assign callbacks or subclass.
-        # Here we monkey-patch by wrapping 'read_property'/'write_property' if present.
-        if hasattr(self._app, "set_property_handlers"):
-            # hypothetical helper if available in your version
-            self._app.set_property_handlers(self._on_read_property, self._on_write_property)  # type: ignore[attr-defined]
+        # objects: entweder als Liste in entry.data["objects"] oder als YAML/Text
+        if isinstance(self.config.get("objects"), list):
+            cfg["objects"] = self.config["objects"]
         else:
-            # Fallback: store for later use from subclassed objects (we added lambdas in _add_object).
+            text = (self.config.get("objects_yaml") or "").strip()
+            if text:
+                try:
+                    loaded = yaml.safe_load(text)
+                    if isinstance(loaded, list):
+                        cfg["objects"] = loaded
+                    elif isinstance(loaded, dict) and "objects" in loaded:
+                        cfg["objects"] = loaded.get("objects") or []
+                except Exception as e:
+                    _LOGGER.error("Konnte objects_yaml nicht parsen: %r", e)
+
+        return cfg
+
+    def _build_bacpypes_args(self, YAMLArgumentParser, SimpleArgumentParser):
+        """Erzeugt args ausschließlich aus dem ConfigEntry – keine Dateien."""
+        cfg = self._parse_config()
+        # bevorzugt bacpypes.options → argv
+        argv: List[str] = []
+        opts = (cfg.get("bacpypes", {}) or {}).get("options", {}) or {}
+        for k, v in opts.items():
+            flag = f"--{str(k).replace('_','-')}"
+            if isinstance(v, bool):
+                if v:
+                    argv.append(flag)
+            elif isinstance(v, (list, tuple)):
+                for item in v:
+                    argv.extend([flag, str(item)])
+            elif v is not None:
+                argv.extend([flag, str(v)])
+        # Device-Fallbacks
+        dev = cfg.get("options", {}) or {}
+        if dev.get("instance"):
+            argv.extend(["--instance", str(int(dev["instance"]))])
+        if dev.get("name"):
+            # bacpypes braucht keinen Namen als arg, aber behalten für spätere Nutzung
             pass
 
-        # Optional: subscribe to HA state changes for future COV (not sending COV yet)
-        self._ha_unsub = async_track_state_change_event(self.hass, [], self._on_state_changed)  # empty list = all
+        parser = SimpleArgumentParser()
+        return parser.parse_args(argv)
 
-        self._running = True
-
-    async def _add_object(self, m: Mapping):
-        assert self._app is not None
-        obj_id = (m.object_type, m.instance)
-        name = m.name or m.entity_id
-        units = ENGINEERING_UNITS_ENUM.get(m.units) if m.units else None
-
-        if m.object_type == "analogValue":
-            # Create an AnalogValue with a dynamic presentValue
-            av = AnalogValueObject(
-                objectIdentifier=obj_id,
-                objectName=name,
-                presentValue=0.0,
-            )
-            if units is not None and hasattr(av, "units"):
-                av.units = units  # type: ignore[attr-defined]
-
-            # Attach dynamic handlers if the object supports them
-            if hasattr(av, "ReadProperty"):
-                orig_read = av.ReadProperty  # type: ignore[attr-defined]
-
-                async def dynamic_read(prop, arrayIndex=None):
-                    if getattr(prop, "propertyIdentifier", str(prop)) == "presentValue":
-                        val = await m.read_from_ha(self.hass)
-                        try:
-                            av.presentValue = float(val or 0.0)  # type: ignore[attr-defined]
-                        except Exception:
-                            av.presentValue = 0.0  # type: ignore[attr-defined]
-                    return await orig_read(prop, arrayIndex)  # type: ignore[attr-defined]
-
-                av.ReadProperty = dynamic_read  # type: ignore[assignment]
-
-            if hasattr(av, "WriteProperty") and m.writable:
-                orig_write = av.WriteProperty  # type: ignore[attr-defined]
-
-                async def dynamic_write(prop, value, arrayIndex=None, priority=None, direct=False):
-                    if getattr(prop, "propertyIdentifier", str(prop)) == "presentValue":
-                        await m.write_to_ha(self.hass, value, priority)
-                    return await orig_write(prop, value, arrayIndex, priority, direct)  # type: ignore[attr-defined]
-
-                av.WriteProperty = dynamic_write  # type: ignore[assignment]
-
-            await self._app.add_object(av)  # type: ignore[arg-type]
-
-        elif m.object_type == "binaryValue":
-            bv = BinaryValueObject(
-                objectIdentifier=obj_id,
-                objectName=name,
-                presentValue=False,
-            )
-            if hasattr(bv, "ReadProperty"):
-                orig_read = bv.ReadProperty  # type: ignore[attr-defined]
-
-                async def dynamic_read(prop, arrayIndex=None):
-                    if getattr(prop, "propertyIdentifier", str(prop)) == "presentValue":
-                        val = await m.read_from_ha(self.hass)
-                        bv.presentValue = bool(val)  # type: ignore[attr-defined]
-                    return await orig_read(prop, arrayIndex)  # type: ignore[attr-defined]
-
-                bv.ReadProperty = dynamic_read  # type: ignore[assignment]
-
-            if hasattr(bv, "WriteProperty") and m.writable:
-                orig_write = bv.WriteProperty  # type: ignore[attr-defined]
-
-                async def dynamic_write(prop, value, arrayIndex=None, priority=None, direct=False):
-                    if getattr(prop, "propertyIdentifier", str(prop)) == "presentValue":
-                        await m.write_to_ha(self.hass, value, priority)
-                    return await orig_write(prop, value, arrayIndex, priority, direct)  # type: ignore[attr-defined]
-
-                bv.WriteProperty = dynamic_write  # type: ignore[assignment]
-
-            await self._app.add_object(bv)  # type: ignore[arg-type]
-
-        self._objects[obj_id] = m
-        _LOGGER.info("Added %s:%s mapped to %s", *obj_id, m.entity_id)
-
-    async def _on_read_property(self, obj, prop, array_index=None):
-        # Generic handler (used only if bacpypes3 exposes a central hook)
-        key = (obj.objectType, obj.objectIdentifier[1])
-        m = self._objects.get(key)
-        if not m:
-            return None
-        if getattr(prop, "propertyIdentifier", str(prop)) != "presentValue":
-            return None
-        return await m.read_from_ha(self.hass)
-
-    async def _on_write_property(self, obj, prop, value, priority=None):
-        key = (obj.objectType, obj.objectIdentifier[1])
-        m = self._objects.get(key)
-        if not m or not m.writable:
-            return
-        if getattr(prop, "propertyIdentifier", str(prop)) != "presentValue":
-            return
-        await m.write_to_ha(self.hass, value, priority)
-
-    async def reload(self, options: dict[str, Any]):
-        await self.stop()
-        # HA updates entry.options; we just rebuild using self.entry
-        await self.start()
-
-    async def stop(self):
-        if self._ha_unsub:
-            self._ha_unsub()
-            self._ha_unsub = None
-
-        if self._app:
-            try:
-                await self._app.close()  # type: ignore[attr-defined]
-            except Exception as exc:
-                _LOGGER.debug("Error closing app: %s", exc)
-
-        self._app = None
-        self._device = None
-        self._objects.clear()
-        self._running = False
-
-    @callback
-    def _on_state_changed(self, event):
-        # Placeholder for future COV notifications
-        pass
+    def _load_mappings(self):
+        cfg = self._parse_config()
+        objs = cfg.get("objects", []) or []
+        self.mappings = [Mapping(**o) for o in objs if isinstance(o, dict)]
