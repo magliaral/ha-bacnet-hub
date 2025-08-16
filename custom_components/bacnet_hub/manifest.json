@@ -8,5 +8,6 @@
     "PyYAML>=6.0.1"
   ],
   "codeowners": ["@magliaral"],
-  "loggers": ["bacpypes3", "custom_components.bacnet_hub"]
+  "loggers": ["bacpypes3", "custom_components.bacnet_hub"],
+  "config_flow": true,
 }
