@@ -1,11 +1,11 @@
 {
   "domain": "bacnet_hub",
   "name": "BACnet Hub",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "documentation": "https://github.com/magliaral/ha-bacnet-hub",
   "issue_tracker": "https://github.com/magliaral/ha-bacnet-hub/issues",
   "requirements": [
-    "bacpypes3>=0.0.92"
+    "bacpypes3>=0.0.92", "PyYAML>=6.0.1"
   ],
   "codeowners": [
     "@magliaral"
