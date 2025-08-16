@@ -1,13 +1,11 @@
 {
   "domain": "bacnet_hub",
   "name": "BACnet Hub",
-  "version": "0.1.1",
-  "iot_class": "local_push",
+  "version": "0.1.2",
   "config_flow": true,
-  "requirements": [
-    "bacpypes3>=0.0.102",
-    "PyYAML>=6.0.1"
-  ],
+  "documentation": "https://example.invalid",
+  "requirements": ["bacpypes3>=0.0.84", "PyYAML>=6.0.1"],
   "codeowners": ["@magliaral"],
+  "iot_class": "local_push",
   "loggers": ["bacpypes3", "custom_components.bacnet_hub"]
 }
