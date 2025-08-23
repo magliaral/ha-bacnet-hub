@@ -2,21 +2,73 @@
   "config": {
     "step": {
       "user": {
-        "title": "BACnet Hub",
-        "description": "Legt sofort einen Eintrag an. Der Server startet mit Default-Werten.",
-        "data": {}
+        "title": "BACnet Hub einrichten",
+        "description": "Bitte Instanznummer und Adresse angeben.",
+        "data": {
+          "instance": "Instanznummer",
+          "address": "Lokale BACnet/IP Adresse (z. B. 192.168.31.36/24:47808)"
+        }
       }
+    },
+    "error": {
+      "invalid_int": "Ungültige Zahl.",
+      "invalid_address": "Ungültige Adresse. Erlaubt: IP[/Präfix][:Port], z. B. 192.168.31.36/24:47808."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "BACnet Hub – Optionen",
-        "description": "Minimaler Test: ein einzelnes Toggle-Feld.",
-        "data": {
-          "debug_mode": "Debug-Modus aktivieren"
+        "title": "BACnet Hub Optionen",
+        "description": "Wähle einen Bereich zum Konfigurieren",
+        "menu_options": {
+          "device": "Geräteeinstellungen",
+          "publish": "Publish-Mappings"
         }
+      },
+      "device": {
+        "title": "Geräteeinstellungen",
+        "description": "Instanznummer und Adresse des lokalen Geräts konfigurieren",
+        "data": {
+          "instance": "Instanznummer",
+          "address": "Lokale BACnet/IP Adresse (z. B. 192.168.31.36/24:47808)"
+        }
+      },
+      "publish": {
+        "title": "Publish-Mappings",
+        "description": "Aktuelle Mappings:\n{current_mappings}",
+        "menu_options": {
+          "publish_add": "Neu hinzufügen",
+          "publish_edit": "Bearbeiten",
+          "publish_delete": "Löschen"
+        }
+      },
+      "publish_add": {
+        "title": "Mapping hinzufügen",
+        "description": "Wähle eine Entität und ob das Objekt beschreibbar sein soll.",
+        "data": {
+          "entity_id": "Entität",
+          "writable": "Schreibbar"
+        }
+      },
+      "publish_edit": {
+        "title": "Mapping auswählen",
+        "description": "Wähle ein Mapping zum Bearbeiten."
+      },
+      "publish_edit_form": {
+        "title": "Mapping bearbeiten",
+        "description": "Entität oder Schreibbarkeit anpassen.",
+        "data": {
+          "entity_id": "Entität",
+          "writable": "Schreibbar"
+        }
+      },
+      "publish_delete": {
+        "title": "Mapping löschen",
+        "description": "Wähle ein Mapping zum Löschen."
       }
+    },
+    "error": {
+      "invalid_entity": "Ungültige Entität."
     }
   }
 }
