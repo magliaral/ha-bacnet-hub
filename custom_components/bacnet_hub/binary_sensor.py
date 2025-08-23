@@ -51,8 +51,8 @@ class BacnetPublishedBinarySensor(BinarySensorEntity):
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry_id)},
             name="BACnet Hub (Local Device)",
-            manufacturer="Home Assistant",
-            model="BACpypes 3",
+            manufacturer="magliaral",
+            model="BACpypes 3 - JoelBender",
         )
 
     async def async_added_to_hass(self) -> None:
