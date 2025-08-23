@@ -3,14 +3,20 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from homeassistant.components.sensor import SensorEntity
+from homeassistant.components.sensor import (
+    SensorEntity,
+    SensorDeviceClass,
+    SensorStateClass,
+)
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity import DeviceInfo
-from homeassistant.helpers.event import async_track_state_change_event
+    # StateType ist der zulässige Typ für native_value (str|int|float|None)
 from homeassistant.helpers.typing import StateType
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.entity import DeviceInfo, EntityCategory
+from homeassistant.helpers.event import async_track_state_change_event
 
 from .const import DOMAIN
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
     data = hass.data[DOMAIN]
@@ -39,7 +45,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     if entities:
         async_add_entities(entities)
 
+
 class BacnetPublishedSensor(SensorEntity):
+    """BACnet veröffentlichter Sensor, der Metadaten 1:1 von der Quelle spiegelt."""
+
     _attr_should_poll = False
 
     def __init__(self, hass: HomeAssistant, entry_id: str, source_entity_id: str, instance: int, name: str, writable: bool):
@@ -48,7 +57,6 @@ class BacnetPublishedSensor(SensorEntity):
         self._source = source_entity_id
         self._instance = instance
         self._attr_name = name
-        self._attr_native_unit_of_measurement = None
         self._remove_listener = None
         self._attr_unique_id = f"{DOMAIN}:{entry_id}:av:{instance}"
         self._attr_device_info = DeviceInfo(
@@ -57,6 +65,14 @@ class BacnetPublishedSensor(SensorEntity):
             manufacturer="magliaral",
             model="BACpypes 3 - JoelBender",
         )
+
+        # dynamische Attribute
+        self._attr_native_unit_of_measurement: Optional[str] = None
+        self._attr_device_class: Optional[SensorDeviceClass] = None
+        self._attr_state_class: Optional[SensorStateClass] = None
+        self._attr_icon: Optional[str] = None
+        self._attr_entity_category: Optional[EntityCategory] = None
+        # Hinweis: writable wird hier nicht genutzt; beschreibbare AVs wären als NumberEntity sinnvoll.
 
     async def async_added_to_hass(self) -> None:
         # initial
@@ -67,6 +83,7 @@ class BacnetPublishedSensor(SensorEntity):
             if evt.data.get("entity_id") != self._source:
                 return
             self._pull_from_source()
+
         self._remove_listener = async_track_state_change_event(self.hass, [self._source], _handle)
 
     async def async_will_remove_from_hass(self) -> None:
@@ -80,17 +97,71 @@ class BacnetPublishedSensor(SensorEntity):
         if not st:
             self._attr_native_value = None
             self._attr_native_unit_of_measurement = None
+            self._attr_device_class = None
+            self._attr_state_class = None
+            self._attr_icon = None
+            self._attr_entity_category = None
             self.async_write_ha_state()
             return
+
         # Name/Description aus Quelle übernehmen
         src_name = st.name or self._source
-        self._attr_name = f"{src_name} (BACnet AV{self._instance})"
-        # Einheit übernehmen
+        friendly_name = str(st.attributes.get("friendly_name"))
+        self._attr_name = f"(BACnet AV-{self._instance}) {friendly_name}"
+
+        # Unit exakt spiegeln
         unit = st.attributes.get("unit_of_measurement")
         self._attr_native_unit_of_measurement = unit
-        # Wert robust nach float
+
+        # device_class/state_class exakt übernehmen, wenn vorhanden/valide
+        self._attr_device_class = None
+        self._attr_state_class = None
+        src_dc = st.attributes.get("device_class")
+        src_sc = st.attributes.get("state_class")
+
+        if isinstance(src_dc, str) and src_dc:
+            try:
+                self._attr_device_class = SensorDeviceClass(src_dc)
+            except ValueError:
+                self._attr_device_class = None
+
+        if isinstance(src_sc, str) and src_sc:
+            try:
+                self._attr_state_class = SensorStateClass(src_sc)
+            except ValueError:
+                self._attr_state_class = None
+
+        # Icon exakt übernehmen, falls explizit gesetzt
+        self._attr_icon = st.attributes.get("icon") or None
+
+        # entity_category (optional) spiegeln
+        src_cat = st.attributes.get("entity_category")
+        if src_cat in ("config", "diagnostic"):
+            self._attr_entity_category = EntityCategory(src_cat)
+        else:
+            self._attr_entity_category = None
+
+        # Wert übernehmen:
+        # - Wenn Einheit vorhanden oder device_class numerisch → float versuchen
+        # - sonst Rohwert (StateType) übernehmen
+        native_value: StateType
         try:
-            self._attr_native_value = float(st.state)
+            if unit or (self._attr_device_class in {
+                SensorDeviceClass.TEMPERATURE,
+                SensorDeviceClass.POWER,
+                SensorDeviceClass.ENERGY,
+                SensorDeviceClass.VOLTAGE,
+                SensorDeviceClass.CURRENT,
+                SensorDeviceClass.FREQUENCY,
+                SensorDeviceClass.ILLUMINANCE,
+                SensorDeviceClass.PRESSURE,
+                SensorDeviceClass.IRRADIANCE,
+            }):
+                native_value = float(st.state)  # type: ignore[assignment]
+            else:
+                native_value = st.state  # kann str/int/float sein
         except Exception:
-            self._attr_native_value = None
+            native_value = None
+
+        self._attr_native_value = native_value
         self.async_write_ha_state()
