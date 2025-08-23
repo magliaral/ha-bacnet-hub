@@ -61,7 +61,7 @@ class BacnetPublishedBinarySensor(BinarySensorEntity):
             identifiers={(DOMAIN, entry_id)},
             name="BACnet Hub (Local Device)",
             manufacturer="magliaral",
-            model="BACpypes 3",
+            model="BACnet Hub",
         )
         # werden dynamisch gefüllt
         self._attr_device_class: Optional[BinarySensorDeviceClass] = None
