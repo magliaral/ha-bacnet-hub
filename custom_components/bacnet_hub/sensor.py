@@ -64,7 +64,7 @@ class BacnetPublishedSensor(SensorEntity):
             identifiers={(DOMAIN, entry_id)},
             name="BACnet Hub (Local Device)",
             manufacturer="magliaral",
-            model="BACpypes 3 - JoelBender",
+            model="BACpypes 3",
         )
 
         # dynamische Attribute
