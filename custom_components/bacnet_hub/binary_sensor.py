@@ -28,7 +28,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         if not ent_id:
             continue
         instance = int(m.get("instance", 0))
-        name = f"BACnet BV{instance}: {ent_id}"
+        friendly = m.get("friendly_name")
+        name = f"(BV-{instance}) {friendly}"
         entities.append(
             BacnetPublishedBinarySensor(
                 hass=hass,
