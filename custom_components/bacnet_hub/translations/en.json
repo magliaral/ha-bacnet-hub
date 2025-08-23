@@ -1,0 +1,74 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up BACnet Hub",
+        "description": "Please enter the instance number and local address.",
+        "data": {
+          "instance": "Instance number",
+          "address": "Local BACnet/IP address (e.g. 192.168.31.36/24:47808)"
+        }
+      }
+    },
+    "error": {
+      "invalid_int": "Invalid number.",
+      "invalid_address": "Invalid address. Allowed: IP[/prefix][:port], e.g. 192.168.31.36/24:47808."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "BACnet Hub Options",
+        "description": "Choose a section to configure",
+        "menu_options": {
+          "device": "Device settings",
+          "publish": "Publish mappings"
+        }
+      },
+      "device": {
+        "title": "Device settings",
+        "description": "Configure the instance number and local device address",
+        "data": {
+          "instance": "Instance number",
+          "address": "Local BACnet/IP address (e.g. 192.168.31.36/24:47808)"
+        }
+      },
+      "publish": {
+        "title": "Publish mappings",
+        "description": "Current mappings:\n{current_mappings}",
+        "menu_options": {
+          "publish_add": "Add new",
+          "publish_edit": "Edit",
+          "publish_delete": "Delete"
+        }
+      },
+      "publish_add": {
+        "title": "Add mapping",
+        "description": "Pick an entity and whether the object should be writable.",
+        "data": {
+          "entity_id": "Entity",
+          "writable": "Writable"
+        }
+      },
+      "publish_edit": {
+        "title": "Select mapping",
+        "description": "Choose a mapping to edit."
+      },
+      "publish_edit_form": {
+        "title": "Edit mapping",
+        "description": "Adjust the entity or writable flag.",
+        "data": {
+          "entity_id": "Entity",
+          "writable": "Writable"
+        }
+      },
+      "publish_delete": {
+        "title": "Delete mapping",
+        "description": "Choose a mapping to delete."
+      }
+    },
+    "error": {
+      "invalid_entity": "Invalid entity."
+    }
+  }
+}
