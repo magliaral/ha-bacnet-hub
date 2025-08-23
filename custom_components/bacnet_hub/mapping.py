@@ -1,63 +1,123 @@
+# custom_components/bacnet_hub/mapping.py
 from __future__ import annotations
-from dataclasses import dataclass
-from homeassistant.core import HomeAssistant
 
-@dataclass
-class Mapping:
-    entity_id: str
-    object_type: str
-    instance: int
-    units: str | None = None
-    writable: bool = False
-    mode: str = "state"  # "state" | "attr"
-    attr: str | None = None
-    name: str | None = None
-    write: dict | None = None
+from typing import Any, Dict, List
+import voluptuous as vol
+from homeassistant.helpers import selector as sel
 
-    @property
-    def is_analog(self) -> bool:
-        return self.object_type in ("analogInput","analogValue","analogOutput")
+# Welche Objekt-Typen dürfen über "Publish" erzeugt werden?
+OBJECT_TYPES: List[str] = [
+    "analogValue",
+    "binaryValue",
+]
 
-    async def read_from_ha(self, hass: HomeAssistant):
-        state = hass.states.get(self.entity_id)
-        if not state:
-            return None
-        val = state.state if self.mode == "state" else state.attributes.get(self.attr)
-        if self.is_analog:
-            try:
-                return float(val)
-            except Exception:
-                return 0.0
-        return str(val).lower() in ("on","true","1")
+# Zähler pro Typ – wird genutzt, um Instanzen fortlaufend zu vergeben
+DEFAULT_COUNTERS: Dict[str, int] = {t: 0 for t in OBJECT_TYPES}
 
-    async def write_to_ha(self, hass: HomeAssistant, value, priority=None):
-        if not self.writable:
-            return
-        # Default write mapping
-        service = (self.write or {}).get("service")
 
-        if service == "switch.turn_on_off":
-            domain = "switch"
-            name = "turn_on" if str(value).lower() in ("1","true","on","active") else "turn_off"
-            await hass.services.async_call(domain, name, {"entity_id": self.entity_id}, blocking=True)
-            return
+def next_instance_for_type(obj_type: str, counters: Dict[str, int]) -> int:
+    """Hole die nächste freie Instanznummer für obj_type und zähle hoch."""
+    if obj_type not in counters:
+        counters[obj_type] = 0
+    inst = counters[obj_type]
+    counters[obj_type] = inst + 1
+    return inst
 
-        if service == "climate.set_temperature":
-            field = (self.write or {}).get("field", "temperature")
-            try:
-                temp = float(value)
-            except Exception:
-                return
-            await hass.services.async_call("climate", "set_temperature",
-                                           {"entity_id": self.entity_id, field: temp},
-                                           blocking=True)
-            return
 
-        # Generic "domain.service" passthrough
-        if service and "." in service:
-            domain, svc = service.split(".", 1)
-            data = {"entity_id": self.entity_id}
-            payload_key = (self.write or {}).get("payload_key")
-            if payload_key is not None:
-                data[payload_key] = value
-            await hass.services.async_call(domain, svc, data, blocking=True)
+def _coerce_int(val: Any, fb: int) -> int:
+    try:
+        return int(val)
+    except Exception:
+        return fb
+
+
+def clean_published_list(items: Any) -> List[Dict[str, Any]]:
+    """
+    Bringt die gespeicherten Publish-Mappings in eine robuste Form.
+    Erwartete Keys pro Eintrag:
+      - entity_id: str
+      - object_type: str (in OBJECT_TYPES)
+      - instance: int
+      - units: Optional[str]
+      - writable: bool
+    Fremde Keys bleiben unangetastet (für spätere Erweiterungen).
+    """
+    result: List[Dict[str, Any]] = []
+    if not isinstance(items, list):
+        return result
+
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        ent = str(it.get("entity_id", "")).strip()
+        typ = str(it.get("object_type", "")).strip()
+        if not ent or typ not in OBJECT_TYPES:
+            continue
+        inst = _coerce_int(it.get("instance", 0), 0)
+        units = it.get("units")
+        writable = bool(it.get("writable", False))
+        # Original dict kopieren, dann Pflichtfelder normiert einsetzen
+        cleaned = dict(it)
+        cleaned.update(
+            entity_id=ent,
+            object_type=typ,
+            instance=inst,
+            units=units if (units is None or isinstance(units, str)) else str(units),
+            writable=writable,
+        )
+        result.append(cleaned)
+    return result
+
+
+# -------------------------- Schemas für den Options-Flow --------------------------
+
+def schema_publish_add(default_obj_type: str, default_instance: int) -> vol.Schema:
+    """
+    Schema für "Publish – hinzufügen".
+    - entity_id: Home-Assistant-Entität (frei wählbar)
+    - object_type: analogValue | binaryValue
+    - instance: Nummer (auto vorbefüllt & fortlaufend)
+    - units: optionaler Text (nur für AV sinnvoll)
+    - writable: bool
+    """
+    return vol.Schema({
+        vol.Required("entity_id"): sel.EntitySelector(),
+        vol.Required("object_type", default=default_obj_type): sel.SelectSelector(
+            sel.SelectSelectorConfig(
+                options=[{"label": t, "value": t} for t in OBJECT_TYPES],
+                mode=sel.SelectSelectorMode.DROPDOWN,
+            )
+        ),
+        vol.Required("instance", default=default_instance): sel.NumberSelector(
+            sel.NumberSelectorConfig(min=0, step=1, mode=sel.NumberSelectorMode.BOX)
+        ),
+        vol.Optional("units", default=None): sel.TextSelector(
+            sel.TextSelectorConfig(multiline=False, type=sel.TextSelectorType.TEXT)
+        ),
+        vol.Required("writable", default=False): sel.BooleanSelector(),
+    })
+
+
+def schema_publish_edit(current: Dict[str, Any]) -> vol.Schema:
+    """
+    Schema für "Publish – bearbeiten".
+    Alle Felder mit aktuellen Werten vorbelegen.
+    """
+    return vol.Schema({
+        vol.Required("entity_id", default=current.get("entity_id", "")): sel.EntitySelector(),
+        vol.Required("object_type", default=current.get("object_type", OBJECT_TYPES[0])): sel.SelectSelector(
+            sel.SelectSelectorConfig(
+                options=[{"label": t, "value": t} for t in OBJECT_TYPES],
+                mode=sel.SelectSelectorMode.DROPDOWN,
+            )
+        ),
+        vol.Required("instance", default=int(current.get("instance", 0))): sel.NumberSelector(
+            sel.NumberSelectorConfig(min=0, step=1, mode=sel.NumberSelectorMode.BOX)
+        ),
+        vol.Optional("units", default=current.get("units")): sel.TextSelector(
+            sel.TextSelectorConfig(multiline=False, type=sel.TextSelectorType.TEXT)
+        ),
+        vol.Required("writable", default=bool(current.get("writable", False))): sel.BooleanSelector(),
+        # Dummy-Feld, damit der Flow erkennen kann, dass die Seite bestätigt wurde
+        vol.Required("apply", default=True): sel.BooleanSelector(),
+    })
