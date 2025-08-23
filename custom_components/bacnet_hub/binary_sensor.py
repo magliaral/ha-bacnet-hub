@@ -8,6 +8,7 @@ from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
 )
 from homeassistant.config_entries import ConfigEntry
+    # STATE_ON nutzen wir für saubere on/off-Erkennung
 from homeassistant.const import STATE_ON
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
@@ -94,6 +95,9 @@ class BacnetPublishedBinarySensor(BinarySensorEntity):
             self.async_write_ha_state()
             return
 
+        # Domain der Quelle (z.B. "light", "switch", ...)
+        domain = st.entity_id.split(".", 1)[0]
+
         # Name anpassen
         src_name = st.name or self._source
         self._attr_name = f"(BACnet BV-{self._instance}) {src_name}"
@@ -112,12 +116,21 @@ class BacnetPublishedBinarySensor(BinarySensorEntity):
 
         # Fallback für einfache bool-Domains, wenn keine device_class existiert
         if not self._attr_device_class:
-            domain = st.entity_id.split(".", 1)[0]
             if domain in ("switch", "input_boolean"):
                 self._attr_device_class = BinarySensorDeviceClass.POWER
 
-        # Icon exakt übernehmen, falls gesetzt (überschreibt device_class-Icon – wie im Original)
-        self._attr_icon = st.attributes.get("icon") or None
+        # ---- ICON-LOGIK ------------------------------------------------------
+        # 1) Icon der Quelle 1:1 übernehmen (falls explizit gesetzt)
+        src_icon = st.attributes.get("icon")
+        if src_icon:
+            self._attr_icon = src_icon
+        else:
+            # 2) Fallback: Quelle ist light -> Glühbirne je nach Zustand
+            if domain == "light":
+                self._attr_icon = "mdi:lightbulb" if self._attr_is_on else "mdi:lightbulb-outline"
+            else:
+                self._attr_icon = None
+        # ---------------------------------------------------------------------
 
         # entity_category (optional) spiegeln
         src_cat = st.attributes.get("entity_category")
