@@ -1,15 +1,20 @@
 # custom_components/bacnet_hub/binary_sensor.py
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
-from homeassistant.components.binary_sensor import BinarySensorEntity, BinarySensorDeviceClass
+from homeassistant.components.binary_sensor import (
+    BinarySensorEntity,
+    BinarySensorDeviceClass,
+)
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import STATE_ON
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.event import async_track_state_change_event
 
 from .const import DOMAIN
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
     data = hass.data[DOMAIN]
@@ -36,9 +41,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     if entities:
         async_add_entities(entities)
 
+
 class BacnetPublishedBinarySensor(BinarySensorEntity):
+    """BACnet veröffentlichter Binary-Sensor, der Metadaten 1:1 von der Quelle spiegelt."""
+
     _attr_should_poll = False
-    _attr_device_class = BinarySensorDeviceClass.POWER  # generisch; HA zeigt hübsches Icon
 
     def __init__(self, hass: HomeAssistant, entry_id: str, source_entity_id: str, instance: int, name: str):
         self.hass = hass
@@ -54,14 +61,20 @@ class BacnetPublishedBinarySensor(BinarySensorEntity):
             manufacturer="magliaral",
             model="BACpypes 3 - JoelBender",
         )
+        # werden dynamisch gefüllt
+        self._attr_device_class: Optional[BinarySensorDeviceClass] = None
+        self._attr_icon: Optional[str] = None
+        self._attr_entity_category: Optional[EntityCategory] = None
 
     async def async_added_to_hass(self) -> None:
         self._pull_from_source()
+
         @callback
         def _handle(evt):
             if evt.data.get("entity_id") != self._source:
                 return
             self._pull_from_source()
+
         self._remove_listener = async_track_state_change_event(self.hass, [self._source], _handle)
 
     async def async_will_remove_from_hass(self) -> None:
@@ -74,9 +87,42 @@ class BacnetPublishedBinarySensor(BinarySensorEntity):
         st = self.hass.states.get(self._source)
         if not st:
             self._attr_is_on = None
+            self._attr_device_class = None
+            self._attr_icon = None
+            self._attr_entity_category = None
             self.async_write_ha_state()
             return
+
+        # Name anpassen
         src_name = st.name or self._source
-        self._attr_name = f"{src_name} (BACnet BV{self._instance})"
-        self._attr_is_on = str(st.state).lower() in ("on", "true", "1", "open", "heat", "cool")
+        self._attr_name = f"(BACnet BV-{self._instance}) {src_name}"
+
+        # Zustand exakt übernehmen (on/off)
+        self._attr_is_on = (st.state == STATE_ON)
+
+        # device_class exakt spiegeln, sofern vorhanden und gültig
+        self._attr_device_class = None
+        src_dc = st.attributes.get("device_class")
+        if isinstance(src_dc, str) and src_dc:
+            try:
+                self._attr_device_class = BinarySensorDeviceClass(src_dc)
+            except ValueError:
+                self._attr_device_class = None
+
+        # Fallback für einfache bool-Domains, wenn keine device_class existiert
+        if not self._attr_device_class:
+            domain = st.entity_id.split(".", 1)[0]
+            if domain in ("switch", "input_boolean"):
+                self._attr_device_class = BinarySensorDeviceClass.POWER
+
+        # Icon exakt übernehmen, falls gesetzt (überschreibt device_class-Icon – wie im Original)
+        self._attr_icon = st.attributes.get("icon") or None
+
+        # entity_category (optional) spiegeln
+        src_cat = st.attributes.get("entity_category")
+        if src_cat in ("config", "diagnostic"):
+            self._attr_entity_category = EntityCategory(src_cat)
+        else:
+            self._attr_entity_category = None
+
         self.async_write_ha_state()
