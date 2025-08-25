@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional
 
 from bacpypes3.app import Application
 from bacpypes3.vendor import get_vendor_info
-from bacpypes3.apdu import WhoIsRequest
+from bacpypes3.apdu import IAmRequest
 from bacpypes3.pdu import Address
 
 from .publisher import BacnetPublisher
@@ -135,7 +135,7 @@ class BacnetHubServer:
         self.broadcast: Optional[str] = self.cfg.get("broadcast")
         self.debug_bacpypes: bool = bool(self.cfg.get("debug_bacpypes", True))
         self.trace_bacpypes: bool = bool(self.cfg.get("trace_bacpypes", True))
-        self.kick_whois: bool = bool(self.cfg.get("kick_whois", True))
+        self.kick_iam: bool = bool(self.cfg.get("kick_iam", True))
         self.published = list(self.cfg.get("published") or [])
         self.publisher: Optional[BacnetPublisher] = None
         self.app: Optional[Application] = None
@@ -178,16 +178,28 @@ class BacnetHubServer:
             self.publisher = BacnetPublisher(self.hass, self.app, self.published)
             await self.publisher.start()
 
-        if self.kick_whois and self.app:
+        if self.kick_iam and self.app:
             async def _kick(app: Application):
-                try:
-                    await asyncio.sleep(0.2)
-                    req = WhoIsRequest()
-                    req.pduDestination = Address("255.255.255.255")
-                    await app.request(req)
-                    _LOGGER.debug("Who-Is Test gesendet (Broadcast).")
-                except Exception as e:
-                    _LOGGER.debug("Who-Is Test fehlgeschlagen: %s", e, exc_info=True)
+                await asyncio.sleep(0.2)
+            
+                dev = getattr(app, "device", None) or getattr(app, "local_device", None)
+                if not dev:
+                    raise RuntimeError("Lokales Device nicht gefunden")
+            
+                device_identifier = dev.objectIdentifier
+                max_apdu = int(dev.maxApduLengthAccepted)
+                seg_supported = dev.segmentationSupported
+                vendor_id = int(dev.vendorIdentifier)
+            
+                req = IAmRequest(
+                    iAmDeviceIdentifier=device_identifier,
+                    maxAPDULengthAccepted=max_apdu,
+                    segmentationSupported=seg_supported,
+                    vendorID=vendor_id,
+                )
+                req.pduDestination = Address("*:*")   # <--- Broadcast nach Doku
+                await app.request(req)
+                _LOGGER.debug("I-Am Test gesendet (Broadcast *:*)")
             asyncio.create_task(_kick(self.app))
 
     async def stop(self) -> None:
