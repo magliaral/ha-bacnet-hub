@@ -197,7 +197,7 @@ class BacnetHubServer:
                     segmentationSupported=seg_supported,
                     vendorID=vendor_id,
                 )
-                req.pduDestination = Address("*:*")   # <--- Broadcast nach Doku
+                req.pduDestination = Address("*:*")
                 await app.request(req)
                 _LOGGER.debug("I-Am Test gesendet (Broadcast *:*)")
             asyncio.create_task(_kick(self.app))
