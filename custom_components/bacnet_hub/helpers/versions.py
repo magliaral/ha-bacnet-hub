@@ -1,11 +1,10 @@
 # custom_components/bacnet_hub/helpers/versions.py
-
 from __future__ import annotations
 
 import logging
 from importlib.metadata import PackageNotFoundError, version
-
 from homeassistant.loader import async_get_integration
+from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -14,70 +13,44 @@ __all__ = [
     "get_bacpypes3_version",
 ]
 
-
-async def get_integration_version(hass, domain: str) -> str | None:
-    """Return the integration version from its manifest (async).
-
-    Args:
-        hass: Home Assistant instance.
-        domain: Integration domain, e.g. "bacnet_hub".
-
-    Returns:
-        The version string if available, otherwise None.
-    """
+async def get_integration_version(hass: HomeAssistant, domain: str) -> str | None:
+    """Version aus manifest.json (async, non-blocking)."""
     try:
         integration = await async_get_integration(hass, domain)
         ver = integration.version or None
         if ver is None:
-            _LOGGER.debug(
-                "Integration '%s' has no version in manifest (returned None).", domain
-            )
+            _LOGGER.debug("Integration '%s' hat keine Version im Manifest.", domain)
         return ver
     except Exception as err:
         _LOGGER.debug(
-            "Could not resolve integration version for domain '%s': %s",
-            domain,
-            err,
-            exc_info=True,
+            "Konnte Integrationsversion für '%s' nicht ermitteln: %s",
+            domain, err, exc_info=True
         )
         return None
 
-
-def get_bacpypes3_version() -> str | None:
-    """Return the installed bacpypes3 package version.
-
-    Tries importlib.metadata first, then falls back to bacpypes3.__version__.
-
-    Returns:
-        The version string if bacpypes3 is installed, otherwise None.
-    """
+def _get_bacpypes3_version_sync() -> str | None:
+    """Sync: im Executor aufrufen."""
     try:
-        ver = version("bacpypes3")
-        return ver
+        return version("bacpypes3")
     except PackageNotFoundError:
-        _LOGGER.debug(
-            "importlib.metadata could not find 'bacpypes3' distribution; trying fallback."
-        )
+        _LOGGER.debug("importlib.metadata fand 'bacpypes3' nicht; versuche __version__.")
     except Exception as err:
-        _LOGGER.debug(
-            "Unexpected error while reading bacpypes3 version via metadata: %s",
-            err,
-            exc_info=True,
-        )
+        _LOGGER.debug("Fehler bei metadata version('bacpypes3'): %s", err, exc_info=True)
 
     try:
         import bacpypes3  # type: ignore
-
         ver = getattr(bacpypes3, "__version__", None)
         if ver is None:
-            _LOGGER.debug(
-                "bacpypes3 module imported but __version__ attribute is missing."
-            )
+            _LOGGER.debug("bacpypes3.__version__ fehlt.")
         return ver
     except Exception as err:
-        _LOGGER.debug(
-            "Fallback import of bacpypes3 failed while determining version: %s",
-            err,
-            exc_info=True,
-        )
+        _LOGGER.debug("Fallback-Import bacpypes3 für Version schlug fehl: %s", err, exc_info=True)
+        return None
+
+async def get_bacpypes3_version(hass: HomeAssistant) -> str | None:
+    """Async-Wrapper (Executor), damit kein blocking I/O im Event-Loop landet."""
+    try:
+        return await hass.async_add_executor_job(_get_bacpypes3_version_sync)
+    except Exception as err:
+        _LOGGER.debug("Executor-Aufruf für bacpypes3-Version schlug fehl: %s", err, exc_info=True)
         return None
