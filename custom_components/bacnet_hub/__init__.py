@@ -133,6 +133,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _late_sync)
 
+    # Server starten
     server = BacnetHubServer(hass, merged_config)
     lock = locks.setdefault(entry.entry_id, asyncio.Lock())
 
@@ -156,6 +157,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     _LOGGER.info("%s gestartet (Entry %s)", DOMAIN, entry.entry_id)
+
+    # Debug: aktiviere COV-Logs
+    logging.getLogger("bacpypes3.service.cov").setLevel(logging.DEBUG)
+
     return True
 
 
