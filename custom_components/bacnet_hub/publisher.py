@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from types import MethodType
 from typing import Any, Dict, List, Optional, Tuple, Callable
 
 from homeassistant.core import HomeAssistant, callback
@@ -13,14 +12,16 @@ from homeassistant.helpers.event import async_track_state_change_event
 from bacpypes3.app import Application
 from bacpypes3.local.binary import BinaryValueObject
 from bacpypes3.local.analog import AnalogValueObject
-from bacpypes3.basetypes import EngineeringUnits
+from bacpypes3.basetypes import EngineeringUnits, BinaryPV
+from bacpypes3.apdu import WritePropertyRequest
+from bacpypes3.constructeddata import AnyAtomic
+from bacpypes3.primitivedata import Real
 
 _LOGGER = logging.getLogger(__name__)
 
 SUPPORTED_TYPES = {"binaryValue", "analogValue"}
-WATCH_INTERVAL_SEC = 0.5  # Fallback (kann man unten easy deaktivieren)
 
-# -------- Units-Mapping -----------------------------------------------------
+# ---------- Units-Mapping ----------------------------------------------------
 
 HA_UOM_TO_BACNET_ENUM_NAME: Dict[str, str] = {
     "°c": "degreesCelsius",
@@ -61,11 +62,13 @@ HA_UOM_TO_BACNET_ENUM_NAME: Dict[str, str] = {
 
 def _norm_uom_key(s: str) -> str:
     k = s.strip().lower()
-    return (k.replace(" c", "°c").replace("° c", "°c")
-             .replace(" f", "°f").replace("° f", "°f"))
+    return (
+        k.replace(" c", "°c").replace("° c", "°c")
+         .replace(" f", "°f").replace("° f", "°f")
+    )
 
 def _resolve_units(value: Optional[str]) -> Optional[Any]:
-    if not value or EngineeringUnits is None:
+    if not value:
         return None
     # direkter Enumname?
     try:
@@ -81,7 +84,7 @@ def _resolve_units(value: Optional[str]) -> Optional[Any]:
     except Exception:
         return None
 
-# -------- kleine Helfer -----------------------------------------------------
+# ---------- kleine Helfer ----------------------------------------------------
 
 def _entity_domain(entity_id: str) -> str:
     return entity_id.split(".", 1)[0] if "." in entity_id else ""
@@ -96,28 +99,28 @@ def _as_float(x: Any, default: float = 0.0) -> float:
     except Exception:
         return default
 
-# -------- Publisher ---------------------------------------------------------
+# ---------- Publisher --------------------------------------------------------
 
 class BacnetPublisher:
     """
-    Minimal & robust:
-      - HA → BACnet: Initialsync + state_changed
-      - BACnet → HA: __setattr__ Hook auf presentValue (+ optionaler Watcher)
+    Schlanker Publisher:
+      - HA → BACnet: initial + on-change via WritePropertyRequest (COV-freundlich)
+      - BACnet → HA: Forwarding wird von der HubApp (WP/WPM) aufgerufen
     """
 
     def __init__(self, hass: HomeAssistant, app: Application, mappings: List[Dict[str, Any]]):
         self.hass = hass
         self.app = app
-        self._cfg = [m for m in (mappings or []) if isinstance(m, dict) and m.get("object_type") in SUPPORTED_TYPES]
+        self._cfg = [
+            m for m in (mappings or [])
+            if isinstance(m, dict) and m.get("object_type") in SUPPORTED_TYPES
+        ]
 
         self.by_entity: Dict[str, Any] = {}
         self.by_oid: Dict[Tuple[str, int], Any] = {}
         self.map_by_oid: Dict[Tuple[str, int], Dict[str, Any]] = {}
-        self._last: Dict[Tuple[str, int], Any] = {}
 
         self._ha_unsub: Optional[Callable[[], None]] = None
-        self._watch_task: Optional[asyncio.Task] = None
-        self._enable_watcher: bool = True   # bei Bedarf auf False setzen
 
     # --- lifecycle ---
 
@@ -142,6 +145,7 @@ class BacnetPublisher:
                     presentValue=0.0,
                     description=friendly,
                 )
+                # Units aus Mapping oder HA-State ziehen
                 u = m.get("units")
                 if not u:
                     st = self.hass.states.get(ent)
@@ -153,9 +157,16 @@ class BacnetPublisher:
                         obj.units = eu  # type: ignore[attr-defined]
                     except Exception:
                         _LOGGER.debug("units setzen fehlgeschlagen für %s (%r)", ent, eu, exc_info=True)
-
-            # BACnet → HA: presentValue-Hook
-            self._install_pv_hook(obj, m)
+                # COV-Inkrement setzen (macht AV COV-fähig)
+                try:
+                    ci = m.get("cov_increment")
+                    if ci is not None:
+                        obj.covIncrement = float(ci)  # type: ignore[attr-defined]
+                    else:
+                        if getattr(obj, "covIncrement", None) in (None, 0):  # type: ignore[attr-defined]
+                            obj.covIncrement = 0.1  # type: ignore[attr-defined]
+                except Exception:
+                    _LOGGER.debug("covIncrement setzen fehlgeschlagen für %s", ent, exc_info=True)
 
             # registrieren
             self.app.add_object(obj)
@@ -167,13 +178,14 @@ class BacnetPublisher:
             self.by_entity[ent] = obj
             self.by_oid[oid] = obj
             self.map_by_oid[oid] = m
-            self._last[oid] = getattr(obj, "presentValue", None)
 
-            _LOGGER.info("Published %s:%s ⇐ %s (desc=%s units=%s)",
-                         oid[0], oid[1], ent, friendly,
-                         getattr(obj, "units", None) if hasattr(obj, "units") else None)
+            _LOGGER.info(
+                "Published %s:%s ⇐ %s (desc=%s units=%s)",
+                oid[0], oid[1], ent, friendly,
+                getattr(obj, "units", None) if hasattr(obj, "units") else None,
+            )
 
-        # Initial HA → BACnet
+        # Initial HA → BACnet (COV-safe via WP-Service)
         await self._initial_sync()
 
         # Live-Events HA → BACnet
@@ -181,38 +193,29 @@ class BacnetPublisher:
             self.hass, list(self.by_entity.keys()), self._on_state_changed
         )
 
-        # Fallback-Watcher
-        if self._enable_watcher:
-            self._watch_task = asyncio.create_task(self._watch_loop())
-
         _LOGGER.info("BacnetPublisher running (%d mappings).", len(self.by_entity))
 
     async def stop(self) -> None:
         if self._ha_unsub:
-            try: self._ha_unsub()
-            except Exception: pass
+            try:
+                self._ha_unsub()
+            except Exception:
+                pass
             self._ha_unsub = None
-
-        if self._watch_task:
-            self._watch_task.cancel()
-            try: await self._watch_task
-            except Exception: pass
-            self._watch_task = None
 
         self.by_entity.clear()
         self.by_oid.clear()
         self.map_by_oid.clear()
-        self._last.clear()
         _LOGGER.info("BacnetPublisher gestoppt")
 
-    # --- HA → BACnet ---
+    # --- HA → BACnet (über WP-Service) ---
 
     async def _initial_sync(self) -> None:
         for ent, obj in self.by_entity.items():
             st = self.hass.states.get(ent)
             if not st:
                 continue
-            self._apply_from_ha(obj, st.state)
+            await self._apply_from_ha(obj, st.state)
 
     @callback
     async def _on_state_changed(self, event) -> None:
@@ -224,95 +227,87 @@ class BacnetPublisher:
         ns = data.get("new_state")
         if not obj or not ns:
             return
-        self._apply_from_ha(obj, ns.state)
+        asyncio.create_task(self._apply_from_ha(obj, ns.state))
 
-    def _apply_from_ha(self, obj: Any, value: Any) -> None:
-        oid = getattr(obj, "objectIdentifier", ("?", "?"))
+    async def _apply_from_ha(self, obj: Any, value: Any) -> None:
+        """
+        Schreibt presentValue über denselben Service-Entry-Point wie externe Clients
+        (WritePropertyRequest) → COV-Mechanismus wird sicher bedient.
+        Vermeidet unnötige Writes, wenn sich der Wert nicht ändern würde.
+        """
+        oid = getattr(obj, "objectIdentifier", None)
+        if not isinstance(oid, tuple) or len(oid) != 2:
+            return
+
+        # Sollwert bestimmen
+        if isinstance(obj, AnalogValueObject):
+            v = _as_float(value)
+            desired = v
+            pv_any = AnyAtomic(Real(v))
+        else:
+            on = _truthy(value)
+            desired = BinaryPV("active" if on else "inactive")
+            pv_any = AnyAtomic(desired)
+
+        # ✅ Frühzeitiger Exit, wenn keine Änderung
         try:
-            object.__setattr__(obj, "_ha_guard", True)
+            current = getattr(obj, "presentValue", None)
             if isinstance(obj, AnalogValueObject):
-                obj.presentValue = _as_float(value)
+                if current is not None and float(current) == float(desired):
+                    return
             else:
-                obj.presentValue = _truthy(value)
+                if current == desired:
+                    return
+        except Exception:
+            pass
+
+        # Echo-Guard (falls unser eigener WP später via App->HA zurückläuft)
+        object.__setattr__(obj, "_ha_guard", True)
+        try:
+            req = WritePropertyRequest(
+                objectIdentifier=oid,
+                propertyIdentifier="presentValue",
+                propertyValue=pv_any,
+            )
+            await self.app.do_WritePropertyRequest(req)
         finally:
             object.__setattr__(obj, "_ha_guard", False)
-            self._last[oid] = getattr(obj, "presentValue", None)
-            _LOGGER.debug("HA->BACnet: %s:%s PV -> %r", oid[0], oid[1], self._last[oid])
 
-    # --- BACnet → HA ---
+        _LOGGER.debug("HA->BACnet(WP svc): %r PV -> %r", oid, getattr(obj, "presentValue", None))
 
-    def _install_pv_hook(self, obj: Any, mapping: Dict[str, Any]) -> None:
-        orig_setattr = obj.__setattr__
+    # --- BACnet → HA (von HubApp aufgerufen) ---
 
-        def hooked(self_obj, name, value):
-            orig_setattr(name, value)
-            if name != "presentValue":
-                return
-            if getattr(self_obj, "_ha_guard", False):
-                return
-            try:
-                self._dispatch_bacnet_change(self_obj, value, mapping)
-            except Exception:
-                _LOGGER.debug("PV change handling failed", exc_info=True)
-
-        object.__setattr__(obj, "__setattr__", MethodType(hooked, obj))
-
-    def _dispatch_bacnet_change(self, obj: Any, value: Any, mapping: Dict[str, Any]) -> None:
+    async def forward_to_ha_from_bacnet(self, mapping: Dict[str, Any], value: Any) -> None:
+        """
+        Wird von HubApp nach erfolgreichem WriteProperty(/Multiple) aufgerufen.
+        Führt die passende HA-Service-Operation aus.
+        """
         if not mapping.get("writable", False):
             return
 
         ent = mapping["entity_id"]
         domain = _entity_domain(ent)
 
-        if isinstance(obj, BinaryValueObject):
-            on = bool(value) if isinstance(value, bool) else _truthy(value)
-            if domain in ("light", "switch", "fan"):
-                asyncio.create_task(self._ha_call(domain, f"turn_{'on' if on else 'off'}", {"entity_id": ent}))
-                _LOGGER.info("BACnet->HA %s.turn_%s %s", domain, "on" if on else "off", {"entity_id": ent})
-                return
-            if domain == "cover":
-                svc = "open_cover" if on else "close_cover"
-                asyncio.create_task(self._ha_call("cover", svc, {"entity_id": ent}))
-                _LOGGER.info("BACnet->HA cover.%s %s", svc, {"entity_id": ent})
-                return
+        if domain in ("light", "switch", "fan"):
+            on = _truthy(value)
+            await self.hass.services.async_call(
+                domain, f"turn_{'on' if on else 'off'}", {"entity_id": ent}, blocking=False
+            )
+            _LOGGER.info("BACnet->HA %s.turn_%s %s", domain, "on" if on else "off", {"entity_id": ent})
+            return
 
-        if isinstance(obj, AnalogValueObject) and domain in ("number", "input_number"):
+        if domain == "cover":
+            svc = "open_cover" if _truthy(value) else "close_cover"
+            await self.hass.services.async_call("cover", svc, {"entity_id": ent}, blocking=False)
+            _LOGGER.info("BACnet->HA cover.%s %s", svc, {"entity_id": ent})
+            return
+
+        if domain in ("number", "input_number"):
             try:
                 val = float(value)
             except Exception:
                 val = 0.0
-            asyncio.create_task(self._ha_call(domain, "set_value", {"entity_id": ent, "value": val}))
+            await self.hass.services.async_call(
+                domain, "set_value", {"entity_id": ent, "value": val}, blocking=False
+            )
             _LOGGER.info("BACnet->HA %s.set_value %s", domain, {"entity_id": ent, "value": val})
-
-    # --- Watcher (Fallback) ---
-
-    async def _watch_loop(self) -> None:
-        try:
-            while True:
-                await asyncio.sleep(WATCH_INTERVAL_SEC)
-                for oid, obj in tuple(self.by_oid.items()):
-                    try:
-                        cur = getattr(obj, "presentValue", None)
-                    except Exception:
-                        continue
-                    last = self._last.get(oid, object())
-                    if cur != last:
-                        if getattr(obj, "_ha_guard", False):
-                            self._last[oid] = cur
-                            continue
-                        self._last[oid] = cur
-                        mapping = self.map_by_oid.get(oid)
-                        if mapping:
-                            self._dispatch_bacnet_change(obj, cur, mapping)
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            _LOGGER.debug("watch loop failed", exc_info=True)
-
-    # --- Service-Caller ---
-
-    async def _ha_call(self, domain: str, service: str, data: Dict[str, Any]) -> None:
-        try:
-            await self.hass.services.async_call(domain, service, data, blocking=False)
-        except Exception:
-            _LOGGER.debug("Service call failed: %s.%s %s", domain, service, data, exc_info=True)
