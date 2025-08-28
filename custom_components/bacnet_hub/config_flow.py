@@ -55,7 +55,7 @@ def _detect_local_ip() -> Optional[str]:
         return None
 
 def _default_address() -> str:
-    ip = _detect_local_ip() or "192.168.0.2"
+    ip = _detect_local_ip() or "0.0.0.0"
     return f"{ip}/{DEFAULT_PREFIX}:{DEFAULT_PORT}"
 
 def _validate_bacnet_address(addr: str) -> Optional[str]:
