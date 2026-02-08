@@ -28,7 +28,7 @@ class PublishedMappingsSensor(SensorEntity):
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
-        # kompakte Liste für die Geräte-Seite
+        # Compact list for device page
         items = []
         for m in self._mappings:
             items.append({
