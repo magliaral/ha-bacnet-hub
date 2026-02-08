@@ -84,6 +84,52 @@ def _resolve_units(value: Optional[str]) -> Optional[Any]:
     except Exception:
         return None
 
+def _determine_cov_increment(unit: Optional[str]) -> float:
+    """Bestimmt sinnvolles covIncrement basierend auf der Einheit."""
+    if not unit:
+        return 0.5  # Default für unbekannte Einheiten
+
+    unit_lower = _norm_uom_key(unit)
+
+    # Temperatur: 0.2 Grad (feiner als Standard)
+    if unit_lower in ("°c", "°f", "k"):
+        return 0.2
+
+    # Relative Feuchtigkeit: 2%
+    if unit_lower == "%":
+        return 2.0
+
+    # Leistung: höhere Schwellwerte
+    if unit_lower in ("w", "kw"):
+        return 5.0 if unit_lower == "w" else 0.1
+
+    # Spannung: 0.5V
+    if unit_lower in ("v", "mv", "kv"):
+        return 0.5 if unit_lower == "v" else (5.0 if unit_lower == "mv" else 0.01)
+
+    # Strom: 0.1A
+    if unit_lower in ("a", "ma", "ka"):
+        return 0.1 if unit_lower == "a" else (1.0 if unit_lower == "ma" else 0.01)
+
+    # Druck: 10 Pa / 0.1 kPa / 0.1 mbar
+    if unit_lower in ("pa", "kpa", "mbar", "bar"):
+        return 10.0 if unit_lower == "pa" else 0.1
+
+    # Beleuchtungsstärke: 10 lux
+    if unit_lower == "lx":
+        return 10.0
+
+    # CO2/PPM: 50 ppm
+    if unit_lower == "ppm":
+        return 50.0
+
+    # Energie: 0.1 kWh
+    if unit_lower in ("wh", "kwh"):
+        return 100.0 if unit_lower == "wh" else 0.1
+
+    # Default für andere Einheiten
+    return 0.5
+
 # ---------- kleine Helfer ----------------------------------------------------
 
 def _entity_domain(entity_id: str) -> str:
@@ -138,6 +184,9 @@ class BacnetPublisher:
                     presentValue=False,
                     description=friendly,        # Beschreibung = Friendly Name
                 )
+                # BinaryValue explizit als COV-fähig markieren
+                # (kein covIncrement nötig, jede Änderung triggert COV)
+                _LOGGER.debug("BinaryValue erstellt für %s (COV aktiviert)", ent)
             else:
                 obj = AnalogValueObject(
                     objectIdentifier=("analogValue", inst),
@@ -161,10 +210,13 @@ class BacnetPublisher:
                 try:
                     ci = m.get("cov_increment")
                     if ci is not None:
+                        # Explizit gesetzter Wert aus Mapping
                         obj.covIncrement = float(ci)  # type: ignore[attr-defined]
                     else:
-                        if getattr(obj, "covIncrement", None) in (None, 0):  # type: ignore[attr-defined]
-                            obj.covIncrement = 0.1  # type: ignore[attr-defined]
+                        # Unit-basierter intelligenter Default
+                        smart_increment = _determine_cov_increment(u)
+                        obj.covIncrement = smart_increment  # type: ignore[attr-defined]
+                        _LOGGER.debug("covIncrement für %s: %s (unit=%s)", ent, smart_increment, u)
                 except Exception:
                     _LOGGER.debug("covIncrement setzen fehlgeschlagen für %s", ent, exc_info=True)
 
