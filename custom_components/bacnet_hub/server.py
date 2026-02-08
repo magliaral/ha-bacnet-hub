@@ -134,8 +134,9 @@ class HubApp(
 
     async def do_WritePropertyRequest(self, apdu: WritePropertyRequest):
         """
-        1) Standard-Handling via Superklasse: schreibt in Local Object, triggert COV.
-        2) Wenn presentValue betroffen war: an Publisher (BACnet -> HA) weitergeben,
+        1) Standard-Handling via Superklasse: schreibt in Local Object.
+        2) Manuell COV triggern durch erneute Zuweisung (bacpypes3-Mechanismus).
+        3) Wenn presentValue betroffen war: an Publisher (BACnet -> HA) weitergeben,
            es sei denn, es war ein Echo aus HA (Echo-Guard).
         """
         await super().do_WritePropertyRequest(apdu)
@@ -158,15 +159,19 @@ class HubApp(
             if getattr(obj, "_ha_guard", False):
                 return
 
+            # COV manuell triggern: Wert lesen und erneut zuweisen
+            # (super() hat Wert bereits geschrieben, aber COV wird nur durch direkte Zuweisung getriggert)
+            current_value = getattr(obj, "presentValue", None)
+            if current_value is not None:
+                obj.presentValue = current_value  # Trigger COV
+                _LOGGER.debug("BACnet->BACnet COV-Trigger: %r PV=%r", oid, current_value)
+
             mapping = self.publisher.map_by_oid.get(oid)
             if not mapping:
                 return
 
-            # finaler Wert aus dem lokalen Objekt
-            val = getattr(obj, "presentValue", None)
-
             # Nicht blockieren: HA-Servicecall als Task
-            asyncio.create_task(self.publisher.forward_to_ha_from_bacnet(mapping, val))
+            asyncio.create_task(self.publisher.forward_to_ha_from_bacnet(mapping, current_value))
         except Exception:
             _LOGGER.debug("Hook do_WritePropertyRequest: Forwarding nach HA fehlgeschlagen.", exc_info=True)
 
