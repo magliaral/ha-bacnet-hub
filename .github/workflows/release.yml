@@ -40,23 +40,8 @@ jobs:
           echo "current=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
           echo "📌 Aktuelle Version: ${CURRENT_VERSION}"
 
-      - name: Check if Release Needed
-        id: check_release
-        run: |
-          CURRENT_VERSION="${{ steps.current_version.outputs.current }}"
-
-          # Prüfe ob Tag bereits existiert
-          if git rev-parse "v${CURRENT_VERSION}" >/dev/null 2>&1; then
-            echo "skip=true" >> $GITHUB_OUTPUT
-            echo "⏭️ Release v${CURRENT_VERSION} existiert bereits - überspringe"
-          else
-            echo "skip=false" >> $GITHUB_OUTPUT
-            echo "✅ Neuer Release wird erstellt für v${CURRENT_VERSION}"
-          fi
-
       - name: Bump Version
         id: bump_version
-        if: steps.check_release.outputs.skip == 'false'
         run: |
           CURRENT_VERSION="${{ steps.current_version.outputs.current }}"
           IFS='.' read -r major minor patch <<< "$CURRENT_VERSION"
@@ -89,6 +74,20 @@ jobs:
           echo "tag=v${NEW_VERSION}" >> $GITHUB_OUTPUT
 
           echo "🔼 Version Bump: ${CURRENT_VERSION} → ${NEW_VERSION} (${BUMP_TYPE})"
+
+      - name: Check if Release Already Exists
+        id: check_release
+        run: |
+          NEW_TAG="${{ steps.bump_version.outputs.tag }}"
+
+          # Prüfe ob der NEUE Tag bereits existiert
+          if git rev-parse "${NEW_TAG}" >/dev/null 2>&1; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "⏭️ Release ${NEW_TAG} existiert bereits - überspringe"
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "✅ Erstelle neuen Release ${NEW_TAG}"
+          fi
 
       - name: Update manifest.json
         if: steps.check_release.outputs.skip == 'false'
