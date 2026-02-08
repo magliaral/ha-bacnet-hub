@@ -134,11 +134,27 @@ class HubApp(
 
     async def do_WritePropertyRequest(self, apdu: WritePropertyRequest):
         """
-        1) Standard handling via superclass: writes to local object.
-        2) Manually trigger COV via re-assignment (bacpypes3 mechanism).
-        3) If presentValue was affected: forward to Publisher (BACnet -> HA),
-           unless it was an echo from HA (Echo-Guard).
+        1) Read old value BEFORE super() call
+        2) Standard handling via superclass: writes to local object
+        3) Manually trigger COV via re-assignment with NEW value (bacpypes3 mechanism)
+        4) If presentValue was affected: forward to Publisher (BACnet -> HA),
+           unless it was an echo from HA (Echo-Guard)
         """
+        # CRITICAL: Read old value BEFORE super() changes it
+        old_value = None
+        obj = None
+        try:
+            if apdu.propertyIdentifier in ("presentValue", PropertyIdentifier.presentValue):
+                if self.publisher:
+                    oid = apdu.objectIdentifier
+                    obj = self.publisher.by_oid.get(oid)
+                    if obj:
+                        old_value = getattr(obj, "presentValue", None)
+                        _LOGGER.debug("WriteProperty BEFORE super(): %r old_value=%r", oid, old_value)
+        except Exception:
+            pass  # Continue even if old value read fails
+
+        # Call superclass to perform the actual write
         await super().do_WritePropertyRequest(apdu)
 
         try:
@@ -150,8 +166,9 @@ class HubApp(
 
             oid = apdu.objectIdentifier
 
-            # 👇 Use publisher mapping directly instead of self.get_object(...)
-            obj = self.publisher.by_oid.get(oid)
+            # Get object (might have already been retrieved above)
+            if obj is None:
+                obj = self.publisher.by_oid.get(oid)
             if not obj:
                 _LOGGER.debug("WriteProperty: Object not found in publisher: %r", oid)
                 return
@@ -161,16 +178,17 @@ class HubApp(
                 _LOGGER.debug("WriteProperty: Echo-Guard active for %r, skipping", oid)
                 return
 
-            # Manually trigger COV: read value and reassign
-            # (super() already wrote the value, but COV is only triggered by direct assignment)
-            current_value = getattr(obj, "presentValue", None)
-            _LOGGER.debug("WriteProperty: %r current_value=%r (type=%s)",
-                         oid, current_value, type(current_value).__name__ if current_value is not None else "None")
+            # Read NEW value AFTER super() wrote it
+            new_value = getattr(obj, "presentValue", None)
+            _LOGGER.debug("WriteProperty AFTER super(): %r old=%r new=%r",
+                         oid, old_value, new_value)
 
-            # Always reassign, even if None (to ensure COV triggers)
+            # Trigger COV by re-assigning the NEW value
+            # This ensures bacpypes3 sees it as a "change" and sends COV notifications
             try:
-                obj.presentValue = current_value  # Trigger COV
-                _LOGGER.debug("BACnet->BACnet COV-Trigger: %r PV=%r -> COV triggered", oid, current_value)
+                obj.presentValue = new_value  # Trigger COV with new value
+                _LOGGER.debug("BACnet->BACnet COV-Trigger: %r PV %r -> %r (reassigned)",
+                             oid, old_value, new_value)
             except Exception as e:
                 _LOGGER.error("Failed to trigger COV for %r: %s", oid, e, exc_info=True)
                 raise
@@ -181,7 +199,7 @@ class HubApp(
                 return
 
             # Don't block: HA service call as task
-            asyncio.create_task(self.publisher.forward_to_ha_from_bacnet(mapping, current_value))
+            asyncio.create_task(self.publisher.forward_to_ha_from_bacnet(mapping, new_value))
         except Exception as e:
             _LOGGER.error("Hook do_WritePropertyRequest failed for %r: %s",
                          getattr(apdu, 'objectIdentifier', 'unknown'), e, exc_info=True)
