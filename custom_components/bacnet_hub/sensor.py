@@ -82,7 +82,7 @@ class BacnetPublishedSensor(SensorEntity):
         self._attr_unique_id = f"{DOMAIN}:{entry_id}:av:{instance}"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry_id)},
-            name="BACnet Hub (Local Device)",
+            name="BACnet Hub",
             manufacturer="magliaral",
             model="BACnet Hub",
         )
