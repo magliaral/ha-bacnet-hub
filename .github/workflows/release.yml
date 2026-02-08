@@ -39,7 +39,7 @@ jobs:
         run: |
           CURRENT_VERSION=$(jq -r '.version' custom_components/bacnet_hub/manifest.json)
           echo "current=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
-          echo "📌 Aktuelle Version: ${CURRENT_VERSION}"
+          echo "📌 Current Version: ${CURRENT_VERSION}"
 
       - name: Bump Version
         id: bump_version
@@ -47,14 +47,14 @@ jobs:
           CURRENT_VERSION="${{ steps.current_version.outputs.current }}"
           IFS='.' read -r major minor patch <<< "$CURRENT_VERSION"
 
-          # Bump Type bestimmen
+          # Determine bump type
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             BUMP_TYPE="${{ github.event.inputs.bump }}"
           else
             BUMP_TYPE="patch"
           fi
 
-          # Version erhöhen
+          # Increment version
           case $BUMP_TYPE in
             major)
               major=$((major + 1))
@@ -81,13 +81,13 @@ jobs:
         run: |
           NEW_TAG="${{ steps.bump_version.outputs.tag }}"
 
-          # Prüfe ob der NEUE Tag bereits existiert
+          # Check if the NEW tag already exists
           if git rev-parse "${NEW_TAG}" >/dev/null 2>&1; then
             echo "skip=true" >> $GITHUB_OUTPUT
-            echo "⏭️ Release ${NEW_TAG} existiert bereits - überspringe"
+            echo "⏭️ Release ${NEW_TAG} already exists - skipping"
           else
             echo "skip=false" >> $GITHUB_OUTPUT
-            echo "✅ Erstelle neuen Release ${NEW_TAG}"
+            echo "✅ Creating new release ${NEW_TAG}"
           fi
 
       - name: Update manifest.json
@@ -100,7 +100,7 @@ jobs:
             custom_components/bacnet_hub/manifest.json > manifest.tmp
           mv manifest.tmp custom_components/bacnet_hub/manifest.json
 
-          echo "✅ manifest.json aktualisiert auf ${NEW_VERSION}"
+          echo "✅ Updated manifest.json to ${NEW_VERSION}"
 
       - name: Commit Version Bump
         if: steps.check_release.outputs.skip == 'false'
@@ -111,7 +111,7 @@ jobs:
           git add custom_components/bacnet_hub/manifest.json
           git commit -m "chore: bump version to ${{ steps.bump_version.outputs.new }}"
 
-          echo "✅ Version Bump committed"
+          echo "✅ Version bump committed"
 
       - name: Push Changes
         if: steps.check_release.outputs.skip == 'false'
@@ -126,7 +126,7 @@ jobs:
           git tag "${{ steps.bump_version.outputs.tag }}"
           git push origin "${{ steps.bump_version.outputs.tag }}"
 
-          echo "✅ Tag ${{ steps.bump_version.outputs.tag }} erstellt"
+          echo "✅ Created tag ${{ steps.bump_version.outputs.tag }}"
 
       - name: Create ZIP Archive
         if: steps.check_release.outputs.skip == 'false'
@@ -138,26 +138,26 @@ jobs:
             -x "*.git*" \
             -x "*.DS_Store"
           cd ..
-          echo "✅ ZIP erstellt: bacnet_hub-${{ steps.bump_version.outputs.tag }}.zip"
+          echo "✅ Created ZIP: bacnet_hub-${{ steps.bump_version.outputs.tag }}.zip"
 
       - name: Generate Release Notes
         if: steps.check_release.outputs.skip == 'false'
         id: release_notes
         run: |
-          # Hole letzten Release-Tag
+          # Get last release tag
           LAST_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
 
           if [ -n "$LAST_TAG" ]; then
-            echo "Changelog seit ${LAST_TAG}:"
+            echo "Changelog since ${LAST_TAG}:"
             git log ${LAST_TAG}..HEAD --pretty=format:"- %s (%h)" --no-merges > commits.txt
           else
-            echo "Erster Release" > commits.txt
+            echo "First release" > commits.txt
           fi
 
           cat > release_notes.md << 'EOF'
           ## BACnet Hub ${{ steps.bump_version.outputs.tag }}
 
-          ### 🔄 Änderungen
+          ### 🔄 Changes
 
           EOF
 
@@ -168,19 +168,19 @@ jobs:
           ### 📦 Installation via HACS
 
           1. In HACS: ••• → Custom repositories
-          2. Repository URL hinzufügen: `https://github.com/magliaral/ha-bacnet-hub`
-          3. Typ: Integration
-          4. Installation starten
+          2. Add repository URL: `https://github.com/magliaral/ha-bacnet-hub`
+          3. Type: Integration
+          4. Start installation
 
-          ### 📥 Manuelle Installation
+          ### 📥 Manual Installation
 
-          1. ZIP-Datei herunterladen
-          2. Entpacken nach `config/custom_components/bacnet_hub/`
-          3. Home Assistant neu starten
+          1. Download ZIP file
+          2. Extract to `config/custom_components/bacnet_hub/`
+          3. Restart Home Assistant
 
-          ### 📖 Dokumentation
+          ### 📖 Documentation
 
-          Siehe [README.md](https://github.com/magliaral/ha-bacnet-hub/blob/main/README.md) für vollständige Dokumentation.
+          See [README.md](https://github.com/magliaral/ha-bacnet-hub/blob/main/README.md) for full documentation.
           EOF
 
       - name: Create GitHub Release
@@ -200,17 +200,17 @@ jobs:
       - name: Summary
         if: steps.check_release.outputs.skip == 'false'
         run: |
-          echo "## ✅ Release erfolgreich erstellt!" >> $GITHUB_STEP_SUMMARY
+          echo "## ✅ Release created successfully!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Neue Version:** ${{ steps.bump_version.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Vorherige Version:** v${{ steps.current_version.outputs.current }}" >> $GITHUB_STEP_SUMMARY
+          echo "**New Version:** ${{ steps.bump_version.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Previous Version:** v${{ steps.current_version.outputs.current }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "📦 ZIP-Datei wurde als Release-Asset hochgeladen" >> $GITHUB_STEP_SUMMARY
-          echo "🏷️ Git-Tag wurde erstellt und gepusht" >> $GITHUB_STEP_SUMMARY
+          echo "📦 ZIP file uploaded as release asset" >> $GITHUB_STEP_SUMMARY
+          echo "🏷️ Git tag created and pushed" >> $GITHUB_STEP_SUMMARY
 
       - name: Summary (Skipped)
         if: steps.check_release.outputs.skip == 'true'
         run: |
-          echo "## ⏭️ Release übersprungen" >> $GITHUB_STEP_SUMMARY
+          echo "## ⏭️ Release skipped" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Release v${{ steps.current_version.outputs.current }} existiert bereits." >> $GITHUB_STEP_SUMMARY
+          echo "Release v${{ steps.current_version.outputs.current }} already exists." >> $GITHUB_STEP_SUMMARY

@@ -14,7 +14,7 @@ from bacpypes3.basetypes import IPMode, HostNPort, BDTEntry
 from bacpypes3.apdu import IAmRequest, WritePropertyRequest
 from bacpypes3.pdu import Address
 
-# Service-Mixins (aktivieren Standardservices inkl. COV)
+# Service mixins (enable standard services including COV)
 from bacpypes3.service.device import WhoIsIAmServices
 from bacpypes3.service.object import ReadWritePropertyServices
 from bacpypes3.service.cov import ChangeOfValueServices
@@ -38,7 +38,7 @@ _ADDR_RE = re.compile(
     r"(?::(?P<port>\d{1,5}))?\s*$"
 )
 
-# ---------------------- Netzwerk/Adresse Helpers ----------------------------
+# ---------------------- Network/Address Helpers -----------------------------
 
 def _detect_local_ip() -> Optional[str]:
     try:
@@ -63,25 +63,25 @@ def _normalize_address(addr: Optional[str]) -> str:
                 if any(p < 0 or p > 255 for p in parts):
                     raise ValueError
             except Exception:
-                _LOGGER.warning("Adresse hat keine gültige IPv4 (%s). Fallback wird verwendet.", addr)
+                _LOGGER.warning("Address is not valid IPv4 (%s). Using fallback.", addr)
             else:
                 pfx = int(prefix) if prefix is not None else _DEFAULT_PREFIX
                 prt = int(port) if port is not None else _DEFAULT_PORT
                 norm = f"{ip}/{pfx}:{prt}"
                 if norm != addr:
-                    _LOGGER.debug("Adresse normalisiert: '%s' -> '%s'", addr, norm)
+                    _LOGGER.debug("Address normalized: '%s' -> '%s'", addr, norm)
                 return norm
 
     ip = _detect_local_ip() or "192.168.0.2"
     norm = f"{ip}/{_DEFAULT_PREFIX}:{_DEFAULT_PORT}"
-    _LOGGER.debug("Adresse Fallback verwendet: %s", norm)
+    _LOGGER.debug("Using fallback address: %s", norm)
     return norm
 
 
 def _split_ip_port(address_str: str) -> tuple[str, int]:
     m = _ADDR_RE.match(address_str)
     if not m:
-        raise ValueError(f"Ungültige Adresse: {address_str!r}")
+        raise ValueError(f"Invalid address: {address_str!r}")
     ip = m.group("ip")
     port = int(m.group("port") or _DEFAULT_PORT)
     return ip, port
@@ -104,17 +104,17 @@ async def _wait_port_free(address_str: str) -> None:
     for attempt in range(1, _BIND_RETRIES + 1):
         try:
             _preflight_bind(address_str)
-            _LOGGER.debug("Preflight-Bind ok (Versuch %d): %s", attempt, address_str)
+            _LOGGER.debug("Preflight bind OK (attempt %d): %s", attempt, address_str)
             return
         except OSError as e:
             last_err = e
             if e.errno not in (98, 10048):
-                _LOGGER.error("Preflight-Bind Fehler: %s", e, exc_info=True)
+                _LOGGER.error("Preflight bind error: %s", e, exc_info=True)
                 raise
-            _LOGGER.debug("Port belegt (V%d/%d): %s – warte %.2fs", attempt, _BIND_RETRIES, address_str, delay)
+            _LOGGER.debug("Port busy (attempt %d/%d): %s – waiting %.2fs", attempt, _BIND_RETRIES, address_str, delay)
             await asyncio.sleep(delay)
             delay *= _BIND_BACKOFF
-    raise last_err or OSError("Preflight-Bind fehlgeschlagen")
+    raise last_err or OSError("Preflight bind failed")
 
 # ----------------------------- HubApp ---------------------------------------
 
@@ -125,8 +125,8 @@ class HubApp(
     ChangeOfValueServices,       # SubscribeCOV + COV Notifications
 ):
     """
-    Anwendung mit aktivierten Standardservices.
-    Spiegelt WriteProperty(presentValue) von BACnet nach HA, sofern ein Mapping existiert.
+    Application with standard services enabled.
+    Mirrors WriteProperty(presentValue) from BACnet to HA when mapping exists.
     """
     def __init__(self, *args, publisher: Optional[BacnetPublisher] = None, **kwargs):
         super().__init__(*args, **kwargs)
@@ -134,10 +134,10 @@ class HubApp(
 
     async def do_WritePropertyRequest(self, apdu: WritePropertyRequest):
         """
-        1) Standard-Handling via Superklasse: schreibt in Local Object.
-        2) Manuell COV triggern durch erneute Zuweisung (bacpypes3-Mechanismus).
-        3) Wenn presentValue betroffen war: an Publisher (BACnet -> HA) weitergeben,
-           es sei denn, es war ein Echo aus HA (Echo-Guard).
+        1) Standard handling via superclass: writes to local object.
+        2) Manually trigger COV via re-assignment (bacpypes3 mechanism).
+        3) If presentValue was affected: forward to Publisher (BACnet -> HA),
+           unless it was an echo from HA (Echo-Guard).
         """
         await super().do_WritePropertyRequest(apdu)
 
@@ -150,17 +150,17 @@ class HubApp(
 
             oid = apdu.objectIdentifier
 
-            # 👇 statt self.get_object(...) direkt über Publisher-Mapping
+            # 👇 Use publisher mapping directly instead of self.get_object(...)
             obj = self.publisher.by_oid.get(oid)
             if not obj:
                 return
 
-            # Echo-Guard: wurde diese Änderung von HA ausgelöst?
+            # Echo-Guard: was this change triggered by HA?
             if getattr(obj, "_ha_guard", False):
                 return
 
-            # COV manuell triggern: Wert lesen und erneut zuweisen
-            # (super() hat Wert bereits geschrieben, aber COV wird nur durch direkte Zuweisung getriggert)
+            # Manually trigger COV: read value and reassign
+            # (super() already wrote the value, but COV is only triggered by direct assignment)
             current_value = getattr(obj, "presentValue", None)
             if current_value is not None:
                 obj.presentValue = current_value  # Trigger COV
@@ -170,15 +170,15 @@ class HubApp(
             if not mapping:
                 return
 
-            # Nicht blockieren: HA-Servicecall als Task
+            # Don't block: HA service call as task
             asyncio.create_task(self.publisher.forward_to_ha_from_bacnet(mapping, current_value))
         except Exception:
-            _LOGGER.debug("Hook do_WritePropertyRequest: Forwarding nach HA fehlgeschlagen.", exc_info=True)
+            _LOGGER.debug("Hook do_WritePropertyRequest: Forwarding to HA failed.", exc_info=True)
 
 # -------------------------- Server (HA Wrapper) -----------------------------
 
 class BacnetHubServer:
-    """Startet HubApp + Publisher. Nutzt Standard-Services (inkl. COV)."""
+    """Starts HubApp + Publisher. Uses standard services (incl. COV)."""
 
     def __init__(self, hass, merged_config: Dict[str, Any]) -> None:
         self.hass = hass
@@ -192,7 +192,7 @@ class BacnetHubServer:
         self.ttl: int = int(self.cfg.get("ttl", 30))
         self.bbmd = self.cfg.get("bbmd")
 
-        # Geräte-Metadaten
+        # Device metadata
         self.vendor_identifier: int = 999
         self.vendor_name: str = "BACpypes3"
         self.model_name: str = "Home Assistant"
@@ -204,10 +204,10 @@ class BacnetHubServer:
         self.debug_bacpypes: bool = bool(self.cfg.get("debug_bacpypes", True))
         self.kick_iam: bool = bool(self.cfg.get("kick_iam", True))
 
-        # Mapping-Liste
+        # Mapping list
         self.published = list(self.cfg.get("published") or [])
 
-        # Laufzeit
+        # Runtime
         self.publisher: Optional[BacnetPublisher] = None
         self.app: Optional[HubApp] = None
 
@@ -219,25 +219,25 @@ class BacnetHubServer:
             ):
                 logging.getLogger(name).setLevel(logging.DEBUG)
 
-        # Versionsinfos aus Manifest/Installation
+        # Version info from manifest/installation
         try:
             v = await get_integration_version(self.hass, DOMAIN)
             if v:
                 self.application_software_version = f"{v}"
         except Exception:
-            _LOGGER.debug("Konnte application_software_version nicht aus Manifest lesen.", exc_info=True)
+            _LOGGER.debug("Could not read application_software_version from manifest.", exc_info=True)
 
         try:
             bpv = await get_bacpypes3_version(self.hass)
             if bpv:
                 self.firmware_revision = f"bacpypes3 v{bpv}"
         except Exception:
-            _LOGGER.debug("Konnte bacpypes3-Version nicht ermitteln.", exc_info=True)
+            _LOGGER.debug("Could not determine bacpypes3 version.", exc_info=True)
 
-        # UDP-Port vorab prüfen (vermeidet race mit HA-/Addon-Neustarts)
+        # Check UDP port availability upfront (avoids race with HA/addon restarts)
         await _wait_port_free(self.address_str)
 
-        # Vendor Info & Objektklassen
+        # Vendor info & object classes
         vendor_info = get_vendor_info(self.vendor_identifier)
         device_object_class = vendor_info.get_object_class(ObjectType.device)
         if not device_object_class:
@@ -246,10 +246,10 @@ class BacnetHubServer:
         if not network_port_object_class:
             raise RuntimeError("vendor identifier {self.vendor_identifier} missing network port object class")
 
-        # Adresse für NetworkPort
+        # Address for NetworkPort
         address = self.address_str or ("host:0" if self.foreign else "host")
 
-        # Device-Objekt
+        # Device object
         device_object = device_object_class(
             objectIdentifier=("device", int(self.instance)),
             objectName=str(self.name),
@@ -261,7 +261,7 @@ class BacnetHubServer:
             applicationSoftwareVersion=str(self.application_software_version) if self.application_software_version else None,
         )
 
-        # Network-Port-Objekt
+        # Network port object
         network_port_object = network_port_object_class(
             address,
             objectIdentifier=("network-port", 1),
@@ -270,7 +270,7 @@ class BacnetHubServer:
             networkNumberQuality="configured" if self.network_number else "unknown",
         )
 
-        # Foreign Device?
+        # Foreign device?
         if self.foreign is not None:
             network_port_object.bacnetIPMode = IPMode.foreign
             network_port_object.fdBBMDAddress = HostNPort(self.foreign)
@@ -283,19 +283,19 @@ class BacnetHubServer:
             bbmd_list: Iterable[str] = self.bbmd if isinstance(self.bbmd, (list, tuple)) else [self.bbmd]
             network_port_object.bbmdBroadcastDistributionTable = [BDTEntry(addr) for addr in bbmd_list]
 
-        # --- Application erstellen (mit Services inkl. COV) ---
+        # --- Create application (with services incl. COV) ---
         self.app = HubApp.from_object_list([device_object, network_port_object])
 
-        _LOGGER.info("BACnet Hub gestartet auf %s", self.address_str)
+        _LOGGER.info("BACnet Hub started on %s", self.address_str)
 
-        # Publisher starten (schreibt/liest ausschließlich via Services)
+        # Start publisher (reads/writes exclusively via services)
         if self.published:
             self.publisher = BacnetPublisher(self.hass, self.app, self.published)
-            # der App den Publisher geben (für BACnet→HA)
+            # Give the app the publisher (for BACnet→HA)
             self.app.publisher = self.publisher
             await self.publisher.start()
 
-        # Optional: I-Am beim Start (Broadcast)
+        # Optional: I-Am on startup (broadcast)
         if self.kick_iam and self.app:
             asyncio.create_task(self._kick_iam(self.app))
 
@@ -304,7 +304,7 @@ class BacnetHubServer:
             await asyncio.sleep(0.2)
             dev = getattr(app, "device_object", None)
             if not dev:
-                raise RuntimeError("Lokales Device nicht gefunden")
+                raise RuntimeError("Local device not found")
             req = IAmRequest(
                 iAmDeviceIdentifier=dev.objectIdentifier,
                 maxAPDULengthAccepted=int(dev.maxApduLengthAccepted),
@@ -313,9 +313,9 @@ class BacnetHubServer:
             )
             req.pduDestination = Address("*:*")
             await app.request(req)
-            _LOGGER.debug("I-Am gesendet (Broadcast *:*)")
+            _LOGGER.debug("I-Am sent (broadcast *:*)")
         except Exception as e:
-            _LOGGER.debug("I-Am fehlgeschlagen: %s", e, exc_info=True)
+            _LOGGER.debug("I-Am failed: %s", e, exc_info=True)
 
     async def stop(self) -> None:
         if self.publisher:
@@ -332,7 +332,7 @@ class BacnetHubServer:
                 pass
             self.app = None
 
-        _LOGGER.info("BACnet Hub gestoppt")
+        _LOGGER.info("BACnet Hub stopped")
         try:
             await asyncio.sleep(0.1)
         except Exception:
