@@ -157,7 +157,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         identifiers={(DOMAIN, entry.entry_id)},
         manufacturer="Home Assistant",
         model="BACpypes 3",
-        name="BACnet Hub (Local Device)",
+        name="BACnet Hub",
         sw_version=str(merged_config.get("application_software_version", "0.1.1")),
     )
 

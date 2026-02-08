@@ -222,7 +222,7 @@ class BacnetHubServer:
 
         self.address_str: str = _normalize_address(str(self.cfg.get("address") or ""))
         self.network_number: Optional[int] = int(self.cfg.get("network_number", 1))
-        self.name: str = str(self.cfg.get("name", "BACnetHub"))
+        self.name: str = str(self.cfg.get("name", "HA-BACnetHub"))
         self.instance: int = int(self.cfg.get("instance", 8123))
         self.foreign: Optional[str] = self.cfg.get("foreign")
         self.ttl: int = int(self.cfg.get("ttl", 30))
@@ -232,7 +232,7 @@ class BacnetHubServer:
         self.vendor_identifier: int = 999
         self.vendor_name: str = "BACpypes3"
         self.model_name: str = "Home Assistant"
-        self.description: str = "BACnet Hub (Custom Integration via BACpypes3)"
+        self.description: str = "BACnet Hub (Home Assistant - Custom Integration)"
         self.application_software_version: Optional[str] = None
         self.firmware_revision: Optional[str] = None
 
