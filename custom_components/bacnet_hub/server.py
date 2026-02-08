@@ -183,12 +183,19 @@ class HubApp(
             _LOGGER.debug("WriteProperty AFTER super(): %r old=%r new=%r",
                          oid, old_value, new_value)
 
-            # Trigger COV by re-assigning the NEW value
-            # This ensures bacpypes3 sees it as a "change" and sends COV notifications
+            # Trigger COV by creating a REAL change that bacpypes3 will detect
+            # Strategy: Set to OLD value, then to NEW value (creates detectable change)
             try:
-                obj.presentValue = new_value  # Trigger COV with new value
-                _LOGGER.debug("BACnet->BACnet COV-Trigger: %r PV %r -> %r (reassigned)",
-                             oid, old_value, new_value)
+                if old_value is not None and old_value != new_value:
+                    # First set back to old value (creates change: new→old)
+                    obj.presentValue = old_value
+                    _LOGGER.debug("BACnet->BACnet COV-Trigger step 1: %r PV=%r -> %r",
+                                 oid, new_value, old_value)
+
+                # Then set to new value (creates change: old→new, triggers COV!)
+                obj.presentValue = new_value
+                _LOGGER.debug("BACnet->BACnet COV-Trigger step 2: %r PV=%r -> %r (COV sent)",
+                             oid, old_value if old_value != new_value else new_value, new_value)
             except Exception as e:
                 _LOGGER.error("Failed to trigger COV for %r: %s", oid, e, exc_info=True)
                 raise
