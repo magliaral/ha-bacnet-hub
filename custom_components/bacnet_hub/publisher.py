@@ -70,12 +70,12 @@ def _norm_uom_key(s: str) -> str:
 def _resolve_units(value: Optional[str]) -> Optional[Any]:
     if not value:
         return None
-    # direkter Enumname?
+    # Direct enum name?
     try:
         return getattr(EngineeringUnits, value)
     except Exception:
         pass
-    # Kurzform/HA-UoM
+    # Short form/HA UoM
     enum_name = HA_UOM_TO_BACNET_ENUM_NAME.get(_norm_uom_key(value))
     if not enum_name:
         return None
@@ -85,37 +85,37 @@ def _resolve_units(value: Optional[str]) -> Optional[Any]:
         return None
 
 def _determine_cov_increment(unit: Optional[str]) -> float:
-    """Bestimmt sinnvolles covIncrement basierend auf der Einheit."""
+    """Determines appropriate covIncrement based on the unit."""
     if not unit:
-        return 0.5  # Default für unbekannte Einheiten
+        return 0.5  # Default for unknown units
 
     unit_lower = _norm_uom_key(unit)
 
-    # Temperatur: 0.2 Grad (feiner als Standard)
+    # Temperature: 0.2 degrees (finer than default)
     if unit_lower in ("°c", "°f", "k"):
         return 0.2
 
-    # Relative Feuchtigkeit: 2%
+    # Relative humidity: 2%
     if unit_lower == "%":
         return 2.0
 
-    # Leistung: höhere Schwellwerte
+    # Power: higher thresholds
     if unit_lower in ("w", "kw"):
         return 5.0 if unit_lower == "w" else 0.1
 
-    # Spannung: 0.5V
+    # Voltage: 0.5V
     if unit_lower in ("v", "mv", "kv"):
         return 0.5 if unit_lower == "v" else (5.0 if unit_lower == "mv" else 0.01)
 
-    # Strom: 0.1A
+    # Current: 0.1A
     if unit_lower in ("a", "ma", "ka"):
         return 0.1 if unit_lower == "a" else (1.0 if unit_lower == "ma" else 0.01)
 
-    # Druck: 10 Pa / 0.1 kPa / 0.1 mbar
+    # Pressure: 10 Pa / 0.1 kPa / 0.1 mbar
     if unit_lower in ("pa", "kpa", "mbar", "bar"):
         return 10.0 if unit_lower == "pa" else 0.1
 
-    # Beleuchtungsstärke: 10 lux
+    # Illuminance: 10 lux
     if unit_lower == "lx":
         return 10.0
 
@@ -123,14 +123,14 @@ def _determine_cov_increment(unit: Optional[str]) -> float:
     if unit_lower == "ppm":
         return 50.0
 
-    # Energie: 0.1 kWh
+    # Energy: 0.1 kWh
     if unit_lower in ("wh", "kwh"):
         return 100.0 if unit_lower == "wh" else 0.1
 
-    # Default für andere Einheiten
+    # Default for other units
     return 0.5
 
-# ---------- kleine Helfer ----------------------------------------------------
+# ---------- Small Helpers ----------------------------------------------------
 
 def _entity_domain(entity_id: str) -> str:
     return entity_id.split(".", 1)[0] if "." in entity_id else ""
@@ -149,9 +149,9 @@ def _as_float(x: Any, default: float = 0.0) -> float:
 
 class BacnetPublisher:
     """
-    Schlanker Publisher:
-      - HA → BACnet: initial + on-change via WritePropertyRequest (COV-freundlich)
-      - BACnet → HA: Forwarding wird von der HubApp (WP/WPM) aufgerufen
+    Lightweight Publisher:
+      - HA → BACnet: initial + on-change via direct assignment (COV-friendly)
+      - BACnet → HA: Forwarding is called by HubApp (WP/WPM)
     """
 
     def __init__(self, hass: HomeAssistant, app: Application, mappings: List[Dict[str, Any]]):
@@ -180,13 +180,13 @@ class BacnetPublisher:
             if obj_type == "binaryValue":
                 obj = BinaryValueObject(
                     objectIdentifier=("binaryValue", inst),
-                    objectName=ent,              # Objektname = Entity ID
+                    objectName=ent,              # Object name = Entity ID
                     presentValue=False,
-                    description=friendly,        # Beschreibung = Friendly Name
+                    description=friendly,        # Description = Friendly Name
                 )
-                # BinaryValue explizit als COV-fähig markieren
-                # (kein covIncrement nötig, jede Änderung triggert COV)
-                _LOGGER.debug("BinaryValue erstellt für %s (COV aktiviert)", ent)
+                # BinaryValue explicitly marked as COV-capable
+                # (no covIncrement needed, every change triggers COV)
+                _LOGGER.debug("BinaryValue created for %s (COV enabled)", ent)
             else:
                 obj = AnalogValueObject(
                     objectIdentifier=("analogValue", inst),
@@ -205,26 +205,26 @@ class BacnetPublisher:
                     try:
                         obj.units = eu  # type: ignore[attr-defined]
                     except Exception:
-                        _LOGGER.debug("units setzen fehlgeschlagen für %s (%r)", ent, eu, exc_info=True)
-                # COV-Inkrement setzen (macht AV COV-fähig)
+                        _LOGGER.debug("Failed to set units for %s (%r)", ent, eu, exc_info=True)
+                # Set COV increment (makes AV COV-capable)
                 try:
                     ci = m.get("cov_increment")
                     if ci is not None:
-                        # Explizit gesetzter Wert aus Mapping
+                        # Explicitly set value from mapping
                         obj.covIncrement = float(ci)  # type: ignore[attr-defined]
                     else:
-                        # Unit-basierter intelligenter Default
+                        # Unit-based smart default
                         smart_increment = _determine_cov_increment(u)
                         obj.covIncrement = smart_increment  # type: ignore[attr-defined]
-                        _LOGGER.debug("covIncrement für %s: %s (unit=%s)", ent, smart_increment, u)
+                        _LOGGER.debug("covIncrement for %s: %s (unit=%s)", ent, smart_increment, u)
                 except Exception:
-                    _LOGGER.debug("covIncrement setzen fehlgeschlagen für %s", ent, exc_info=True)
+                    _LOGGER.debug("Failed to set covIncrement for %s", ent, exc_info=True)
 
-            # registrieren
+            # Register
             self.app.add_object(obj)
             oid = getattr(obj, "objectIdentifier", None)
             if not isinstance(oid, tuple) or len(oid) != 2:
-                _LOGGER.warning("unerwartetes objectIdentifier für %s: %r", ent, oid)
+                _LOGGER.warning("Unexpected objectIdentifier for %s: %r", ent, oid)
                 continue
 
             self.by_entity[ent] = obj
@@ -258,30 +258,30 @@ class BacnetPublisher:
         self.by_entity.clear()
         self.by_oid.clear()
         self.map_by_oid.clear()
-        _LOGGER.info("BacnetPublisher gestoppt")
+        _LOGGER.info("BacnetPublisher stopped")
 
     async def update_descriptions(self) -> None:
-        """Aktualisiert die description aller BACnet-Objekte mit aktuellen friendly_names."""
+        """Updates the description of all BACnet objects with current friendly_names."""
         for ent, obj in self.by_entity.items():
             st = self.hass.states.get(ent)
             if not st:
                 continue
 
-            # Aktuellen friendly_name holen
+            # Get current friendly_name
             new_friendly = st.name or st.attributes.get("friendly_name") or ent
 
-            # Aktuelle description prüfen
+            # Check current description
             current_desc = getattr(obj, "description", None)
 
             if new_friendly != current_desc:
                 try:
                     obj.description = new_friendly
-                    _LOGGER.debug("Description aktualisiert für %s: %r -> %r",
+                    _LOGGER.debug("Description updated for %s: %r -> %r",
                                 ent, current_desc, new_friendly)
                 except Exception as e:
-                    _LOGGER.debug("Konnte description für %s nicht aktualisieren: %s", ent, e)
+                    _LOGGER.debug("Could not update description for %s: %s", ent, e)
 
-    # --- HA → BACnet (über WP-Service) ---
+    # --- HA → BACnet (via direct assignment) ---
 
     async def _initial_sync(self) -> None:
         for ent, obj in self.by_entity.items():
@@ -304,15 +304,15 @@ class BacnetPublisher:
 
     async def _apply_from_ha(self, obj: Any, value: Any) -> None:
         """
-        Schreibt presentValue direkt ins lokale Objekt.
-        Direkte Zuweisung triggert automatisch den COV-Mechanismus in bacpypes3.
-        Vermeidet unnötige Writes, wenn sich der Wert nicht ändern würde.
+        Writes presentValue directly to the local object.
+        Direct assignment automatically triggers the COV mechanism in bacpypes3.
+        Avoids unnecessary writes when the value would not change.
         """
         oid = getattr(obj, "objectIdentifier", None)
         if not isinstance(oid, tuple) or len(oid) != 2:
             return
 
-        # Sollwert bestimmen
+        # Determine target value
         if isinstance(obj, AnalogValueObject):
             v = _as_float(value)
             desired = v
@@ -320,42 +320,42 @@ class BacnetPublisher:
             on = _truthy(value)
             desired = BinaryPV("active" if on else "inactive")
 
-        # Debug-Logging: Zeige gewünschten Wert
+        # Debug logging: Show desired value
         _LOGGER.debug("HA->BACnet: %r State=%r -> desired=%r (type=%s)",
                       oid, value, desired, type(desired).__name__)
 
-        # ✅ Frühzeitiger Exit, wenn keine Änderung
+        # ✅ Early exit if no change
         try:
             current = getattr(obj, "presentValue", None)
             if isinstance(obj, AnalogValueObject):
                 if current is not None and float(current) == float(desired):
-                    _LOGGER.debug("HA->BACnet: %r Wert unverändert (%r), überspringe Write", oid, current)
+                    _LOGGER.debug("HA->BACnet: %r Value unchanged (%r), skipping write", oid, current)
                     return
             else:
                 if current == desired or str(current) == str(desired):
-                    _LOGGER.debug("HA->BACnet: %r Wert unverändert (%r), überspringe Write", oid, current)
+                    _LOGGER.debug("HA->BACnet: %r Value unchanged (%r), skipping write", oid, current)
                     return
         except Exception:
             pass
 
-        # Echo-Guard (falls unser eigener Write später via App->HA zurückläuft)
+        # Echo-Guard (in case our own write loops back via App->HA later)
         object.__setattr__(obj, "_ha_guard", True)
         try:
-            # Direkte Zuweisung triggert COV automatisch (bacpypes3-Standard)
+            # Direct assignment triggers COV automatically (bacpypes3 standard)
             obj.presentValue = desired
-            _LOGGER.debug("HA->BACnet(direkt): %r PV=%r -> %r", oid, current, desired)
+            _LOGGER.debug("HA->BACnet(direct): %r PV=%r -> %r", oid, current, desired)
         except Exception as e:
-            _LOGGER.error("HA->BACnet(Zuweisung fehlgeschlagen): %r Fehler: %s", oid, e, exc_info=True)
+            _LOGGER.error("HA->BACnet(assignment failed): %r Error: %s", oid, e, exc_info=True)
             raise
         finally:
             object.__setattr__(obj, "_ha_guard", False)
 
-    # --- BACnet → HA (von HubApp aufgerufen) ---
+    # --- BACnet → HA (called by HubApp) ---
 
     async def forward_to_ha_from_bacnet(self, mapping: Dict[str, Any], value: Any) -> None:
         """
-        Wird von HubApp nach erfolgreichem WriteProperty(/Multiple) aufgerufen.
-        Führt die passende HA-Service-Operation aus.
+        Called by HubApp after successful WriteProperty(/Multiple).
+        Executes the appropriate HA service operation.
         """
         if not mapping.get("writable", False):
             return
