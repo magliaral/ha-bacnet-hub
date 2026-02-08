@@ -153,27 +153,38 @@ class HubApp(
             # 👇 Use publisher mapping directly instead of self.get_object(...)
             obj = self.publisher.by_oid.get(oid)
             if not obj:
+                _LOGGER.debug("WriteProperty: Object not found in publisher: %r", oid)
                 return
 
             # Echo-Guard: was this change triggered by HA?
             if getattr(obj, "_ha_guard", False):
+                _LOGGER.debug("WriteProperty: Echo-Guard active for %r, skipping", oid)
                 return
 
             # Manually trigger COV: read value and reassign
             # (super() already wrote the value, but COV is only triggered by direct assignment)
             current_value = getattr(obj, "presentValue", None)
-            if current_value is not None:
+            _LOGGER.debug("WriteProperty: %r current_value=%r (type=%s)",
+                         oid, current_value, type(current_value).__name__ if current_value is not None else "None")
+
+            # Always reassign, even if None (to ensure COV triggers)
+            try:
                 obj.presentValue = current_value  # Trigger COV
-                _LOGGER.debug("BACnet->BACnet COV-Trigger: %r PV=%r", oid, current_value)
+                _LOGGER.debug("BACnet->BACnet COV-Trigger: %r PV=%r -> COV triggered", oid, current_value)
+            except Exception as e:
+                _LOGGER.error("Failed to trigger COV for %r: %s", oid, e, exc_info=True)
+                raise
 
             mapping = self.publisher.map_by_oid.get(oid)
             if not mapping:
+                _LOGGER.debug("WriteProperty: No mapping found for %r, skipping HA forwarding", oid)
                 return
 
             # Don't block: HA service call as task
             asyncio.create_task(self.publisher.forward_to_ha_from_bacnet(mapping, current_value))
-        except Exception:
-            _LOGGER.debug("Hook do_WritePropertyRequest: Forwarding to HA failed.", exc_info=True)
+        except Exception as e:
+            _LOGGER.error("Hook do_WritePropertyRequest failed for %r: %s",
+                         getattr(apdu, 'objectIdentifier', 'unknown'), e, exc_info=True)
 
 # -------------------------- Server (HA Wrapper) -----------------------------
 
