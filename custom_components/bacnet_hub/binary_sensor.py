@@ -8,7 +8,7 @@ from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
 )
 from homeassistant.config_entries import ConfigEntry
-# STATE_ON nutzen wir für saubere on/off-Erkennung
+# We use STATE_ON for clean on/off detection
 from homeassistant.const import STATE_ON, EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
@@ -45,11 +45,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
 
 class BacnetPublishedBinarySensor(BinarySensorEntity):
-    """BACnet veröffentlichter Binary-Sensor.
-    - Spiegelt Zustand 1:1 von der Quell-Entity (STATE_ON -> is_on).
-    - device_class wird nach Möglichkeit gespiegelt (Fallback POWER für switch/input_boolean).
-    - Icon wird, falls nicht vorgegeben, für Lichter sinnvoll gesetzt.
-    - entity_category ist IMMER 'diagnostic'.
+    """BACnet published binary sensor.
+    - Mirrors state 1:1 from source entity (STATE_ON -> is_on).
+    - device_class is mirrored if possible (fallback POWER for switch/input_boolean).
+    - Icon is sensibly set for lights if not predefined.
+    - entity_category is ALWAYS 'diagnostic'.
     """
 
     _attr_should_poll = False
@@ -69,25 +69,25 @@ class BacnetPublishedBinarySensor(BinarySensorEntity):
             manufacturer="magliaral",
             model="BACnet Hub",
         )
-        # werden dynamisch gefüllt
+        # Will be filled dynamically
         self._attr_device_class: Optional[BinarySensorDeviceClass] = None
         self._attr_entity_category: Optional[EntityCategory] = EntityCategory.DIAGNOSTIC
         self._attr_icon: Optional[str] = None
-        self._attr_is_on: Optional[bool] = None  # initial unbekannt
+        self._attr_is_on: Optional[bool] = None  # initially unknown
 
     async def async_added_to_hass(self) -> None:
-        # Sofort versuchen …
+        # Try immediately …
         self._pull_from_source()
 
-        # … und falls die Quelle beim Start noch nicht existiert, nach HA-Start nochmal ziehen
+        # … and if source doesn't exist at start, pull again after HA start
         if not self.hass.states.get(self._source):
             @callback
             def _late_initial_pull(_):
                 self._pull_from_source()
-                # listen_once hat gefeuert -> weitere manuelle Abmeldung verhindern
+                # listen_once has fired -> prevent further manual unsubscribe
                 self._late_unsub = None
 
-            # WICHTIG: unsubscribe NICHT über async_on_remove registrieren
+            # IMPORTANT: do NOT register unsubscribe via async_on_remove
             self._late_unsub = self.hass.bus.async_listen_once(
                 EVENT_HOMEASSISTANT_STARTED, _late_initial_pull
             )
@@ -109,7 +109,7 @@ class BacnetPublishedBinarySensor(BinarySensorEntity):
                 pass
             self._remove_listener = None
 
-        # late-once listener nur abmelden, wenn er noch existiert
+        # Only unsubscribe late-once listener if it still exists
         if self._late_unsub is not None:
             try:
                 self._late_unsub()
@@ -121,25 +121,25 @@ class BacnetPublishedBinarySensor(BinarySensorEntity):
     def _pull_from_source(self) -> None:
         st = self.hass.states.get(self._source)
         if not st:
-            # Quelle (noch) nicht da: Kategorie bleibt diagnostic,
-            # Icon/DeviceClass leeren, vorhandenen bool-Zustand NICHT auf None zurücksetzen.
+            # Source (not yet) available: category stays diagnostic,
+            # clear icon/DeviceClass, do NOT reset existing bool state to None.
             self._attr_device_class = None
             self._attr_icon = None
             self._attr_entity_category = EntityCategory.DIAGNOSTIC
             self.async_write_ha_state()
             return
 
-        # Domain der Quelle (z.B. "light", "switch", ...)
+        # Domain of source (e.g. "light", "switch", ...)
         domain = st.entity_id.split(".", 1)[0]
 
-        # Name anpassen
+        # Adjust name
         src_name = st.name or self._source
         self._attr_name = f"(BACnet BV-{self._instance}) {src_name}"
 
-        # Zustand exakt übernehmen (on/off)
+        # Mirror state exactly (on/off)
         self._attr_is_on = (st.state == STATE_ON)
 
-        # device_class exakt spiegeln, sofern vorhanden und gültig
+        # Mirror device_class exactly if present and valid
         self._attr_device_class = None
         src_dc = st.attributes.get("device_class")
         if isinstance(src_dc, str) and src_dc:
@@ -148,25 +148,25 @@ class BacnetPublishedBinarySensor(BinarySensorEntity):
             except ValueError:
                 self._attr_device_class = None
 
-        # Fallback für einfache bool-Domains, wenn keine device_class existiert
+        # Fallback for simple bool domains when no device_class exists
         if not self._attr_device_class:
             if domain in ("switch", "input_boolean"):
                 self._attr_device_class = BinarySensorDeviceClass.POWER
 
-        # ---- ICON-LOGIK ------------------------------------------------------
-        # 1) Icon der Quelle 1:1 übernehmen (falls explizit gesetzt)
+        # ---- ICON LOGIC ------------------------------------------------------
+        # 1) Mirror icon from source 1:1 (if explicitly set)
         src_icon = st.attributes.get("icon")
         if src_icon:
             self._attr_icon = src_icon
         else:
-            # 2) Fallback: Quelle ist light -> Glühbirne je nach Zustand
+            # 2) Fallback: source is light -> lightbulb depending on state
             if domain == "light":
                 self._attr_icon = "mdi:lightbulb" if self._attr_is_on else "mdi:lightbulb-outline"
             else:
                 self._attr_icon = None
         # ---------------------------------------------------------------------
 
-        # entity_category NICHT mehr spiegeln – bleibt immer diagnostic
+        # Do NOT mirror entity_category anymore – always stays diagnostic
         self._attr_entity_category = EntityCategory.DIAGNOSTIC
 
         self.async_write_ha_state()

@@ -9,7 +9,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-# StateType ist der zulässige Typ für native_value (str|int|float|None)
+# StateType is the allowed type for native_value (str|int|float|None)
 from homeassistant.helpers.typing import StateType
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.const import (
@@ -53,12 +53,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
 
 class BacnetPublishedSensor(SensorEntity):
-    """BACnet veröffentlichter Sensor, der Metadaten 1:1 von der Quelle spiegelt.
+    """BACnet published sensor that mirrors metadata 1:1 from the source.
 
-    - Zustand/Value wird aus der Quelle übernommen.
-    - device_class/state_class werden, sofern gültig, gespiegelt.
-    - Icon wird, falls gesetzt, gespiegelt.
-    - entity_category ist IMMER 'diagnostic'.
+    - State/Value is taken from the source.
+    - device_class/state_class are mirrored if valid.
+    - Icon is mirrored if set.
+    - entity_category is ALWAYS 'diagnostic'.
     """
 
     _attr_should_poll = False
@@ -87,7 +87,7 @@ class BacnetPublishedSensor(SensorEntity):
             model="BACnet Hub",
         )
 
-        # dynamische Attribute
+        # dynamic attributes
         self._attr_native_unit_of_measurement: Optional[str] = None
         self._attr_device_class: Optional[SensorDeviceClass] = None
         self._attr_state_class: Optional[SensorStateClass] = None
@@ -95,27 +95,27 @@ class BacnetPublishedSensor(SensorEntity):
         self._attr_entity_category: Optional[EntityCategory] = EntityCategory.DIAGNOSTIC
         self._attr_native_value: Optional[StateType] = None
 
-        # für evtl. spätere Schreibfunktion (NumberEntity) schon behalten
+        # Keep for possible future write function (NumberEntity)
         self._writable = writable
 
     async def async_added_to_hass(self) -> None:
-        # initial
+        # Initial
         self._pull_from_source()
 
-        # Falls Quelle beim Start noch nicht geladen ist, nach HA-Start erneut ziehen
+        # If source not loaded at start, pull again after HA start
         if not self.hass.states.get(self._source):
             @callback
             def _late_initial_pull(_):
                 self._pull_from_source()
-                # listen_once hat gefeuert -> weitere manuelle Abmeldung verhindern
+                # listen_once has fired -> prevent further manual unsubscribe
                 self._late_unsub = None
 
-            # WICHTIG: unsubscribe NICHT über async_on_remove registrieren
+            # IMPORTANT: do NOT register unsubscribe via async_on_remove
             self._late_unsub = self.hass.bus.async_listen_once(
                 EVENT_HOMEASSISTANT_STARTED, _late_initial_pull
             )
 
-        # Live-Updates aus der Quelle
+        # Live updates from source
         @callback
         def _handle(evt):
             if evt.data.get("entity_id") != self._source:
@@ -132,7 +132,7 @@ class BacnetPublishedSensor(SensorEntity):
                 pass
             self._remove_listener = None
 
-        # late-once listener nur abmelden, wenn er noch existiert
+        # Only unsubscribe late-once listener if it still exists
         if self._late_unsub is not None:
             try:
                 self._late_unsub()
@@ -144,10 +144,10 @@ class BacnetPublishedSensor(SensorEntity):
     def _pull_from_source(self) -> None:
         st = self.hass.states.get(self._source)
         if not st:
-            # Quelle vorübergehend weg:
-            # - Kategorie bleibt diagnostic
-            # - Metadaten leeren
-            # - letzten Wert NICHT zwangsweise auf None setzen (stabilere Kachel)
+            # Source temporarily gone:
+            # - Category stays diagnostic
+            # - Clear metadata
+            # - Do NOT forcibly set last value to None (more stable tile)
             self._attr_device_class = None
             self._attr_state_class = None
             self._attr_icon = None
@@ -155,16 +155,16 @@ class BacnetPublishedSensor(SensorEntity):
             self.async_write_ha_state()
             return
 
-        # Name aus Quelle übernehmen
+        # Take name from source
         src_name = st.name or self._source
         friendly_name = st.attributes.get("friendly_name") or src_name
         self._attr_name = f"(BACnet AV-{self._instance}) {friendly_name}"
 
-        # Unit exakt spiegeln
+        # Mirror unit exactly
         unit = st.attributes.get("unit_of_measurement")
         self._attr_native_unit_of_measurement = unit
 
-        # device_class/state_class exakt übernehmen, wenn vorhanden/valide
+        # Take device_class/state_class exactly if present/valid
         self._attr_device_class = None
         self._attr_state_class = None
         src_dc = st.attributes.get("device_class")
@@ -182,16 +182,16 @@ class BacnetPublishedSensor(SensorEntity):
             except ValueError:
                 self._attr_state_class = None
 
-        # Icon exakt übernehmen, falls explizit gesetzt
+        # Mirror icon exactly if explicitly set
         self._attr_icon = st.attributes.get("icon") or None
 
-        # entity_category NICHT mehr spiegeln – bleibt immer diagnostic
+        # Do NOT mirror entity_category anymore – always stays diagnostic
         self._attr_entity_category = EntityCategory.DIAGNOSTIC
 
-        # Wert übernehmen:
+        # Take value:
         # - unknown/unavailable → None
-        # - Wenn Einheit vorhanden oder numerische device_class → float versuchen
-        # - sonst Rohwert (StateType) übernehmen
+        # - If unit present or numeric device_class → try float
+        # - otherwise take raw value (StateType)
         state = st.state
         if state in (STATE_UNKNOWN, STATE_UNAVAILABLE):
             native_value: StateType = None
@@ -210,7 +210,7 @@ class BacnetPublishedSensor(SensorEntity):
                 }):
                     native_value = float(state)  # type: ignore[assignment]
                 else:
-                    native_value = state  # kann str/int/float sein
+                    native_value = state  # can be str/int/float
             except Exception:
                 native_value = None
 
