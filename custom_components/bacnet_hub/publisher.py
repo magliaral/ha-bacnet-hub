@@ -304,8 +304,8 @@ class BacnetPublisher:
 
     async def _apply_from_ha(self, obj: Any, value: Any) -> None:
         """
-        Schreibt presentValue über denselben Service-Entry-Point wie externe Clients
-        (WritePropertyRequest) → COV-Mechanismus wird sicher bedient.
+        Schreibt presentValue direkt ins lokale Objekt.
+        Direkte Zuweisung triggert automatisch den COV-Mechanismus in bacpypes3.
         Vermeidet unnötige Writes, wenn sich der Wert nicht ändern würde.
         """
         oid = getattr(obj, "objectIdentifier", None)
@@ -316,11 +316,9 @@ class BacnetPublisher:
         if isinstance(obj, AnalogValueObject):
             v = _as_float(value)
             desired = v
-            pv_any = AnyAtomic(Real(v))
         else:
             on = _truthy(value)
             desired = BinaryPV("active" if on else "inactive")
-            pv_any = AnyAtomic(desired)
 
         # Debug-Logging: Zeige gewünschten Wert
         _LOGGER.debug("HA->BACnet: %r State=%r -> desired=%r (type=%s)",
@@ -331,6 +329,7 @@ class BacnetPublisher:
             current = getattr(obj, "presentValue", None)
             if isinstance(obj, AnalogValueObject):
                 if current is not None and float(current) == float(desired):
+                    _LOGGER.debug("HA->BACnet: %r Wert unverändert (%r), überspringe Write", oid, current)
                     return
             else:
                 if current == desired or str(current) == str(desired):
@@ -339,18 +338,14 @@ class BacnetPublisher:
         except Exception:
             pass
 
-        # Echo-Guard (falls unser eigener WP später via App->HA zurückläuft)
+        # Echo-Guard (falls unser eigener Write später via App->HA zurückläuft)
         object.__setattr__(obj, "_ha_guard", True)
         try:
-            req = WritePropertyRequest(
-                objectIdentifier=oid,
-                propertyIdentifier="presentValue",
-                propertyValue=pv_any,
-            )
-            await self.app.do_WritePropertyRequest(req)
-            _LOGGER.debug("HA->BACnet(WP erfolg): %r PV=%r", oid, getattr(obj, "presentValue", None))
+            # Direkte Zuweisung triggert COV automatisch (bacpypes3-Standard)
+            obj.presentValue = desired
+            _LOGGER.debug("HA->BACnet(direkt): %r PV=%r -> %r", oid, current, desired)
         except Exception as e:
-            _LOGGER.error("HA->BACnet(WP fehlgeschlagen): %r Fehler: %s", oid, e, exc_info=True)
+            _LOGGER.error("HA->BACnet(Zuweisung fehlgeschlagen): %r Fehler: %s", oid, e, exc_info=True)
             raise
         finally:
             object.__setattr__(obj, "_ha_guard", False)
