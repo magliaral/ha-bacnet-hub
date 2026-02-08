@@ -1,0 +1,110 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (z.B. v0.1.3)'
+        required: true
+        type: string
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Get Version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "version_number=${VERSION#v}" >> $GITHUB_OUTPUT
+
+      - name: Validate Version
+        run: |
+          MANIFEST_VERSION=$(jq -r '.version' custom_components/bacnet_hub/manifest.json)
+          TAG_VERSION="${{ steps.version.outputs.version_number }}"
+
+          echo "Manifest Version: ${MANIFEST_VERSION}"
+          echo "Tag Version: ${TAG_VERSION}"
+
+          if [ "${MANIFEST_VERSION}" != "${TAG_VERSION}" ]; then
+            echo "⚠️ WARNUNG: Version im manifest.json (${MANIFEST_VERSION}) stimmt nicht mit Tag (${TAG_VERSION}) überein!"
+            echo "Bitte manifest.json aktualisieren vor dem Release."
+            exit 1
+          fi
+
+      - name: Create ZIP Archive
+        run: |
+          cd custom_components
+          zip -r ../bacnet_hub-${{ steps.version.outputs.version }}.zip bacnet_hub/ \
+            -x "*.pyc" \
+            -x "*__pycache__*" \
+            -x "*.git*" \
+            -x "*.DS_Store"
+          cd ..
+          echo "✅ ZIP erstellt: bacnet_hub-${{ steps.version.outputs.version }}.zip"
+
+      - name: Generate Release Notes
+        id: release_notes
+        run: |
+          cat > release_notes.md << 'EOF'
+          ## BACnet Hub ${{ steps.version.outputs.version }}
+
+          ### Installation via HACS
+
+          1. In HACS: ••• → Custom repositories
+          2. Repository URL hinzufügen: `https://github.com/magliaral/ha-bacnet-hub`
+          3. Typ: Integration
+          4. Installation starten
+
+          ### Manuelle Installation
+
+          1. ZIP-Datei herunterladen
+          2. Entpacken nach `config/custom_components/bacnet_hub/`
+          3. Home Assistant neu starten
+
+          ### Dokumentation
+
+          Siehe [README.md](https://github.com/magliaral/ha-bacnet-hub/blob/main/README.md) für vollständige Dokumentation.
+
+          ---
+
+          **Changelog**: Siehe [Commits seit letztem Release](https://github.com/magliaral/ha-bacnet-hub/compare/${{ steps.version.outputs.version }}...main)
+          EOF
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: BACnet Hub ${{ steps.version.outputs.version }}
+          body_path: release_notes.md
+          files: |
+            bacnet_hub-${{ steps.version.outputs.version }}.zip
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Summary
+        run: |
+          echo "## ✅ Release erfolgreich erstellt!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Manifest Version:** $(jq -r '.version' custom_components/bacnet_hub/manifest.json)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📦 ZIP-Datei wurde als Release-Asset hochgeladen" >> $GITHUB_STEP_SUMMARY

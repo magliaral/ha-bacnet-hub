@@ -180,8 +180,8 @@ class BacnetPublisher:
             self.map_by_oid[oid] = m
 
             _LOGGER.info(
-                "Published %s:%s ⇐ %s (desc=%s units=%s)",
-                oid[0], oid[1], ent, friendly,
+                "Published %s:%s ⇐ %s (name=%r, desc=%r, units=%s)",
+                oid[0], oid[1], ent, getattr(obj, "objectName", None), getattr(obj, "description", None),
                 getattr(obj, "units", None) if hasattr(obj, "units") else None,
             )
 
@@ -207,6 +207,27 @@ class BacnetPublisher:
         self.by_oid.clear()
         self.map_by_oid.clear()
         _LOGGER.info("BacnetPublisher gestoppt")
+
+    async def update_descriptions(self) -> None:
+        """Aktualisiert die description aller BACnet-Objekte mit aktuellen friendly_names."""
+        for ent, obj in self.by_entity.items():
+            st = self.hass.states.get(ent)
+            if not st:
+                continue
+
+            # Aktuellen friendly_name holen
+            new_friendly = st.name or st.attributes.get("friendly_name") or ent
+
+            # Aktuelle description prüfen
+            current_desc = getattr(obj, "description", None)
+
+            if new_friendly != current_desc:
+                try:
+                    obj.description = new_friendly
+                    _LOGGER.debug("Description aktualisiert für %s: %r -> %r",
+                                ent, current_desc, new_friendly)
+                except Exception as e:
+                    _LOGGER.debug("Konnte description für %s nicht aktualisieren: %s", ent, e)
 
     # --- HA → BACnet (über WP-Service) ---
 
@@ -249,6 +270,10 @@ class BacnetPublisher:
             desired = BinaryPV("active" if on else "inactive")
             pv_any = AnyAtomic(desired)
 
+        # Debug-Logging: Zeige gewünschten Wert
+        _LOGGER.debug("HA->BACnet: %r State=%r -> desired=%r (type=%s)",
+                      oid, value, desired, type(desired).__name__)
+
         # ✅ Frühzeitiger Exit, wenn keine Änderung
         try:
             current = getattr(obj, "presentValue", None)
@@ -256,7 +281,8 @@ class BacnetPublisher:
                 if current is not None and float(current) == float(desired):
                     return
             else:
-                if current == desired:
+                if current == desired or str(current) == str(desired):
+                    _LOGGER.debug("HA->BACnet: %r Wert unverändert (%r), überspringe Write", oid, current)
                     return
         except Exception:
             pass
@@ -270,10 +296,12 @@ class BacnetPublisher:
                 propertyValue=pv_any,
             )
             await self.app.do_WritePropertyRequest(req)
+            _LOGGER.debug("HA->BACnet(WP erfolg): %r PV=%r", oid, getattr(obj, "presentValue", None))
+        except Exception as e:
+            _LOGGER.error("HA->BACnet(WP fehlgeschlagen): %r Fehler: %s", oid, e, exc_info=True)
+            raise
         finally:
             object.__setattr__(obj, "_ha_guard", False)
-
-        _LOGGER.debug("HA->BACnet(WP svc): %r PV -> %r", oid, getattr(obj, "presentValue", None))
 
     # --- BACnet → HA (von HubApp aufgerufen) ---
 

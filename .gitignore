@@ -205,3 +205,33 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# ===== Home Assistant / Custom Integration spezifisch =====
+# Claude Code Dokumentation (projekt-spezifisch)
+CLAUDE.md
+
+# Home Assistant Konfiguration & Datenbanken
+home-assistant.log
+home-assistant_v2.db*
+.HA_VERSION
+.storage/
+secrets.yaml
+
+# HACS
+.DS_Store
+
+# Temporäre/Test-Dateien
+*.tmp
+*.bak
+*.swp
+*~
+
+# IDE spezifische Dateien (falls noch nicht vorhanden)
+.idea/
+.vscode/
+*.code-workspace
+
+# OS spezifisch
+.DS_Store
+Thumbs.db
+desktop.ini

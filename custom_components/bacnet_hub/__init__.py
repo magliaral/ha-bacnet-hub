@@ -100,6 +100,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # 1) Sofortige (Best-Effort) Aktualisierung der friendly_names
     updated_now = _refresh_friendly_names_inplace(hass, published)
+    _LOGGER.debug("Initiale friendly_name sync: %d Namen aktualisiert",
+                  sum(1 for m in published if m.get("friendly_name")))
 
     # Cache für Plattformen
     data[KEY_PUBLISHED_CACHE][entry.entry_id] = published
@@ -128,6 +130,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     hass.data[DOMAIN][KEY_SUPPRESS_RELOAD] = True
                     await hass.config_entries.async_update_entry(entry, options=new_options)
                     _LOGGER.info("friendly_name nach Start erneut aktualisiert (Entry %s).", entry.entry_id)
+
+                # Description in BACnet-Objekten aktualisieren
+                server = hass.data[DOMAIN][KEY_SERVERS].get(entry.entry_id)
+                if server and server.publisher:
+                    await server.publisher.update_descriptions()
+                    _LOGGER.debug("BACnet descriptions aktualisiert nach friendly_name sync")
         except Exception:
             _LOGGER.debug("Late friendly_name sync fehlgeschlagen.", exc_info=True)
 

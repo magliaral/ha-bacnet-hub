@@ -1,0 +1,97 @@
+name: Validate
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  validate:
+    name: Validate Integration
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Check manifest.json
+        run: |
+          echo "Validiere manifest.json..."
+          if ! jq empty custom_components/bacnet_hub/manifest.json; then
+            echo "❌ manifest.json ist ungültig!"
+            exit 1
+          fi
+
+          VERSION=$(jq -r '.version' custom_components/bacnet_hub/manifest.json)
+          DOMAIN=$(jq -r '.domain' custom_components/bacnet_hub/manifest.json)
+
+          echo "✅ manifest.json ist gültig"
+          echo "Domain: ${DOMAIN}"
+          echo "Version: ${VERSION}"
+
+          if [ "${DOMAIN}" != "bacnet_hub" ]; then
+            echo "❌ Domain sollte 'bacnet_hub' sein, ist aber '${DOMAIN}'"
+            exit 1
+          fi
+
+      - name: Check translations
+        run: |
+          echo "Validiere translations..."
+          if ! jq empty custom_components/bacnet_hub/strings.json; then
+            echo "❌ strings.json ist ungültig!"
+            exit 1
+          fi
+
+          for file in custom_components/bacnet_hub/translations/*.json; do
+            if [ -f "$file" ]; then
+              echo "Prüfe $file..."
+              if ! jq empty "$file"; then
+                echo "❌ $file ist ungültig!"
+                exit 1
+              fi
+            fi
+          done
+
+          echo "✅ Alle Translation-Dateien sind gültig"
+
+      - name: Check Python Syntax
+        run: |
+          echo "Prüfe Python-Syntax..."
+          python -m py_compile custom_components/bacnet_hub/*.py
+          python -m py_compile custom_components/bacnet_hub/helpers/*.py
+          echo "✅ Python-Syntax ist korrekt"
+
+      - name: Check Required Files
+        run: |
+          echo "Prüfe erforderliche Dateien..."
+          REQUIRED_FILES=(
+            "custom_components/bacnet_hub/__init__.py"
+            "custom_components/bacnet_hub/manifest.json"
+            "custom_components/bacnet_hub/strings.json"
+            "README.md"
+            "LICENSE"
+          )
+
+          for file in "${REQUIRED_FILES[@]}"; do
+            if [ ! -f "$file" ]; then
+              echo "❌ Erforderliche Datei fehlt: $file"
+              exit 1
+            fi
+          done
+
+          echo "✅ Alle erforderlichen Dateien vorhanden"
+
+      - name: Summary
+        run: |
+          echo "## ✅ Validierung erfolgreich!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- manifest.json: ✅" >> $GITHUB_STEP_SUMMARY
+          echo "- translations: ✅" >> $GITHUB_STEP_SUMMARY
+          echo "- Python-Syntax: ✅" >> $GITHUB_STEP_SUMMARY
+          echo "- Erforderliche Dateien: ✅" >> $GITHUB_STEP_SUMMARY
