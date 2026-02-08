@@ -40,10 +40,10 @@ _addr_re = re.compile(
 )
 
 def _detect_local_ip() -> Optional[str]:
-    """Ermittle bevorzugte IPv4 des Hosts (z. B. 192.168.x.x)."""
+    """Determine preferred IPv4 of the host (e.g. 192.168.x.x)."""
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # Ziel egal, wird nicht gesendet – dient nur zur Routenwahl.
+        # Target doesn't matter, won't be sent – only serves for route selection.
         s.connect(("8.8.8.8", 80))
         ip = s.getsockname()[0]
         s.close()
@@ -59,7 +59,7 @@ def _default_address() -> str:
     return f"{ip}/{DEFAULT_PREFIX}:{DEFAULT_PORT}"
 
 def _validate_bacnet_address(addr: str) -> Optional[str]:
-    """Valide IPv4[ /prefix ][ :port ]. Gibt None bei OK, sonst Fehlercode."""
+    """Validate IPv4[ /prefix ][ :port ]. Returns None if OK, otherwise error code."""
     if not addr or not isinstance(addr, str):
         return "invalid_address"
     m = _addr_re.match(addr)
@@ -95,22 +95,22 @@ def _validate_bacnet_address(addr: str) -> Optional[str]:
     return None
 
 def _entity_friendly_name(hass: HomeAssistant, entity_id: str) -> str:
-    """Liefert den im Frontend sichtbaren Anzeigenamen."""
+    """Returns the display name visible in the frontend."""
     st = hass.states.get(entity_id)
     if not st:
         return entity_id
-    # HA >= 2024: State.name ist bereits der Human Name (fällt auf friendly_name zurück)
+    # HA >= 2024: State.name is already the Human Name (falls back to friendly_name)
     if getattr(st, "name", None):
         return str(st.name)
     return str(st.attributes.get("friendly_name") or entity_id)
 
 def _label_for_mapping(hass: HomeAssistant, m: Dict[str, Any]) -> str:
-    """Schöne Zeile für die Übersicht im Publish-Menü."""
+    """Nice line for the overview in the Publish menu."""
     ent = m.get("entity_id") or "?"
     obj_type = m.get("object_type", "?")
     inst = m.get("instance", "?")
     writable = " writable" if m.get("writable") else ""
-    # Friendly Name: bevorzugt aus Config, sonst live bestimmen
+    # Friendly Name: preferably from config, otherwise determine live
     fr = m.get("friendly_name") or _entity_friendly_name(hass, ent)
     return f"{obj_type}:{inst} ⇐ {ent} ({fr}){writable}"
 
@@ -132,11 +132,11 @@ def _is_numeric_state(state: Optional[State]) -> bool:
 
 def _determine_object_type_and_units(hass: HomeAssistant, entity_id: str) -> tuple[str, Optional[str]]:
     """
-    Bestimme object_type (analogValue|binaryValue) + units (falls vorhanden)
-    aus der Entität.
-    Logik:
-      - Wenn Domain 'binary' typisch → binaryValue
-      - Sonst: hat unit_of_measurement ODER state numerisch → analogValue
+    Determine object_type (analogValue|binaryValue) + units (if available)
+    from the entity.
+    Logic:
+      - If domain is typically 'binary' → binaryValue
+      - Otherwise: has unit_of_measurement OR state numeric → analogValue
       - Fallback → binaryValue
     """
     domain = (entity_id.split(".", 1)[0] if "." in entity_id else "").lower()
@@ -149,7 +149,7 @@ def _determine_object_type_and_units(hass: HomeAssistant, entity_id: str) -> tup
     if uom or _is_numeric_state(st):
         return "analogValue", (str(uom) if uom is not None else None)
 
-    # String-Zustände wie "on/off", "open/closed" → binary
+    # String states like "on/off", "open/closed" → binary
     if st:
         s = str(st.state).strip().lower()
         if s in ("on", "off", "open", "closed", "true", "false", "active", "inactive"):
@@ -160,7 +160,7 @@ def _determine_object_type_and_units(hass: HomeAssistant, entity_id: str) -> tup
 # -------------------- Config Flow (create entry) --------------------
 
 class BacnetHubConfigFlow(ConfigFlow, domain=DOMAIN):
-    """Setup-Flow: fragt 'instance' und 'address' ab und speichert sie in entry.data."""
+    """Setup flow: asks for 'instance' and 'address' and saves them in entry.data."""
     VERSION = 1
 
     async def async_step_user(
@@ -171,11 +171,11 @@ class BacnetHubConfigFlow(ConfigFlow, domain=DOMAIN):
             "min": f"{MIN_INSTANCE}",
             "max": "4194302",
             "default": f"{DEFAULT_INSTANCE}",
-            "addr_hint": "z.B. 192.168.31.36/24:47808",
+            "addr_hint": "e.g. 192.168.31.36/24:47808",
         }
 
         if user_input is not None:
-            # Instance prüfen
+            # Check instance
             try:
                 inst = int(user_input.get("instance", DEFAULT_INSTANCE))
                 if inst < MIN_INSTANCE or inst > MAX_INSTANCE:
@@ -183,7 +183,7 @@ class BacnetHubConfigFlow(ConfigFlow, domain=DOMAIN):
             except Exception:
                 errors["instance"] = "invalid_int"
 
-            # Address prüfen
+            # Check address
             addr = (user_input.get("address") or "").strip()
             if not addr:
                 addr = _default_address()
@@ -223,19 +223,19 @@ class BacnetHubConfigFlow(ConfigFlow, domain=DOMAIN):
 # -------------------- Options Flow --------------------
 
 class BacnetHubOptionsFlow(OptionsFlow):
-    """Options: Menü mit 2 Bereichen: 'device' & 'publish'."""
+    """Options: Menu with 2 sections: 'device' & 'publish'."""
     def __init__(self, config_entry) -> None:
         self._entry = config_entry
         self._opts: Dict[str, Any] = dict(config_entry.options or {})
 
     async def async_step_init(self, user_input: Optional[Dict] = None) -> ConfigFlowResult:
-        # Menü anzeigen
+        # Show menu
         return self.async_show_menu(
             step_id="init",
             menu_options=["device", "publish"],
         )
 
-    # ---- Geräteeinstellungen (instance + address) ----
+    # ---- Device settings (instance + address) ----
     async def async_step_device(self, user_input: Optional[Dict] = None) -> ConfigFlowResult:
         current_instance = _as_int(
             self._opts.get("instance", self._entry.data.get("instance", DEFAULT_INSTANCE)),
@@ -247,7 +247,7 @@ class BacnetHubOptionsFlow(OptionsFlow):
             "min": f"{MIN_INSTANCE}",
             "max": "4194302",
             "current": f"{current_instance}",
-            "addr_hint": "z.B. 192.168.31.36/24:47808",
+            "addr_hint": "e.g. 192.168.31.36/24:47808",
         }
 
         errors: Dict[str, str] = {}
@@ -283,7 +283,7 @@ class BacnetHubOptionsFlow(OptionsFlow):
             description_placeholders=placeholders,
         )
 
-    # ---- Publish: Übersicht + Untermenü ----
+    # ---- Publish: Overview + submenu ----
     async def async_step_publish(self, user_input: Optional[Dict] = None) -> ConfigFlowResult:
         published: List[Dict[str, Any]] = list(self._opts.get("published", []))
         lines: List[str] = []
@@ -293,7 +293,7 @@ class BacnetHubOptionsFlow(OptionsFlow):
             except Exception:
                 pass
 
-        desc = "\n".join(lines) if lines else "Keine Mappings vorhanden."
+        desc = "\n".join(lines) if lines else "No mappings available."
         return self.async_show_menu(
             step_id="publish",
             menu_options=["publish_add", "publish_edit", "publish_delete"],
@@ -311,37 +311,37 @@ class BacnetHubOptionsFlow(OptionsFlow):
             if not entity_id or "." not in entity_id:
                 errors["entity_id"] = "invalid_entity"
             else:
-                # Typ & Units bestimmen
+                # Determine type & units
                 obj_type, units = _determine_object_type_and_units(self.hass, entity_id)
-                # Friendly Name ermitteln und mitspeichern
+                # Determine and save friendly name
                 friendly = _entity_friendly_name(self.hass, entity_id)
 
-                # Zähler laden/initialisieren
+                # Load/initialize counter
                 counters: Dict[str, int] = dict(self._opts.get("counters", {}))
                 next_idx = int(counters.get(obj_type, 0))
 
-                # Mapping erstellen (inkl. friendly_name)
+                # Create mapping (including friendly_name)
                 new_map = {
                     "entity_id": entity_id,
                     "object_type": obj_type,
                     "instance": next_idx,
                     "units": units,
                     "writable": writable,
-                    "friendly_name": friendly,   # <-- NEU
+                    "friendly_name": friendly,   # <-- NEW
                 }
 
                 published: List[Dict[str, Any]] = list(self._opts.get("published", []))
                 published.append(new_map)
                 self._opts["published"] = published
 
-                # Zähler hochzählen (kein Zurücksetzen auf Lücken)
+                # Increment counter (no reset to gaps)
                 counters[obj_type] = next_idx + 1
                 self._opts["counters"] = counters
 
                 return self.async_create_entry(title="", data=self._opts)
 
         schema = vol.Schema({
-            vol.Required("entity_id"): sel.EntitySelector(sel.EntitySelectorConfig()),  # frei wählbar
+            vol.Required("entity_id"): sel.EntitySelector(sel.EntitySelectorConfig()),  # freely selectable
             vol.Required("writable", default=False): sel.BooleanSelector(),
         })
         return self.async_show_form(
@@ -350,14 +350,14 @@ class BacnetHubOptionsFlow(OptionsFlow):
             errors=errors,
         )
 
-    # ---- Publish → Edit (Auswahl) ----
+    # ---- Publish → Edit (Selection) ----
     async def async_step_publish_edit(self, user_input: Optional[Dict] = None) -> ConfigFlowResult:
         published: List[Dict[str, Any]] = list(self._opts.get("published", []))
         if not published:
-            # nichts zu bearbeiten → zurück zur Übersicht
+            # nothing to edit → back to overview
             return await self.async_step_publish()
 
-        # Options für Selector
+        # Options for selector
         options = {str(i): _label_for_mapping(self.hass, m) for i, m in enumerate(published)}
 
         if user_input is not None and "sel" in user_input:
@@ -386,7 +386,7 @@ class BacnetHubOptionsFlow(OptionsFlow):
         current = dict(published[idx])
         cur_entity = current.get("entity_id", "")
         cur_writable = bool(current.get("writable", False))
-        # Friendly Name ggf. aus Mapping, sonst live bestimmen (Migration alter Einträge)
+        # Friendly Name from mapping if available, otherwise determine live (migration of old entries)
         cur_friendly = current.get("friendly_name") or _entity_friendly_name(self.hass, cur_entity)
 
         errors: Dict[str, str] = {}
@@ -398,10 +398,10 @@ class BacnetHubOptionsFlow(OptionsFlow):
             if not new_entity or "." not in new_entity:
                 errors["entity_id"] = "invalid_entity"
             else:
-                # Typ/Instance/Units BEIBEHALTEN (keine Verschiebungen!)
+                # KEEP type/instance/units (no shifts!)
                 current["entity_id"] = new_entity
                 current["writable"] = new_writable
-                # Friendly aktualisieren (falls leer, neu ableiten)
+                # Update friendly (if empty, derive new)
                 current["friendly_name"] = new_friendly or _entity_friendly_name(self.hass, new_entity)
 
                 published[idx] = current
@@ -431,7 +431,7 @@ class BacnetHubOptionsFlow(OptionsFlow):
             idx = str(user_input.get("sel"))
             if idx in options:
                 i = int(idx)
-                # Entfernen, Zähler NICHT zurücksetzen (keine Verschiebungen)
+                # Remove, do NOT reset counter (no shifts)
                 published.pop(i)
                 self._opts["published"] = published
                 return self.async_create_entry(title="", data=self._opts)
