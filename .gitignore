@@ -235,3 +235,8 @@ secrets.yaml
 .DS_Store
 Thumbs.db
 desktop.ini
+
+
+# temp / recovery scripts
+*.ps1
+*.cmd
