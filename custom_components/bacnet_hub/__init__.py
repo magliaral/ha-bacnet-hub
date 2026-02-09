@@ -155,10 +155,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     dev_reg.async_get_or_create(
         config_entry_id=entry.entry_id,
         identifiers={(DOMAIN, entry.entry_id)},
-        manufacturer="Home Assistant",
-        model="BACpypes 3",
+        manufacturer="magliaral",
+        model="BACnet Hub",
         name="BACnet Hub",
-        sw_version=str(merged_config.get("application_software_version", "0.1.1")),
+        sw_version=server.firmware_revision or "unknown",
+        configuration_url="https://github.com/magliaral/ha-bacnet-hub",
     )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

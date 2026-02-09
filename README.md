@@ -41,7 +41,7 @@ Built with **bacpypes3**.
 3. Restart Home Assistant.
 4. Go to **Settings → Devices & Services → Add Integration → BACnet Hub** and complete the dialog.
 
-> HACS expects a `manifest.json` with standard keys (domain, version, …). See HACS docs if needed. :contentReference[oaicite:2]{index=2}
+> HACS expects a `manifest.json` with standard keys (domain, version, …). See [HACS documentation](https://hacs.xyz/docs/publish/integration) for details.
 
 ### Manual
 
@@ -111,7 +111,7 @@ If **writable = true**, writes to `presentValue` are translated to HA service ca
   - Mirrors `device_class`, `state_class`, `unit` where possible
 - For `binaryValue` → **`binary_sensor` entity**
   - Mirrors `device_class` where possible; if source has no icon and **domain is `light`**, show `mdi:lightbulb` / `mdi:lightbulb-outline` depending on state
-- All entities are attached to a single **device** called *“BACnet Hub (Local Device)”*.
+- All entities are attached to a single **device** called *"BACnet Hub"*.
 
 ---
 
@@ -129,18 +129,18 @@ If **writable = true**, writes to `presentValue` are translated to HA service ca
 
 - COV subscriptions
 - More complete **Engineering Units** coverage / overrides
-- 
+
 ---
 
 ## Development
 
 - Python 3.11+ recommended (align with your HA environment)
-- Uses **bacpypes3**. See docs & samples for deeper BACnet/stack details. :contentReference[oaicite:3]{index=3}
+- Uses **bacpypes3**. See [bacpypes3 documentation](https://bacpypes3.readthedocs.io/) for deeper BACnet/stack details.
 
 Dev hints:
 
 - Entities expose `unique_id`s and are grouped under the integration device.
-- `presentValue` mirroring uses a lightweight change hook; an optional periodic watcher is included as a fallback.
+- `presentValue` mirroring uses `async_track_state_change_event` for live HA-to-BACnet updates.
 
 ---
 
@@ -148,4 +148,4 @@ Dev hints:
 
 MIT — see [LICENSE](LICENSE).
 
-© 2025 Alessio Magliarella
+© 2025–2026 Alessio Magliarella

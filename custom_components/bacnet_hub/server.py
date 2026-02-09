@@ -230,9 +230,9 @@ class BacnetHubServer:
 
         # Device metadata
         self.vendor_identifier: int = 999
-        self.vendor_name: str = "BACpypes3"
-        self.model_name: str = "Home Assistant"
-        self.description: str = "BACnet Hub (Home Assistant - Custom Integration)"
+        self.vendor_name: str = "magliaral"
+        self.model_name: str = "BACnet Hub"
+        self.description: str = "BACnet Hub \u2013 Home Assistant Custom Integration"
         self.application_software_version: Optional[str] = None
         self.firmware_revision: Optional[str] = None
 
