@@ -138,6 +138,33 @@ def is_supported_entity(hass: HomeAssistant, entity_id: str) -> bool:
     return hass.states.get(entity_id) is not None
 
 
+def entity_exists(hass: HomeAssistant, entity_id: str) -> bool:
+    """Return True if entity exists in state machine or registry."""
+    if not entity_id or "." not in entity_id:
+        return False
+
+    if hass.states.get(entity_id) is not None:
+        return True
+
+    er_mod, ent_reg = _get_entity_registry(hass)
+    if not er_mod or not ent_reg:
+        return False
+
+    try:
+        if hasattr(ent_reg, "async_get"):
+            return ent_reg.async_get(entity_id) is not None
+        if hasattr(ent_reg, "entities"):
+            entities = getattr(ent_reg, "entities")
+            if isinstance(entities, dict):
+                return entity_id in entities
+            if hasattr(entities, "get"):
+                return entities.get(entity_id) is not None
+    except Exception:
+        return False
+
+    return False
+
+
 def area_choices(hass: HomeAssistant) -> list[tuple[str, str]]:
     ar_mod, area_reg = _get_area_registry(hass)
     if not ar_mod or not area_reg:

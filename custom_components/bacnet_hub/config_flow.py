@@ -299,6 +299,9 @@ class BacnetHubOptionsFlow(OptionsFlow):
                 self._opts.pop(CONF_IMPORT_AREAS, None)
 
             if mode == PUBLISH_MODE_CLASSIC:
+                if current_mode != PUBLISH_MODE_CLASSIC:
+                    # Persist mode switch immediately so stale auto mappings are cleaned up.
+                    return self.async_create_entry(title="", data=self._opts)
                 return await self.async_step_publish_classic()
             if mode == PUBLISH_MODE_LABELS:
                 return await self.async_step_publish_labels()

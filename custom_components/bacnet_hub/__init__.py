@@ -9,6 +9,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_time_interval
 
 from .const import (
@@ -24,6 +25,7 @@ from .const import (
 )
 from .discovery import (
     determine_object_type_and_units,
+    entity_exists,
     entity_friendly_name,
     entity_ids_for_areas,
     entity_ids_for_label,
@@ -146,6 +148,50 @@ def _next_instance(
     return next_idx
 
 
+def _expected_unique_ids(entry_id: str, published: List[Dict[str, Any]]) -> set[str]:
+    expected: set[str] = set()
+    for mapping in published:
+        if not isinstance(mapping, dict):
+            continue
+        obj_type = str(mapping.get("object_type") or "")
+        inst = _as_int(mapping.get("instance"), -1)
+        if inst < 0:
+            continue
+        if obj_type == "analogValue":
+            expected.add(f"{DOMAIN}:{entry_id}:av:{inst}")
+        elif obj_type == "binaryValue":
+            expected.add(f"{DOMAIN}:{entry_id}:bv:{inst}")
+    return expected
+
+
+def _cleanup_orphan_published_entities(
+    hass: HomeAssistant, entry: ConfigEntry, published: List[Dict[str, Any]]
+) -> int:
+    """Delete stale BACnet entities no longer present in published mappings."""
+    registry = er.async_get(hass)
+    entries = er.async_entries_for_config_entry(registry, entry.entry_id)
+    expected = _expected_unique_ids(entry.entry_id, published)
+    uid_prefix = f"{DOMAIN}:{entry.entry_id}:"
+    removed = 0
+
+    for reg_entry in entries:
+        unique_id = str(getattr(reg_entry, "unique_id", "") or "")
+        entity_id = getattr(reg_entry, "entity_id", None)
+        if not unique_id.startswith(uid_prefix):
+            continue
+        if unique_id in expected:
+            continue
+        if not entity_id:
+            continue
+        try:
+            registry.async_remove(entity_id)
+            removed += 1
+        except Exception:
+            _LOGGER.debug("Could not remove stale entity %s", entity_id, exc_info=True)
+
+    return removed
+
+
 def _auto_target_entity_ids(hass: HomeAssistant, options: Dict[str, Any], mode: str) -> set[str]:
     if mode == PUBLISH_MODE_LABELS:
         label_id = str(options.get(CONF_IMPORT_LABEL) or "").strip()
@@ -156,7 +202,9 @@ def _auto_target_entity_ids(hass: HomeAssistant, options: Dict[str, Any], mode: 
     return set()
 
 
-async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> None:
+async def _async_sync_auto_mappings(
+    hass: HomeAssistant, entry_id: str, suppress_reload_once: bool = False
+) -> None:
     entry = _entry_by_id(hass, entry_id)
     if not entry:
         return
@@ -191,6 +239,9 @@ async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> None:
         if not entity_id:
             removed_count += 1
             continue
+        if not entity_exists(hass, entity_id):
+            removed_count += 1
+            continue
 
         is_auto = bool(mapping.get("auto", False))
         if not is_auto:
@@ -214,6 +265,8 @@ async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> None:
 
     added_count = 0
     for entity_id in sorted(targets):
+        if not entity_exists(hass, entity_id):
+            continue
         if entity_id in existing_entity_ids:
             continue
 
@@ -244,6 +297,8 @@ async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> None:
     new_options.pop("label_template", None)
     new_options["published"] = kept
     new_options["counters"] = counters
+    if suppress_reload_once:
+        hass.data[DOMAIN][KEY_SUPPRESS_RELOAD] = True
     await hass.config_entries.async_update_entry(entry, options=new_options)
     _LOGGER.info(
         "Auto mapping sync updated entry %s (mode=%s, added=%d, removed=%d)",
@@ -316,6 +371,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _LOGGER.debug("Merged options for %s (%s): %s", DOMAIN, entry.entry_id, merged_config)
 
     published: List[Dict[str, Any]] = merged_config.get("published") or []
+    removed_stale_entities = _cleanup_orphan_published_entities(hass, entry, published)
+    if removed_stale_entities:
+        _LOGGER.info(
+            "Removed %d stale BACnet entities for entry %s",
+            removed_stale_entities,
+            entry.entry_id,
+        )
 
     updated_now = _refresh_friendly_names_inplace(hass, published)
     _LOGGER.debug(
@@ -426,5 +488,16 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
     if hass.data.get(DOMAIN, {}).pop(KEY_SUPPRESS_RELOAD, False):
         _LOGGER.debug("Reload suppressed (friendly names synchronized).")
         return
+    await _async_sync_auto_mappings(hass, entry.entry_id, suppress_reload_once=True)
+    current_entry = _entry_by_id(hass, entry.entry_id)
+    if current_entry:
+        current_published: List[Dict[str, Any]] = list((current_entry.options or {}).get("published", []))
+        removed = _cleanup_orphan_published_entities(hass, current_entry, current_published)
+        if removed:
+            _LOGGER.info(
+                "Removed %d stale BACnet entities for entry %s before reload",
+                removed,
+                entry.entry_id,
+            )
     _LOGGER.debug("Options update for %s (Entry %s) - starting reload.", DOMAIN, entry.entry_id)
     await hass.config_entries.async_reload(entry.entry_id)
