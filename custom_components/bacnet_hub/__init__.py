@@ -226,7 +226,9 @@ async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> bool:
     if not entry:
         return False
 
-    current_options = dict(entry.options or {})
+    # Read from merged data/options so first setup works before options are explicitly saved.
+    current_options = dict(entry.data or {})
+    current_options.update(dict(entry.options or {}))
     had_legacy_ui_keys = any(
         key in current_options for key in ("ui_mode", "show_technical_ids", "label_template")
     )
@@ -418,7 +420,8 @@ async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> bool:
     if not changed:
         return False
 
-    new_options = dict(entry.options or {})
+    # Persist merged settings in options so subsequent sync cycles rely on one source of truth.
+    new_options = dict(current_options)
     new_options.pop("ui_mode", None)
     new_options.pop("show_technical_ids", None)
     new_options.pop("label_template", None)
