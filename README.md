@@ -1,151 +1,169 @@
 # BACnet Hub for Home Assistant
 
-Publishes Home Assistant entities as BACnet objects and supports bidirectional writes (ReadProperty/WriteProperty).  
-Built with **bacpypes3**.
+Expose Home Assistant entities as BACnet objects on a local BACnet/IP device.
+The integration supports:
 
-> This acts as a **local BACnet/IP device** inside Home Assistant. You “publish” existing HA entities as BACnet objects (e.g., `analogValue`, `binaryValue`) so third-party BACnet clients can read them — and, if enabled, write back into HA.
+- HA -> BACnet live value mirroring
+- BACnet -> HA writeback for supported mappings
+- Labels-based automatic import and mapping refresh
 
----
+Built with `bacpypes3`.
+
+## Current Model (Important)
+
+This integration now uses a labels-first workflow:
+
+- Mapping mode is labels-only.
+- Entities are auto-discovered from selected Home Assistant labels.
+- Auto sync runs every 60 seconds.
+
+During setup, the integration tries to create a default label:
+
+- Name: `BACnet`
+- Icon: `mdi:server-network-outline`
+- Color: `light-green`
+
+If created or found, it is preselected for import.
 
 ## Features
 
-- **Local BACnet/IP device**
-  - Configurable **Device ID** and **bind address** (`IPv4/prefix:port`, default `:47808`)
-- **Entity ↔ BACnet object mapping** in the **Options flow**
-  - Choose an HA entity, mark it **writable** or read-only
-  - Auto-detect **object type** (`analogValue` vs `binaryValue`)
-  - Auto-assign **instance numbers** per type (simple counters)
-  - Capture the entity’s **friendly name**
-  - For `analogValue`, the **unit** is carried over when available
-- **Live mirroring**
-  - **HA → BACnet**: source state updates `presentValue`
-  - **BACnet → HA**: writeback of `presentValue` (optional), mapped to HA services (see below)
-- **Home Assistant platforms**
-  - `sensor` for `analogValue` (mirrors device/state class & unit where possible)
-  - `binary_sensor` for `binaryValue`
-- **Options UI**
-  - Add / edit / delete published objects at any time
-  - Device settings (Device ID + bind address) adjustable after setup
-- **Maintenance**
-  - Service: `bacnet_hub.reload` to reload a single entry
-
----
+- Local BACnet/IP device with configurable:
+  - Device Instance
+  - Bind address (`IPv4/prefix:port`, for example `192.168.1.10/24:47808`)
+- Automatic mapping from Home Assistant labels (multiple labels supported)
+- Automatic cleanup:
+  - Removes stale mappings
+  - Removes orphaned integration entities
+  - Resets counters when import labels change
+- BACnet object support:
+  - `analogValue` (AV)
+  - `binaryValue` (BV)
+  - `multiStateValue` (MSV)
+- Climate-specific mapping support (details below)
+- Reload service: `bacnet_hub.reload`
 
 ## Installation
 
-### HACS (custom repository)
+### HACS (Custom Repository)
 
-1. HACS → **Integrations** → ••• → **Custom repositories**  
-   Add this repo as type **Integration**.
-2. Install **BACnet Hub**.
-3. Restart Home Assistant.
-4. Go to **Settings → Devices & Services → Add Integration → BACnet Hub** and complete the dialog.
-
-> HACS expects a `manifest.json` with standard keys (domain, version, …). See [HACS documentation](https://hacs.xyz/docs/publish/integration) for details.
+1. HACS -> Integrations -> menu -> Custom repositories.
+2. Add this repo as type `Integration`.
+3. Install `BACnet Hub`.
+4. Restart Home Assistant.
+5. Go to Settings -> Devices and Services -> Add Integration -> BACnet Hub.
 
 ### Manual
 
-Copy `custom_components/bacnet_hub` into your `config/custom_components/` folder, then restart Home Assistant.
-
----
+Copy `custom_components/bacnet_hub` to `config/custom_components/`, then restart Home Assistant.
 
 ## Configuration
 
-### Initial setup
+### Initial Setup
 
-- **Device ID** (BACnet Device Instance)
-- **Bind address** as `IPv4/prefix:port` (e.g., `192.168.1.10/24:47808`). A sane default is suggested.
-- After the first setup succeeds, open **Options** to publish objects.
+Required fields:
 
-### Publishing objects (Options → Publish)
+- `instance`: BACnet device instance
+- `address`: local BACnet/IP bind address (`IPv4/prefix:port`)
 
-**Add** a mapping by selecting:
+After setup, open integration options and configure:
 
-- **Entity**: any existing HA entity (e.g., `sensor.living_temp`, `light.kitchen`)
-- **Writable**:  
-  - **off** → read-only BACnet point (typ. Monitoring)  
-  - **on** → BACnet writes are **applied back** into HA
+- `instance`
+- `address`
+- `labels` (one or multiple)
 
-Under the hood:
+At least one valid label must be selected.
 
-- **Type detection**
-  - Binary-ish domains (`binary_sensor`, `switch`, `light`, `cover`, `lock`, `input_boolean`, …) → `binaryValue`
-  - Otherwise, if the entity has a **unit** or a numeric state → `analogValue`
-  - Else fallback → `binaryValue`
-- **Instance numbers** increment per BACnet type (`av`, `bv`).
-- The entity’s **friendly name** is stored for display in the list.
-- For `analogValue`, the **unit** is taken from the source entity when present.
+### Label Import Behavior
 
-You can later **edit** or **delete** mappings; editing keeps the existing instance number.
+- Entities are collected from selected labels.
+- Label assignment can be on entity level or device level in Home Assistant.
+- Matching entities are auto-mapped.
+- Sync cycle:
+  - once at startup
+  - every 60 seconds afterward
 
----
+## Mapping Behavior
 
-## Runtime behavior
+### Generic Domains
 
-### HA → BACnet (state mirroring)
+Auto type detection for non-climate entities:
 
-- Each published object is created as a **BACpypes3 local object**:
-  - `objectIdentifier`: (`analogValue`|`binaryValue`, *instance*)
-  - `objectName`: set to the **HA entity_id**
-  - `description`: set to the **friendly name**
-  - `units` (for `analogValue`): when resolvable from HA’s unit
-- The component listens to HA’s state changes and **updates `presentValue`** accordingly.
+- Binary-like domains (`light`, `switch`, `cover`, etc.) -> BV
+- Numeric or unit-based states -> AV
+- Fallback -> BV
 
-### BACnet → HA (writeback)
+### Climate Domain
 
-If **writable = true**, writes to `presentValue` are translated to HA service calls:
+For `climate.*`, multiple BACnet points can be generated:
 
-- `binaryValue`:
-  - HA **domain-aware** mapping:
-    - `light` → `light.turn_on` / `light.turn_off`
-    - `switch` / `fan` → `*.turn_on` / `*.turn_off`
-    - `cover` → `cover.open_cover` / `cover.close_cover`
-- `analogValue`:
-  - For `number` / `input_number`: `*.set_value` with the written float
+- `hvac_mode`
+  - BV when modes are effectively `off` and `heat`
+  - otherwise MSV (full mode list)
+  - writable via `climate.set_hvac_mode`
+- `hvac_action`
+  - BV, read-only
+  - mapped as: `idle` or `off` -> 0, otherwise 1
+- `current_temperature`
+  - AV, read-only
+  - `covIncrement` default: `0.2`
+- `set_temperature` (HA attribute `temperature`)
+  - AV, writable via `climate.set_temperature`
+  - `covIncrement` default: `0.1`
 
-> Writes to read-only mappings are ignored.
+## Writeback (BACnet -> Home Assistant)
 
-### Home Assistant entities created
+Writes are allowed only when a mapping is compatible and required HA service exists.
 
-- For `analogValue` → **`sensor` entity**
-  - Mirrors `device_class`, `state_class`, `unit` where possible
-- For `binaryValue` → **`binary_sensor` entity**
-  - Mirrors `device_class` where possible; if source has no icon and **domain is `light`**, show `mdi:lightbulb` / `mdi:lightbulb-outline` depending on state
-- All entities are attached to a single **device** called *"BACnet Hub"*.
+Supported write targets:
 
----
+- `light`, `switch`, `fan`, `group`: `turn_on` and `turn_off`
+- `cover`: `open_cover` and `close_cover`
+- `number`, `input_number`: `set_value`
+- `climate`:
+  - `set_hvac_mode`
+  - `set_temperature`
 
-## Tips & Troubleshooting
+If a mapping is not writable, `WriteProperty` is rejected with `writeAccessDenied`.
+Local PV and COV are not mutated for denied writes.
 
-- **UDP 47808** must be reachable; avoid port clashes with other BACnet services.
-- BACnet/IP typically expects both peers to be on the **same L2 segment** (unless you route BACnet/BBMD yourself).
-- Some BACnet browsers (e.g., YABE) can lock comms if they continuously poll; close them while testing if you get timeouts.
-- If a source entity has **no state** yet, the mirrored object may start with `None`/default values until the first update arrives.
-- Use the service **`bacnet_hub.reload`** to cleanly restart the entry after changing options.
+## Runtime Notes
 
----
+- BACnet object names use `entity_id` or `entity_id.source_attr` for attribute-based mappings.
+- Friendly names are refreshed from HA and applied to BACnet descriptions.
+- Integration entities are created as diagnostics under one BACnet Hub device:
+  - AV -> `sensor`
+  - BV -> `binary_sensor`
+- MSV currently has no dedicated HA entity platform; it still exists as BACnet object.
 
-## Roadmap
+## Troubleshooting
 
-- COV subscriptions
-- More complete **Engineering Units** coverage / overrides
+- Address already in use:
+  - Ensure no second BACnet process is bound to the same `IP:port`.
+  - The integration performs bind preflight retries, but persistent conflicts must be resolved externally.
+- Import seems not updating:
+  - Verify selected labels in options.
+  - Verify entities or devices actually carry those labels.
+  - Wait at least one sync interval (60 seconds) or trigger integration reload.
+- BACnet write has no effect:
+  - Check if domain and action are supported.
+  - Check Home Assistant service availability for that domain.
+- Entity unavailable in HA:
+  - Mapping may be removed automatically on sync if the source no longer exists.
 
----
+## Service
+
+- `bacnet_hub.reload`
+  - Reload one entry by `entry_id`.
+  - If only one entry exists, `entry_id` can be omitted.
 
 ## Development
 
-- Python 3.11+ recommended (align with your HA environment)
-- Uses **bacpypes3**. See [bacpypes3 documentation](https://bacpypes3.readthedocs.io/) for deeper BACnet/stack details.
-
-Dev hints:
-
-- Entities expose `unique_id`s and are grouped under the integration device.
-- `presentValue` mirroring uses `async_track_state_change_event` for live HA-to-BACnet updates.
-
----
+- Python: aligned with Home Assistant runtime
+- Key dependency: `bacpypes3==0.0.102`
+- Integration domain: `bacnet_hub`
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See `LICENSE`.
 
-© 2025–2026 Alessio Magliarella
+Copyright (c) 2025-2026 Alessio Magliarella
