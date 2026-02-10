@@ -17,7 +17,7 @@ _BINARY_DOMAINS = {
     "button",
 }
 
-_AUTO_WRITABLE_DOMAINS = {"light", "switch", "fan", "cover", "number", "input_number"}
+_AUTO_WRITABLE_DOMAINS = {"light", "switch", "fan", "group", "cover", "number", "input_number"}
 
 
 def _safe_iter(values: Any) -> Iterable[Any]:
@@ -121,18 +121,17 @@ def is_entity_auto_writable(hass: HomeAssistant, entity_id: str) -> bool:
     if domain not in _AUTO_WRITABLE_DOMAINS:
         return False
 
-    state = hass.states.get(entity_id)
-    if not _is_state_known(state):
-        return False
-
     services = hass.services
-    if domain in ("light", "switch", "fan"):
+    if domain in ("light", "switch", "fan", "group"):
         return services.has_service(domain, "turn_on") and services.has_service(domain, "turn_off")
 
     if domain == "cover":
         return services.has_service("cover", "open_cover") and services.has_service("cover", "close_cover")
 
     if domain in ("number", "input_number"):
+        state = hass.states.get(entity_id)
+        if not _is_state_known(state):
+            return False
         if not services.has_service(domain, "set_value"):
             return False
         return _is_numeric_state(state)

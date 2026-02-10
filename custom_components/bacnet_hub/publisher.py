@@ -138,8 +138,24 @@ def _entity_domain(entity_id: str) -> str:
     return entity_id.split(".", 1)[0] if "." in entity_id else ""
 
 def _truthy(x: Any) -> bool:
+    if isinstance(x, bool):
+        return x
+    if isinstance(x, (int, float)):
+        return x != 0
+
     s = str(x).strip().lower()
-    return s in ("1", "true", "on", "active", "open", "heat", "cool")
+    if not s:
+        return False
+
+    # Handle BACnet enum-like strings robustly (e.g. "<BinaryPV: active>")
+    if "inactive" in s:
+        return False
+    if "active" in s:
+        return True
+
+    if s in ("0", "false", "off", "closed"):
+        return False
+    return s in ("1", "true", "on", "open", "heat", "cool")
 
 def _as_float(x: Any, default: float = 0.0) -> float:
     try:
@@ -366,7 +382,7 @@ class BacnetPublisher:
 
         domain = _entity_domain(ent)
 
-        if domain in ("light", "switch", "fan"):
+        if domain in ("light", "switch", "fan", "group"):
             on = _truthy(value)
             await self.hass.services.async_call(
                 domain, f"turn_{'on' if on else 'off'}", {"entity_id": ent}, blocking=False
