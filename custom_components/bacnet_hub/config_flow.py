@@ -670,6 +670,8 @@ class BacnetHubOptionsFlow(OptionsFlow):
             }
             if candidate.get("source_attr"):
                 new_map["source_attr"] = candidate.get("source_attr")
+            if candidate.get("read_attr"):
+                new_map["read_attr"] = candidate.get("read_attr")
             if candidate.get("write_action"):
                 new_map["write_action"] = candidate.get("write_action")
             if candidate.get("mv_states"):
@@ -678,6 +680,8 @@ class BacnetHubOptionsFlow(OptionsFlow):
                 new_map["hvac_on_mode"] = candidate.get("hvac_on_mode")
             if candidate.get("hvac_off_mode"):
                 new_map["hvac_off_mode"] = candidate.get("hvac_off_mode")
+            if candidate.get("cov_increment") is not None:
+                new_map["cov_increment"] = float(candidate.get("cov_increment"))
 
             if auto:
                 new_map["auto"] = True

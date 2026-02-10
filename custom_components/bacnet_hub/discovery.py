@@ -23,6 +23,7 @@ _CLIMATE_SUFFIX: dict[str, str] = {
     "hvac_mode": "HVAC Mode",
     "current_temperature": "Current Temperature",
     "temperature": "Target Temperature",
+    "set_temperature": "Set Temperature",
 }
 
 
@@ -243,6 +244,7 @@ def entity_mapping_candidates(hass: HomeAssistant, entity_id: str) -> list[dict[
             "object_type": "analogValue",
             "units": str(temp_unit) if temp_unit is not None else None,
             "source_attr": "current_temperature",
+            "cov_increment": 0.2,
         }
         cur_temp["friendly_name"] = mapping_friendly_name(hass, cur_temp)
         candidates.append(cur_temp)
@@ -252,8 +254,10 @@ def entity_mapping_candidates(hass: HomeAssistant, entity_id: str) -> list[dict[
             "entity_id": entity_id,
             "object_type": "analogValue",
             "units": str(temp_unit) if temp_unit is not None else None,
-            "source_attr": "temperature",
+            "source_attr": "set_temperature",
+            "read_attr": "temperature",
             "write_action": "climate_temperature",
+            "cov_increment": 0.1,
         }
         tgt_temp["friendly_name"] = mapping_friendly_name(hass, tgt_temp)
         candidates.append(tgt_temp)

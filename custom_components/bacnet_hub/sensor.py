@@ -36,6 +36,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             continue
         instance = int(m.get("instance", 0))
         source_attr = m.get("source_attr")
+        read_attr = m.get("read_attr")
         units = m.get("units")
         friendly = m.get("friendly_name")
         name = f"(AV-{instance}) {friendly}"
@@ -47,6 +48,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 instance=instance,
                 name=name,
                 source_attr=source_attr,
+                read_attr=read_attr,
                 configured_unit=units,
             )
         )
@@ -73,12 +75,14 @@ class BacnetPublishedSensor(SensorEntity):
         instance: int,
         name: str,
         source_attr: str | None,
+        read_attr: str | None,
         configured_unit: str | None,
     ):
         self.hass = hass
         self._entry_id = entry_id
         self._source = source_entity_id
         self._source_attr = str(source_attr or "").strip()
+        self._read_attr = str(read_attr or "").strip()
         self._configured_unit = configured_unit
         self._instance = instance
         self._attr_name = name
@@ -166,11 +170,10 @@ class BacnetPublishedSensor(SensorEntity):
         self._attr_name = f"(BACnet AV-{self._instance}) {friendly_name}"
 
         # Mirror unit exactly
-        source_value = (
-            st.attributes.get(self._source_attr) if self._source_attr else st.state
-        )
+        attr_name = self._read_attr or self._source_attr
+        source_value = st.attributes.get(attr_name) if attr_name else st.state
         unit = st.attributes.get("unit_of_measurement") or self._configured_unit
-        if self._source_attr in ("current_temperature", "temperature") and not unit:
+        if self._source_attr in ("current_temperature", "temperature", "set_temperature") and not unit:
             unit = st.attributes.get("temperature_unit")
         self._attr_native_unit_of_measurement = unit
 

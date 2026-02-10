@@ -323,10 +323,12 @@ class BacnetPublisher:
     # --- HA -> BACnet --------------------------------------------------------
 
     def _source_value(self, state_obj: Any, mapping: Dict[str, Any]) -> Any:
+        read_attr = str(mapping.get("read_attr") or "").strip()
         source_attr = str(mapping.get("source_attr") or "").strip()
-        if source_attr:
+        attr_name = read_attr or source_attr
+        if attr_name:
             attrs = getattr(state_obj, "attributes", {}) or {}
-            return attrs.get(source_attr)
+            return attrs.get(attr_name)
         return getattr(state_obj, "state", None)
 
     async def _initial_sync(self) -> None:

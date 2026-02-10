@@ -254,6 +254,15 @@ async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> bool:
         if "writable" in current:
             current.pop("writable", None)
             had_legacy_mapping_keys = True
+        if (
+            str(current.get("source_attr") or "").strip().lower() == "temperature"
+            and str(current.get("write_action") or "").strip() == "climate_temperature"
+        ):
+            current["source_attr"] = "set_temperature"
+            current["read_attr"] = "temperature"
+            if current.get("cov_increment") is None:
+                current["cov_increment"] = 0.1
+            had_legacy_mapping_keys = True
 
         entity_id = str(current.get("entity_id") or "")
         if not entity_id:
@@ -309,6 +318,10 @@ async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> bool:
             current["source_attr"] = candidate.get("source_attr")
         else:
             current.pop("source_attr", None)
+        if candidate.get("read_attr"):
+            current["read_attr"] = candidate.get("read_attr")
+        else:
+            current.pop("read_attr", None)
         if candidate.get("write_action"):
             current["write_action"] = candidate.get("write_action")
         else:
@@ -325,6 +338,10 @@ async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> bool:
             current["hvac_off_mode"] = candidate.get("hvac_off_mode")
         else:
             current.pop("hvac_off_mode", None)
+        if candidate.get("cov_increment") is not None:
+            current["cov_increment"] = float(candidate.get("cov_increment"))
+        else:
+            current.pop("cov_increment", None)
 
         kept.append(current)
         existing_mapping_keys.add(key)
@@ -356,6 +373,8 @@ async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> bool:
             }
             if candidate.get("source_attr"):
                 new_map["source_attr"] = candidate.get("source_attr")
+            if candidate.get("read_attr"):
+                new_map["read_attr"] = candidate.get("read_attr")
             if candidate.get("write_action"):
                 new_map["write_action"] = candidate.get("write_action")
             if candidate.get("mv_states"):
@@ -364,6 +383,8 @@ async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> bool:
                 new_map["hvac_on_mode"] = candidate.get("hvac_on_mode")
             if candidate.get("hvac_off_mode"):
                 new_map["hvac_off_mode"] = candidate.get("hvac_off_mode")
+            if candidate.get("cov_increment") is not None:
+                new_map["cov_increment"] = float(candidate.get("cov_increment"))
 
             kept.append(new_map)
             existing_mapping_keys.add(key)
