@@ -15,7 +15,7 @@ from bacpypes3.local.analog import AnalogValueObject
 from bacpypes3.local.binary import BinaryValueObject
 from bacpypes3.local.multistate import MultiStateValueObject
 
-from .discovery import is_entity_auto_writable, mapping_friendly_name, mapping_source_key
+from .discovery import mapping_friendly_name, mapping_source_key
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -430,12 +430,26 @@ class BacnetPublisher:
     # --- BACnet -> HA --------------------------------------------------------
 
     def _is_mapping_auto_writable(self, mapping: Dict[str, Any]) -> bool:
+        """Slim write guard: only mapping intent + required HA service availability."""
         action = str(mapping.get("write_action") or "").strip()
         if action == "climate_hvac_mode":
             return self.hass.services.has_service("climate", "set_hvac_mode")
         if action == "climate_temperature":
             return self.hass.services.has_service("climate", "set_temperature")
-        return is_entity_auto_writable(self.hass, str(mapping.get("entity_id") or ""))
+
+        ent = str(mapping.get("entity_id") or "")
+        domain = _entity_domain(ent)
+
+        if domain in ("light", "switch", "fan", "group"):
+            return self.hass.services.has_service(domain, "turn_on") and self.hass.services.has_service(domain, "turn_off")
+
+        if domain == "cover":
+            return self.hass.services.has_service("cover", "open_cover") and self.hass.services.has_service("cover", "close_cover")
+
+        if domain in ("number", "input_number"):
+            return self.hass.services.has_service(domain, "set_value")
+
+        return False
 
     async def forward_to_ha_from_bacnet(self, mapping: Dict[str, Any], value: Any) -> None:
         """Called by HubApp after successful WriteProperty(/Multiple)."""
