@@ -35,6 +35,7 @@ class PublishedMappingsSensor(SensorEntity):
                 "object_type": m.get("object_type"),
                 "instance": m.get("instance"),
                 "entity_id": m.get("entity_id"),
+                "source_attr": m.get("source_attr"),
                 "name": self.hass.states.get(str(m.get("entity_id") or "")) and
                         self.hass.states.get(str(m.get("entity_id") or "")).attributes.get("friendly_name"),
                 "units": m.get("units"),

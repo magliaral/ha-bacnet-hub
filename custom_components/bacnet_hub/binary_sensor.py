@@ -29,6 +29,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         if not ent_id:
             continue
         instance = int(m.get("instance", 0))
+        source_attr = m.get("source_attr")
+        hvac_on_mode = m.get("hvac_on_mode")
         friendly = m.get("friendly_name")
         name = f"(BV-{instance}) {friendly}"
         entities.append(
@@ -38,6 +40,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 source_entity_id=ent_id,
                 instance=instance,
                 name=name,
+                source_attr=source_attr,
+                hvac_on_mode=hvac_on_mode,
             )
         )
     if entities:
@@ -54,10 +58,21 @@ class BacnetPublishedBinarySensor(BinarySensorEntity):
 
     _attr_should_poll = False
 
-    def __init__(self, hass: HomeAssistant, entry_id: str, source_entity_id: str, instance: int, name: str):
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        source_entity_id: str,
+        instance: int,
+        name: str,
+        source_attr: str | None,
+        hvac_on_mode: str | None,
+    ):
         self.hass = hass
         self._entry_id = entry_id
         self._source = source_entity_id
+        self._source_attr = str(source_attr or "").strip()
+        self._hvac_on_mode = str(hvac_on_mode or "heat").strip().lower()
         self._instance = instance
         self._attr_name = name
         self._remove_listener = None
@@ -134,10 +149,26 @@ class BacnetPublishedBinarySensor(BinarySensorEntity):
 
         # Adjust name
         src_name = st.name or self._source
+        if self._source_attr:
+            field_name = self._source_attr.replace("_", " ").title()
+            src_name = f"{src_name} {field_name}"
         self._attr_name = f"(BACnet BV-{self._instance}) {src_name}"
 
         # Mirror state exactly (on/off)
-        self._attr_is_on = (st.state == STATE_ON)
+        source_state = st.attributes.get(self._source_attr) if self._source_attr else st.state
+        source_text = str(source_state or "").strip().lower()
+        if self._source_attr == "hvac_mode":
+            self._attr_is_on = source_text == self._hvac_on_mode
+        else:
+            self._attr_is_on = source_text in (
+                STATE_ON,
+                "on",
+                "open",
+                "true",
+                "active",
+                "heat",
+                "cool",
+            )
 
         # Mirror device_class exactly if present and valid
         self._attr_device_class = None

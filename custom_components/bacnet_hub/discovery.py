@@ -18,6 +18,12 @@ _BINARY_DOMAINS = {
 }
 
 _AUTO_WRITABLE_DOMAINS = {"light", "switch", "fan", "group", "cover", "number", "input_number"}
+_SOURCE_STATE = "__state__"
+_CLIMATE_SUFFIX: dict[str, str] = {
+    "hvac_mode": "HVAC Mode",
+    "current_temperature": "Current Temperature",
+    "temperature": "Target Temperature",
+}
 
 
 def _safe_iter(values: Any) -> Iterable[Any]:
@@ -146,6 +152,113 @@ def entity_friendly_name(hass: HomeAssistant, entity_id: str) -> str:
     if getattr(state, "name", None):
         return str(state.name)
     return str(state.attributes.get("friendly_name") or entity_id)
+
+
+def mapping_source_key(entity_id: str, source_attr: Optional[str]) -> str:
+    src = str(source_attr or _SOURCE_STATE).strip().lower()
+    return f"{entity_id}|{src}"
+
+
+def mapping_key(mapping: dict[str, Any]) -> str:
+    return mapping_source_key(str(mapping.get("entity_id") or ""), mapping.get("source_attr"))
+
+
+def mapping_friendly_name(hass: HomeAssistant, mapping: dict[str, Any]) -> str:
+    entity_id = str(mapping.get("entity_id") or "")
+    base = entity_friendly_name(hass, entity_id) if entity_id else "Unknown"
+    source_attr = str(mapping.get("source_attr") or "").strip().lower()
+    suffix = _CLIMATE_SUFFIX.get(source_attr)
+    if not suffix:
+        return base
+    return f"{base} {suffix}"
+
+
+def _normalize_hvac_modes(raw_modes: Any, current_mode: Any) -> list[str]:
+    modes: list[str] = []
+    for item in (raw_modes or []):
+        mode = str(item).strip().lower()
+        if not mode:
+            continue
+        if mode not in modes:
+            modes.append(mode)
+
+    cur = str(current_mode or "").strip().lower()
+    if cur and cur not in modes:
+        modes.append(cur)
+
+    if not modes:
+        return ["off", "heat"]
+
+    if "off" in modes:
+        return ["off"] + [m for m in modes if m != "off"]
+
+    return ["off"] + modes
+
+
+def entity_mapping_candidates(hass: HomeAssistant, entity_id: str) -> list[dict[str, Any]]:
+    """Build one or multiple mapping candidates for an entity."""
+    domain = (entity_id.split(".", 1)[0] if "." in entity_id else "").lower()
+    state = hass.states.get(entity_id)
+
+    if domain != "climate":
+        object_type, units = determine_object_type_and_units(hass, entity_id)
+        base = {
+            "entity_id": entity_id,
+            "object_type": object_type,
+            "units": units,
+        }
+        base["friendly_name"] = mapping_friendly_name(hass, base)
+        return [base]
+
+    attrs = dict(state.attributes) if state else {}
+    candidates: list[dict[str, Any]] = []
+
+    hvac_modes = _normalize_hvac_modes(attrs.get("hvac_modes"), attrs.get("hvac_mode"))
+    if set(hvac_modes).issubset({"off", "heat"}) and "heat" in hvac_modes:
+        hvac = {
+            "entity_id": entity_id,
+            "object_type": "binaryValue",
+            "units": None,
+            "source_attr": "hvac_mode",
+            "write_action": "climate_hvac_mode",
+            "hvac_on_mode": "heat",
+            "hvac_off_mode": "off",
+        }
+    else:
+        hvac = {
+            "entity_id": entity_id,
+            "object_type": "multiStateValue",
+            "units": None,
+            "source_attr": "hvac_mode",
+            "write_action": "climate_hvac_mode",
+            "mv_states": hvac_modes,
+        }
+    hvac["friendly_name"] = mapping_friendly_name(hass, hvac)
+    candidates.append(hvac)
+
+    temp_unit = attrs.get("temperature_unit") or attrs.get("unit_of_measurement")
+    if "current_temperature" in attrs:
+        cur_temp = {
+            "entity_id": entity_id,
+            "object_type": "analogValue",
+            "units": str(temp_unit) if temp_unit is not None else None,
+            "source_attr": "current_temperature",
+        }
+        cur_temp["friendly_name"] = mapping_friendly_name(hass, cur_temp)
+        candidates.append(cur_temp)
+
+    if "temperature" in attrs:
+        tgt_temp = {
+            "entity_id": entity_id,
+            "object_type": "analogValue",
+            "units": str(temp_unit) if temp_unit is not None else None,
+            "source_attr": "temperature",
+            "write_action": "climate_temperature",
+        }
+        tgt_temp["friendly_name"] = mapping_friendly_name(hass, tgt_temp)
+        candidates.append(tgt_temp)
+
+    return candidates
 
 
 def determine_object_type_and_units(

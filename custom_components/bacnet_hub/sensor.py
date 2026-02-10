@@ -35,6 +35,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         if not ent_id:
             continue
         instance = int(m.get("instance", 0))
+        source_attr = m.get("source_attr")
+        units = m.get("units")
         friendly = m.get("friendly_name")
         name = f"(AV-{instance}) {friendly}"
         entities.append(
@@ -44,6 +46,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 source_entity_id=ent_id,
                 instance=instance,
                 name=name,
+                source_attr=source_attr,
+                configured_unit=units,
             )
         )
     if entities:
@@ -68,10 +72,14 @@ class BacnetPublishedSensor(SensorEntity):
         source_entity_id: str,
         instance: int,
         name: str,
+        source_attr: str | None,
+        configured_unit: str | None,
     ):
         self.hass = hass
         self._entry_id = entry_id
         self._source = source_entity_id
+        self._source_attr = str(source_attr or "").strip()
+        self._configured_unit = configured_unit
         self._instance = instance
         self._attr_name = name
         self._remove_listener = None
@@ -152,10 +160,18 @@ class BacnetPublishedSensor(SensorEntity):
         # Take name from source
         src_name = st.name or self._source
         friendly_name = st.attributes.get("friendly_name") or src_name
+        if self._source_attr:
+            field_name = self._source_attr.replace("_", " ").title()
+            friendly_name = f"{friendly_name} {field_name}"
         self._attr_name = f"(BACnet AV-{self._instance}) {friendly_name}"
 
         # Mirror unit exactly
-        unit = st.attributes.get("unit_of_measurement")
+        source_value = (
+            st.attributes.get(self._source_attr) if self._source_attr else st.state
+        )
+        unit = st.attributes.get("unit_of_measurement") or self._configured_unit
+        if self._source_attr in ("current_temperature", "temperature") and not unit:
+            unit = st.attributes.get("temperature_unit")
         self._attr_native_unit_of_measurement = unit
 
         # Take device_class/state_class exactly if present/valid
@@ -186,8 +202,8 @@ class BacnetPublishedSensor(SensorEntity):
         # - unknown/unavailable → None
         # - If unit present or numeric device_class → try float
         # - otherwise take raw value (StateType)
-        state = st.state
-        if state in (STATE_UNKNOWN, STATE_UNAVAILABLE):
+        state = source_value
+        if state in (STATE_UNKNOWN, STATE_UNAVAILABLE, None):
             native_value: StateType = None
         else:
             try:

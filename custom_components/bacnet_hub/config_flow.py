@@ -23,9 +23,12 @@ from .const import (
 )
 from .discovery import (
     area_choices,
-    determine_object_type_and_units,
+    entity_mapping_candidates,
     entity_friendly_name,
     label_choices,
+    mapping_friendly_name,
+    mapping_key,
+    mapping_source_key,
     supported_entities_for_device,
 )
 
@@ -122,8 +125,10 @@ def _mapping_label(hass: HomeAssistant, mapping: Dict[str, Any]) -> str:
     object_type = str(mapping.get("object_type") or "?")
     instance = mapping.get("instance", "?")
     friendly = str(mapping.get("friendly_name") or entity_friendly_name(hass, ent))
+    source_attr = str(mapping.get("source_attr") or "").strip()
+    source_suffix = f" [{source_attr}]" if source_attr else ""
     auto_suffix = " [auto]" if bool(mapping.get("auto", False)) else ""
-    return f"{object_type}:{instance} <= {ent} ({friendly}){auto_suffix}"
+    return f"{object_type}:{instance} <= {ent}{source_suffix} ({friendly}){auto_suffix}"
 
 
 def _as_string_list(value: Any) -> list[str]:
@@ -257,7 +262,11 @@ class BacnetHubOptionsFlow(OptionsFlow):
                 if mode != current_mode:
                     # Hard reset on mode change: remove all mappings and restart instances.
                     self._opts["published"] = []
-                    self._opts["counters"] = {"analogValue": 0, "binaryValue": 0}
+                    self._opts["counters"] = {
+                        "analogValue": 0,
+                        "binaryValue": 0,
+                        "multiStateValue": 0,
+                    }
                     self._opts.pop("_edit_index", None)
                 if mode != PUBLISH_MODE_LABELS:
                     self._opts.pop(CONF_IMPORT_LABEL, None)
@@ -548,18 +557,20 @@ class BacnetHubOptionsFlow(OptionsFlow):
         errors: Dict[str, str] = {}
         if user_input is not None:
             new_entity = str(user_input.get("entity_id") or "").strip()
+            current_source_attr = current.get("source_attr")
+            new_key = mapping_source_key(new_entity, current_source_attr)
 
             if not new_entity or "." not in new_entity:
                 errors["entity_id"] = "invalid_entity"
             elif any(
-                i != idx and item.get("entity_id") == new_entity
+                i != idx and mapping_key(item) == new_key
                 for i, item in enumerate(published)
             ):
                 errors["base"] = "mapping_exists"
             else:
                 current["entity_id"] = new_entity
                 current.pop("writable", None)
-                current["friendly_name"] = entity_friendly_name(self.hass, new_entity)
+                current["friendly_name"] = mapping_friendly_name(self.hass, current)
                 if new_entity == cur_entity:
                     current["auto"] = current_auto
                     current["auto_mode"] = current_auto_mode
@@ -618,35 +629,67 @@ class BacnetHubOptionsFlow(OptionsFlow):
 
     def _append_mapping(self, entity_id: str, auto: bool) -> bool:
         published: List[Dict[str, Any]] = list(self._opts.get("published", []))
-        if any((m.get("entity_id") == entity_id) for m in published):
+        candidates = entity_mapping_candidates(self.hass, entity_id)
+        if not candidates:
             return False
 
-        object_type, units = determine_object_type_and_units(self.hass, entity_id)
-        counters: Dict[str, int] = dict(self._opts.get("counters", {}))
-
-        max_for_type = -1
-        for item in published:
-            if item.get("object_type") != object_type:
-                continue
-            inst = _as_int(item.get("instance"), -1)
-            if inst > max_for_type:
-                max_for_type = inst
-        floor = max_for_type + 1
-        next_idx = max(_as_int(counters.get(object_type), 0), floor)
-        counters[object_type] = next_idx + 1
-        self._opts["counters"] = counters
-
-        new_map: Dict[str, Any] = {
-            "entity_id": entity_id,
-            "object_type": object_type,
-            "instance": next_idx,
-            "units": units,
-            "friendly_name": entity_friendly_name(self.hass, entity_id),
+        existing_keys: set[str] = {
+            mapping_key(item)
+            for item in published
+            if isinstance(item, dict) and item.get("entity_id")
         }
-        if auto:
-            new_map["auto"] = True
-            new_map["auto_mode"] = self._opts.get(CONF_PUBLISH_MODE)
+        counters: Dict[str, int] = dict(self._opts.get("counters", {}))
+        added = False
 
-        published.append(new_map)
+        for candidate in candidates:
+            key = mapping_key(candidate)
+            if key in existing_keys:
+                continue
+
+            object_type = str(candidate.get("object_type") or "").strip()
+            if not object_type:
+                continue
+
+            max_for_type = -1
+            for item in published:
+                if item.get("object_type") != object_type:
+                    continue
+                inst = _as_int(item.get("instance"), -1)
+                if inst > max_for_type:
+                    max_for_type = inst
+            floor = max_for_type + 1
+            next_idx = max(_as_int(counters.get(object_type), 0), floor)
+            counters[object_type] = next_idx + 1
+
+            new_map: Dict[str, Any] = {
+                "entity_id": entity_id,
+                "object_type": object_type,
+                "instance": next_idx,
+                "units": candidate.get("units"),
+                "friendly_name": str(candidate.get("friendly_name") or mapping_friendly_name(self.hass, candidate)),
+            }
+            if candidate.get("source_attr"):
+                new_map["source_attr"] = candidate.get("source_attr")
+            if candidate.get("write_action"):
+                new_map["write_action"] = candidate.get("write_action")
+            if candidate.get("mv_states"):
+                new_map["mv_states"] = list(candidate.get("mv_states") or [])
+            if candidate.get("hvac_on_mode"):
+                new_map["hvac_on_mode"] = candidate.get("hvac_on_mode")
+            if candidate.get("hvac_off_mode"):
+                new_map["hvac_off_mode"] = candidate.get("hvac_off_mode")
+
+            if auto:
+                new_map["auto"] = True
+                new_map["auto_mode"] = self._opts.get(CONF_PUBLISH_MODE)
+
+            published.append(new_map)
+            existing_keys.add(key)
+            added = True
+
+        if not added:
+            return False
+
+        self._opts["counters"] = counters
         self._opts["published"] = published
         return True

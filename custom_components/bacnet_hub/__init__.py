@@ -25,11 +25,12 @@ from .const import (
     PUBLISH_MODE_LABELS,
 )
 from .discovery import (
-    determine_object_type_and_units,
+    entity_mapping_candidates,
     entity_exists,
-    entity_friendly_name,
     entity_ids_for_areas,
     entity_ids_for_label,
+    mapping_friendly_name,
+    mapping_key,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -100,7 +101,7 @@ def _refresh_friendly_names_inplace(hass: HomeAssistant, published: List[Dict[st
         entity_id = mapping.get("entity_id")
         if not entity_id:
             continue
-        new_name = entity_friendly_name(hass, entity_id)
+        new_name = mapping_friendly_name(hass, mapping)
         old_name = mapping.get("friendly_name")
         if new_name and new_name != old_name:
             mapping["friendly_name"] = new_name
@@ -174,6 +175,8 @@ def _expected_unique_ids(entry_id: str, published: List[Dict[str, Any]]) -> set[
             expected.add(f"{DOMAIN}:{entry_id}:av:{inst}")
         elif obj_type == "binaryValue":
             expected.add(f"{DOMAIN}:{entry_id}:bv:{inst}")
+        elif obj_type == "multiStateValue":
+            expected.add(f"{DOMAIN}:{entry_id}:msv:{inst}")
     return expected
 
 
@@ -241,7 +244,7 @@ async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> bool:
     targets = _auto_target_entity_ids(hass, options, mode)
 
     kept: List[Dict[str, Any]] = []
-    existing_entity_ids: set[str] = set()
+    existing_mapping_keys: set[str] = set()
     removed_count = 0
 
     for mapping in published:
@@ -260,10 +263,16 @@ async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> bool:
             removed_count += 1
             continue
 
+        key = mapping_key(current)
+        if key in existing_mapping_keys:
+            removed_count += 1
+            continue
+
         is_auto = bool(current.get("auto", False))
         if not is_auto:
+            current["friendly_name"] = mapping_friendly_name(hass, current)
             kept.append(current)
-            existing_entity_ids.add(entity_id)
+            existing_mapping_keys.add(key)
             continue
 
         auto_mode = str(current.get("auto_mode") or "")
@@ -277,31 +286,88 @@ async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> bool:
             removed_count += 1
             continue
 
+        candidates = entity_mapping_candidates(hass, entity_id)
+        candidate_by_key = {mapping_key(spec): spec for spec in candidates}
+        candidate = candidate_by_key.get(key)
+        if not candidate:
+            removed_count += 1
+            continue
+
+        # Keep stable instance unless object type changed.
+        old_object_type = str(current.get("object_type") or "")
+        new_object_type = str(candidate.get("object_type") or "")
+        if old_object_type != new_object_type:
+            current["object_type"] = new_object_type
+            current["instance"] = _next_instance(new_object_type, counters, kept)
+        else:
+            current["object_type"] = new_object_type
+        current["units"] = candidate.get("units")
+        current["friendly_name"] = str(
+            candidate.get("friendly_name") or mapping_friendly_name(hass, current)
+        )
+        if candidate.get("source_attr"):
+            current["source_attr"] = candidate.get("source_attr")
+        else:
+            current.pop("source_attr", None)
+        if candidate.get("write_action"):
+            current["write_action"] = candidate.get("write_action")
+        else:
+            current.pop("write_action", None)
+        if candidate.get("mv_states"):
+            current["mv_states"] = list(candidate.get("mv_states") or [])
+        else:
+            current.pop("mv_states", None)
+        if candidate.get("hvac_on_mode"):
+            current["hvac_on_mode"] = candidate.get("hvac_on_mode")
+        else:
+            current.pop("hvac_on_mode", None)
+        if candidate.get("hvac_off_mode"):
+            current["hvac_off_mode"] = candidate.get("hvac_off_mode")
+        else:
+            current.pop("hvac_off_mode", None)
+
         kept.append(current)
-        existing_entity_ids.add(entity_id)
+        existing_mapping_keys.add(key)
 
     added_count = 0
     for entity_id in sorted(targets):
         if not entity_exists(hass, entity_id):
             continue
-        if entity_id in existing_entity_ids:
-            continue
+        for candidate in entity_mapping_candidates(hass, entity_id):
+            key = mapping_key(candidate)
+            if key in existing_mapping_keys:
+                continue
 
-        object_type, units = determine_object_type_and_units(hass, entity_id)
-        instance = _next_instance(object_type, counters, kept)
-        kept.append(
-            {
+            object_type = str(candidate.get("object_type") or "").strip()
+            if not object_type:
+                continue
+
+            instance = _next_instance(object_type, counters, kept)
+            new_map = {
                 "entity_id": entity_id,
                 "object_type": object_type,
                 "instance": instance,
-                "units": units,
-                "friendly_name": entity_friendly_name(hass, entity_id),
+                "units": candidate.get("units"),
+                "friendly_name": str(
+                    candidate.get("friendly_name") or mapping_friendly_name(hass, candidate)
+                ),
                 "auto": True,
                 "auto_mode": mode,
             }
-        )
-        existing_entity_ids.add(entity_id)
-        added_count += 1
+            if candidate.get("source_attr"):
+                new_map["source_attr"] = candidate.get("source_attr")
+            if candidate.get("write_action"):
+                new_map["write_action"] = candidate.get("write_action")
+            if candidate.get("mv_states"):
+                new_map["mv_states"] = list(candidate.get("mv_states") or [])
+            if candidate.get("hvac_on_mode"):
+                new_map["hvac_on_mode"] = candidate.get("hvac_on_mode")
+            if candidate.get("hvac_off_mode"):
+                new_map["hvac_off_mode"] = candidate.get("hvac_off_mode")
+
+            kept.append(new_map)
+            existing_mapping_keys.add(key)
+            added_count += 1
 
     changed = (
         (kept != original_published)
