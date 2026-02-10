@@ -221,6 +221,7 @@ def entity_mapping_candidates(hass: HomeAssistant, entity_id: str) -> list[dict[
             "object_type": "binaryValue",
             "units": None,
             "source_attr": "hvac_mode",
+            "read_attr": _SOURCE_STATE,
             "write_action": "climate_hvac_mode",
             "hvac_on_mode": "heat",
             "hvac_off_mode": "off",
@@ -231,6 +232,7 @@ def entity_mapping_candidates(hass: HomeAssistant, entity_id: str) -> list[dict[
             "object_type": "multiStateValue",
             "units": None,
             "source_attr": "hvac_mode",
+            "read_attr": _SOURCE_STATE,
             "write_action": "climate_hvac_mode",
             "mv_states": hvac_modes,
         }

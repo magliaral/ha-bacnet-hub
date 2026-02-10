@@ -326,9 +326,13 @@ class BacnetPublisher:
         read_attr = str(mapping.get("read_attr") or "").strip()
         source_attr = str(mapping.get("source_attr") or "").strip()
         attr_name = read_attr or source_attr
-        if attr_name:
+        if attr_name and attr_name != "__state__":
             attrs = getattr(state_obj, "attributes", {}) or {}
-            return attrs.get(attr_name)
+            val = attrs.get(attr_name)
+            # Backward compatibility: hvac_mode is typically the climate state, not an attribute.
+            if val is None and attr_name == "hvac_mode":
+                return getattr(state_obj, "state", None)
+            return val
         return getattr(state_obj, "state", None)
 
     async def _initial_sync(self) -> None:

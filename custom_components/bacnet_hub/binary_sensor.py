@@ -30,6 +30,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             continue
         instance = int(m.get("instance", 0))
         source_attr = m.get("source_attr")
+        read_attr = m.get("read_attr")
         hvac_on_mode = m.get("hvac_on_mode")
         friendly = m.get("friendly_name")
         name = f"(BV-{instance}) {friendly}"
@@ -41,6 +42,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 instance=instance,
                 name=name,
                 source_attr=source_attr,
+                read_attr=read_attr,
                 hvac_on_mode=hvac_on_mode,
             )
         )
@@ -66,12 +68,14 @@ class BacnetPublishedBinarySensor(BinarySensorEntity):
         instance: int,
         name: str,
         source_attr: str | None,
+        read_attr: str | None,
         hvac_on_mode: str | None,
     ):
         self.hass = hass
         self._entry_id = entry_id
         self._source = source_entity_id
         self._source_attr = str(source_attr or "").strip()
+        self._read_attr = str(read_attr or "").strip()
         self._hvac_on_mode = str(hvac_on_mode or "heat").strip().lower()
         self._instance = instance
         self._attr_name = name
@@ -155,7 +159,13 @@ class BacnetPublishedBinarySensor(BinarySensorEntity):
         self._attr_name = f"(BACnet BV-{self._instance}) {src_name}"
 
         # Mirror state exactly (on/off)
-        source_state = st.attributes.get(self._source_attr) if self._source_attr else st.state
+        attr_name = self._read_attr or self._source_attr
+        if attr_name and attr_name != "__state__":
+            source_state = st.attributes.get(attr_name)
+            if source_state is None and attr_name == "hvac_mode":
+                source_state = st.state
+        else:
+            source_state = st.state
         source_text = str(source_state or "").strip().lower()
         if self._source_attr == "hvac_mode":
             self._attr_is_on = source_text == self._hvac_on_mode
