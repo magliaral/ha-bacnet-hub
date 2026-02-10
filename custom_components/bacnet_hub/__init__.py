@@ -15,20 +15,17 @@ from homeassistant.helpers.event import async_track_time_interval
 
 from .const import (
     AUTO_SYNC_INTERVAL_SECONDS,
-    CONF_IMPORT_AREAS,
     CONF_IMPORT_LABEL,
+    CONF_IMPORT_LABELS,
     CONF_PUBLISH_MODE,
     DEFAULT_PUBLISH_MODE,
     DOMAIN,
-    PUBLISH_MODE_AREAS,
-    PUBLISH_MODE_CLASSIC,
     PUBLISH_MODE_LABELS,
 )
 from .discovery import (
     entity_mapping_candidates,
     entity_exists,
-    entity_ids_for_areas,
-    entity_ids_for_label,
+    entity_ids_for_labels,
     mapping_friendly_name,
     mapping_key,
 )
@@ -63,9 +60,9 @@ def _ensure_domain(hass: HomeAssistant) -> Dict[str, Any]:
 
 def _normalize_publish_mode(value: Any) -> str:
     mode = str(value or DEFAULT_PUBLISH_MODE).strip().lower()
-    if mode in (PUBLISH_MODE_CLASSIC, PUBLISH_MODE_LABELS, PUBLISH_MODE_AREAS):
+    if mode == PUBLISH_MODE_LABELS:
         return mode
-    return DEFAULT_PUBLISH_MODE
+    return PUBLISH_MODE_LABELS
 
 
 def _as_int(value: Any, fallback: int = 0) -> int:
@@ -209,13 +206,19 @@ def _cleanup_orphan_published_entities(
 
 
 def _auto_target_entity_ids(hass: HomeAssistant, options: Dict[str, Any], mode: str) -> set[str]:
-    if mode == PUBLISH_MODE_LABELS:
-        label_id = str(options.get(CONF_IMPORT_LABEL) or "").strip()
-        return entity_ids_for_label(hass, label_id)
-    if mode == PUBLISH_MODE_AREAS:
-        area_ids = set(_as_string_list(options.get(CONF_IMPORT_AREAS)))
-        return entity_ids_for_areas(hass, area_ids)
-    return set()
+    if mode != PUBLISH_MODE_LABELS:
+        return set()
+
+    label_ids = set(_as_string_list(options.get(CONF_IMPORT_LABELS)))
+    if not label_ids:
+        legacy_label = str(options.get(CONF_IMPORT_LABEL) or "").strip()
+        if legacy_label:
+            label_ids.add(legacy_label)
+
+    if not label_ids:
+        return set()
+
+    return entity_ids_for_labels(hass, label_ids)
 
 
 async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> bool:
@@ -233,12 +236,32 @@ async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> bool:
     options.pop("show_technical_ids", None)
     options.pop("label_template", None)
 
+    had_legacy_mapping_keys = False
+
     mode = _normalize_publish_mode(options.get(CONF_PUBLISH_MODE, DEFAULT_PUBLISH_MODE))
+    if mode != PUBLISH_MODE_LABELS:
+        options[CONF_PUBLISH_MODE] = PUBLISH_MODE_LABELS
+        mode = PUBLISH_MODE_LABELS
+        had_legacy_mapping_keys = True
+
+    label_ids = _as_string_list(options.get(CONF_IMPORT_LABELS))
+    if not label_ids:
+        legacy_label = str(options.get(CONF_IMPORT_LABEL) or "").strip()
+        if legacy_label:
+            options[CONF_IMPORT_LABELS] = [legacy_label]
+            label_ids = [legacy_label]
+            had_legacy_mapping_keys = True
+    else:
+        # Keep legacy single value aligned for compatibility.
+        first_label = str(label_ids[0]).strip()
+        if str(options.get(CONF_IMPORT_LABEL) or "").strip() != first_label:
+            options[CONF_IMPORT_LABEL] = first_label
+            had_legacy_mapping_keys = True
+
     published: List[Dict[str, Any]] = list(options.get("published", []))
     counters: Dict[str, int] = dict(options.get("counters", {}))
     original_published = list(published)
     original_counters = dict(counters)
-    had_legacy_mapping_keys = False
 
     _ensure_counter_floor(counters, published)
     targets = _auto_target_entity_ids(hass, options, mode)
@@ -279,16 +302,12 @@ async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> bool:
 
         is_auto = bool(current.get("auto", False))
         if not is_auto:
-            current["friendly_name"] = mapping_friendly_name(hass, current)
-            kept.append(current)
-            existing_mapping_keys.add(key)
+            # Manual mappings are no longer part of the simplified labels-only model.
+            removed_count += 1
             continue
 
         auto_mode = str(current.get("auto_mode") or "")
-        if mode not in (PUBLISH_MODE_LABELS, PUBLISH_MODE_AREAS):
-            removed_count += 1
-            continue
-        if auto_mode != mode:
+        if auto_mode and auto_mode != mode:
             removed_count += 1
             continue
         if entity_id not in targets:

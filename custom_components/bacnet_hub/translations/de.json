@@ -11,132 +11,24 @@
       }
     },
     "error": {
-      "invalid_int": "Ungültige Zahl.",
-      "invalid_address": "Ungültige Adresse. Erlaubtes Format: IP[/Präfix][:Port], zum Beispiel 192.168.31.36/24:47808."
+      "invalid_int": "Ungueltige Zahl.",
+      "invalid_address": "Ungueltige Adresse. Erlaubtes Format: IP[/Praefix][:Port], zum Beispiel 192.168.31.36/24:47808."
     }
   },
   "options": {
     "step": {
-      "init": {
-        "title": "BACnet Hub Optionen",
-        "description": "Wähle einen Bereich zur Konfiguration.",
-        "menu_options": {
-          "device": "Geräteeinstellungen",
-          "publish": "Publish-Mappings"
-        }
-      },
       "device": {
-        "title": "Geräteeinstellungen",
-        "description": "Instanznummer, lokale Adresse und bevorzugten Import-Modus konfigurieren.",
+        "title": "Geraeteeinstellungen",
+        "description": "Instanznummer, lokale Adresse und Labels-Import konfigurieren. Passende Entitaeten werden jede Minute automatisch gemappt.",
         "data": {
           "instance": "Instanznummer",
           "address": "Lokale BACnet/IP-Adresse (zum Beispiel 192.168.31.36/24:47808)",
-          "publish_mode": "Bevorzugter Import-Modus"
+          "import_labels": "Labels"
         }
-      },
-      "publish_classic": {
-        "title": "Manuelles Mapping",
-        "description": "Aktuelle Mappings:\n{current_mappings}",
-        "menu_options": {
-          "publish_add": "Neu hinzufügen",
-          "publish_edit": "Bearbeiten",
-          "publish_delete": "Löschen"
-        }
-      },
-      "publish_labels_menu": {
-        "title": "Labels-Mapping",
-        "description": "Aktuelle Mappings:\n{current_mappings}",
-        "menu_options": {
-          "publish_labels": "Labels konfigurieren",
-          "publish_edit": "Bearbeiten",
-          "publish_delete": "Löschen"
-        }
-      },
-      "publish_areas_menu": {
-        "title": "Bereiche-Mapping",
-        "description": "Aktuelle Mappings:\n{current_mappings}",
-        "menu_options": {
-          "publish_areas": "Bereiche konfigurieren",
-          "publish_edit": "Bearbeiten",
-          "publish_delete": "Löschen"
-        }
-      },
-      "publish_labels": {
-        "title": "Labels-Import",
-        "description": "Ein Label auswählen. Alle passenden Entitäten werden jede Minute automatisch gemappt.",
-        "data": {
-          "import_label": "Labels"
-        }
-      },
-      "publish_areas": {
-        "title": "Bereiche-Import",
-        "description": "Einen oder mehrere Bereiche auswählen. Alle passenden Entitäten werden jede Minute automatisch gemappt.",
-        "data": {
-          "import_areas": "Bereiche"
-        }
-      },
-      "publish_add": {
-        "title": "Mapping hinzufügen",
-        "description": "Quelle auswählen.",
-        "data": {
-          "source": "Quelle"
-        }
-      },
-      "publish_add_entity": {
-        "title": "Entitäts-Mapping hinzufügen",
-        "description": "Entität auswählen.",
-        "data": {
-          "entity_id": "Entität"
-        }
-      },
-      "publish_add_device": {
-        "title": "Geräte-Mappings hinzufügen",
-        "description": "Gerät auswählen. Alle unterstützten Entitäten dieses Geräts werden gemappt.",
-        "data": {
-          "device_id": "Gerät"
-        }
-      },
-      "publish_edit": {
-        "title": "Mapping auswählen",
-        "description": "Wähle ein Mapping zum Bearbeiten."
-      },
-      "publish_edit_form": {
-        "title": "Mapping bearbeiten",
-        "description": "Aktuelles Mapping: {mapping_label}",
-        "data": {
-          "entity_id": "Entität"
-        }
-      },
-      "publish_delete": {
-        "title": "Mapping löschen",
-        "description": "Wähle ein Mapping zum Löschen."
       }
     },
     "error": {
-      "invalid_entity": "Ungültige Entität.",
-      "invalid_source": "Ungültige Quelle.",
-      "invalid_label": "Ungültiges Label.",
-      "invalid_area_selection": "Bitte mindestens eine gültige Area auswählen.",
-      "mapping_exists": "Diese Entität ist bereits gemappt.",
-      "no_supported_entities": "Das ausgewählte Gerät hat keine unterstützten Entitäten.",
-      "no_new_entities": "Für dieses Gerät wurden keine neuen unterstützten Entitäten gefunden.",
-      "no_labels_available": "Keine Labels verfügbar.",
-      "no_areas_available": "Keine Bereiche verfügbar."
-    }
-  },
-  "selector": {
-    "publish_mode": {
-      "options": {
-        "classic": "Manuell",
-        "labels": "Labels",
-        "areas": "Bereiche"
-      }
-    },
-    "publish_add_source": {
-      "options": {
-        "entity": "Entität",
-        "device": "Gerät"
-      }
+      "invalid_label_selection": "Bitte mindestens ein gueltiges Label auswaehlen."
     }
   }
 }

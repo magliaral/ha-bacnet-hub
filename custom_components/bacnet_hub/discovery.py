@@ -440,6 +440,13 @@ def entity_ids_for_label(hass: HomeAssistant, label_id: str) -> set[str]:
     return result
 
 
+def entity_ids_for_labels(hass: HomeAssistant, label_ids: set[str]) -> set[str]:
+    result: set[str] = set()
+    for label_id in label_ids:
+        result |= entity_ids_for_label(hass, label_id)
+    return result
+
+
 def entity_ids_for_areas(hass: HomeAssistant, area_ids: set[str]) -> set[str]:
     if not area_ids:
         return set()

@@ -17,126 +17,18 @@
   },
   "options": {
     "step": {
-      "init": {
-        "title": "BACnet Hub options",
-        "description": "Choose a section to configure.",
-        "menu_options": {
-          "device": "Device settings",
-          "publish": "Publish mappings"
-        }
-      },
       "device": {
         "title": "Device settings",
-        "description": "Configure local instance number, address and preferred import mode.",
+        "description": "Configure local instance number, address and labels import. Matching entities are mapped automatically every minute.",
         "data": {
           "instance": "Instance number",
           "address": "Local BACnet/IP address (for example 192.168.31.36/24:47808)",
-          "publish_mode": "Preferred import mode"
+          "import_labels": "Labels"
         }
-      },
-      "publish_classic": {
-        "title": "Manual mapping",
-        "description": "Current mappings:\n{current_mappings}",
-        "menu_options": {
-          "publish_add": "Add new",
-          "publish_edit": "Edit",
-          "publish_delete": "Delete"
-        }
-      },
-      "publish_labels_menu": {
-        "title": "Labels mapping",
-        "description": "Current mappings:\n{current_mappings}",
-        "menu_options": {
-          "publish_labels": "Configure Labels",
-          "publish_edit": "Edit",
-          "publish_delete": "Delete"
-        }
-      },
-      "publish_areas_menu": {
-        "title": "Areas mapping",
-        "description": "Current mappings:\n{current_mappings}",
-        "menu_options": {
-          "publish_areas": "Configure Areas",
-          "publish_edit": "Edit",
-          "publish_delete": "Delete"
-        }
-      },
-      "publish_labels": {
-        "title": "Labels import",
-        "description": "Select one label. All matching entities are mapped automatically every minute.",
-        "data": {
-          "import_label": "Labels"
-        }
-      },
-      "publish_areas": {
-        "title": "Area import",
-        "description": "Select one or more areas. All matching entities are mapped automatically every minute.",
-        "data": {
-          "import_areas": "Areas"
-        }
-      },
-      "publish_add": {
-        "title": "Add mapping",
-        "description": "Select source type.",
-        "data": {
-          "source": "Source"
-        }
-      },
-      "publish_add_entity": {
-        "title": "Add entity mapping",
-        "description": "Select an entity.",
-        "data": {
-          "entity_id": "Entity"
-        }
-      },
-      "publish_add_device": {
-        "title": "Add device mappings",
-        "description": "Select a device. All supported entities of that device will be mapped.",
-        "data": {
-          "device_id": "Device"
-        }
-      },
-      "publish_edit": {
-        "title": "Select mapping",
-        "description": "Select a mapping to edit."
-      },
-      "publish_edit_form": {
-        "title": "Edit mapping",
-        "description": "Current mapping: {mapping_label}",
-        "data": {
-          "entity_id": "Entity"
-        }
-      },
-      "publish_delete": {
-        "title": "Delete mapping",
-        "description": "Select a mapping to delete."
       }
     },
     "error": {
-      "invalid_entity": "Invalid entity.",
-      "invalid_source": "Invalid source.",
-      "invalid_label": "Invalid label.",
-      "invalid_area_selection": "Please select at least one valid area.",
-      "mapping_exists": "This entity is already mapped.",
-      "no_supported_entities": "The selected device has no supported entities.",
-      "no_new_entities": "No new supported entities were found for this device.",
-      "no_labels_available": "No labels available.",
-      "no_areas_available": "No areas available."
-    }
-  },
-  "selector": {
-    "publish_mode": {
-      "options": {
-        "classic": "Manual",
-        "labels": "Labels",
-        "areas": "Areas"
-      }
-    },
-    "publish_add_source": {
-      "options": {
-        "entity": "Entity",
-        "device": "Device"
-      }
+      "invalid_label_selection": "Please select at least one valid label."
     }
   }
 }
