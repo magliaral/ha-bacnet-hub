@@ -11,15 +11,15 @@
       }
     },
     "error": {
-      "invalid_int": "Ungueltige Zahl.",
-      "invalid_address": "Ungueltige Adresse. Erlaubtes Format: IP[/Praefix][:Port], zum Beispiel 192.168.31.36/24:47808."
+      "invalid_int": "Ungültige Zahl.",
+      "invalid_address": "Ungültige Adresse. Erlaubtes Format: IP[/Präfix][:Port], zum Beispiel 192.168.31.36/24:47808."
     }
   },
   "options": {
     "step": {
       "device": {
-        "title": "Geraeteeinstellungen",
-        "description": "Instanznummer, lokale Adresse und Labels-Import konfigurieren. Passende Entitaeten werden jede Minute automatisch gemappt.",
+        "title": "Geräteeinstellungen",
+        "description": "Instanznummer, lokale Adresse und Labels-Import konfigurieren. Passende Entitäten werden jede Minute automatisch gemappt.",
         "data": {
           "instance": "Instanznummer",
           "address": "Lokale BACnet/IP-Adresse (zum Beispiel 192.168.31.36/24:47808)",
@@ -28,7 +28,7 @@
       }
     },
     "error": {
-      "invalid_label_selection": "Bitte mindestens ein gueltiges Label auswaehlen."
+      "invalid_label_selection": "Bitte mindestens ein gültiges Label auswählen."
     }
   }
 }
