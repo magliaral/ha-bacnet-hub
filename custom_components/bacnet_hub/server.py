@@ -8,6 +8,7 @@ import socket
 from typing import Any, Dict, Iterable, Optional
 
 from bacpypes3.app import Application
+from bacpypes3.errors import ExecutionError
 from bacpypes3.vendor import get_vendor_info
 from bacpypes3.object import ObjectType, PropertyIdentifier
 from bacpypes3.basetypes import IPMode, HostNPort, BDTEntry
@@ -143,22 +144,39 @@ class HubApp(
         # CRITICAL: Read old value BEFORE super() changes it
         old_value = None
         obj = None
+        mapping = None
+        oid = None
+        is_present_value = apdu.propertyIdentifier in (
+            "presentValue",
+            PropertyIdentifier.presentValue,
+        )
         try:
-            if apdu.propertyIdentifier in ("presentValue", PropertyIdentifier.presentValue):
+            if is_present_value:
                 if self.publisher:
                     oid = apdu.objectIdentifier
                     obj = self.publisher.by_oid.get(oid)
+                    mapping = self.publisher.map_by_oid.get(oid)
                     if obj:
                         old_value = getattr(obj, "presentValue", None)
                         _LOGGER.debug("WriteProperty BEFORE super(): %r old_value=%r", oid, old_value)
         except Exception:
             pass  # Continue even if old value read fails
 
+        # Enforce read-only mappings before local PV mutation/COV.
+        if is_present_value and self.publisher and mapping:
+            if not self.publisher.is_mapping_writable(mapping):
+                _LOGGER.debug(
+                    "WriteProperty denied (read-only mapping): %r -> %s",
+                    oid,
+                    mapping.get("entity_id"),
+                )
+                raise ExecutionError("property", "writeAccessDenied")
+
         # Call superclass to perform the actual write
         await super().do_WritePropertyRequest(apdu)
 
         try:
-            if apdu.propertyIdentifier not in ("presentValue", PropertyIdentifier.presentValue):
+            if not is_present_value:
                 return
 
             if not self.publisher:

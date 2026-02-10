@@ -451,6 +451,10 @@ class BacnetPublisher:
 
         return False
 
+    def is_mapping_writable(self, mapping: Dict[str, Any]) -> bool:
+        """Public guard used by BACnet write handler before local PV updates."""
+        return self._is_mapping_auto_writable(mapping)
+
     async def forward_to_ha_from_bacnet(self, mapping: Dict[str, Any], value: Any) -> None:
         """Called by HubApp after successful WriteProperty(/Multiple)."""
         ent = str(mapping.get("entity_id") or "")
