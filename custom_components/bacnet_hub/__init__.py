@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import timedelta
 from typing import Any, Dict, List
@@ -38,6 +39,8 @@ KEY_LOCKS = "locks"
 KEY_PUBLISHED_CACHE = "published"
 KEY_SUPPRESS_RELOAD = "suppress_reload"
 KEY_AUTO_SYNC_UNSUB = "auto_sync_unsub"
+KEY_RELOAD_LOCKS = "reload_locks"
+KEY_LAST_RELOAD_FP = "last_reload_fingerprint"
 
 PLATFORMS: List[str] = ["sensor", "binary_sensor"]
 
@@ -52,6 +55,8 @@ def _ensure_domain(hass: HomeAssistant) -> Dict[str, Any]:
     hass.data[DOMAIN].setdefault(KEY_LOCKS, {})
     hass.data[DOMAIN].setdefault(KEY_PUBLISHED_CACHE, {})
     hass.data[DOMAIN].setdefault(KEY_AUTO_SYNC_UNSUB, {})
+    hass.data[DOMAIN].setdefault(KEY_RELOAD_LOCKS, {})
+    hass.data[DOMAIN].setdefault(KEY_LAST_RELOAD_FP, {})
     return hass.data[DOMAIN]
 
 
@@ -78,6 +83,14 @@ def _as_string_list(value: Any) -> list[str]:
     if isinstance(value, (list, tuple, set)):
         return [str(item).strip() for item in value if str(item).strip()]
     return []
+
+
+def _options_fingerprint(options: Dict[str, Any]) -> str:
+    """Stable fingerprint to suppress duplicate reloads for identical options."""
+    try:
+        return json.dumps(options or {}, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+    except Exception:
+        return repr(options or {})
 
 
 def _refresh_friendly_names_inplace(hass: HomeAssistant, published: List[Dict[str, Any]]) -> bool:
@@ -295,7 +308,7 @@ async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> bool:
     new_options.pop("label_template", None)
     new_options["published"] = kept
     new_options["counters"] = counters
-    await hass.config_entries.async_update_entry(entry, options=new_options)
+    hass.config_entries.async_update_entry(entry, options=new_options)
     _LOGGER.info(
         "Auto mapping sync updated entry %s (mode=%s, added=%d, removed=%d)",
         entry_id,
@@ -389,7 +402,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             new_options = dict(entry.options or {})
             new_options["published"] = published
             hass.data[DOMAIN][KEY_SUPPRESS_RELOAD] = True
-            await hass.config_entries.async_update_entry(entry, options=new_options)
+            hass.config_entries.async_update_entry(entry, options=new_options)
             _LOGGER.info("friendly_name updated in options (Entry %s).", entry.entry_id)
         except Exception:
             _LOGGER.exception("Could not update options (friendly_name sync).")
@@ -403,7 +416,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     new_options = dict(entry.options or {})
                     new_options["published"] = late_published
                     hass.data[DOMAIN][KEY_SUPPRESS_RELOAD] = True
-                    await hass.config_entries.async_update_entry(entry, options=new_options)
+                    hass.config_entries.async_update_entry(entry, options=new_options)
                     _LOGGER.info("friendly_name updated again after start (Entry %s).", entry.entry_id)
 
                 server = hass.data[DOMAIN][KEY_SERVERS].get(entry.entry_id)
@@ -451,6 +464,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     servers: dict[str, Any] = data[KEY_SERVERS]
     locks: dict[str, asyncio.Lock] = data[KEY_LOCKS]
     auto_unsubs: dict[str, Any] = data[KEY_AUTO_SYNC_UNSUB]
+    reload_locks: dict[str, asyncio.Lock] = data[KEY_RELOAD_LOCKS]
+    reload_fp: dict[str, str] = data[KEY_LAST_RELOAD_FP]
 
     unsub = auto_unsubs.pop(entry.entry_id, None)
     if unsub:
@@ -465,6 +480,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     lock = locks.setdefault(entry.entry_id, asyncio.Lock())
 
     data[KEY_PUBLISHED_CACHE].pop(entry.entry_id, None)
+    reload_locks.pop(entry.entry_id, None)
+    reload_fp.pop(entry.entry_id, None)
 
     if server is None:
         _LOGGER.debug("No running server for entry %s - nothing to unload.", entry.entry_id)
@@ -482,25 +499,42 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 @callback
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    if hass.data.get(DOMAIN, {}).pop(KEY_SUPPRESS_RELOAD, False):
-        _LOGGER.debug("Reload suppressed (friendly names synchronized).")
-        return
+    data = _ensure_domain(hass)
+    reload_locks: dict[str, asyncio.Lock] = data[KEY_RELOAD_LOCKS]
+    reload_fp: dict[str, str] = data[KEY_LAST_RELOAD_FP]
+    reload_lock = reload_locks.setdefault(entry.entry_id, asyncio.Lock())
 
-    try:
-        changed = await _async_sync_auto_mappings(hass, entry.entry_id)
-        if changed:
-            # async_update_entry triggered another listener call that will do the reload.
+    async with reload_lock:
+        if hass.data.get(DOMAIN, {}).pop(KEY_SUPPRESS_RELOAD, False):
+            _LOGGER.debug("Reload suppressed (friendly names synchronized).")
+            return
+
+        try:
+            changed = await _async_sync_auto_mappings(hass, entry.entry_id)
+            if changed:
+                # async_update_entry triggered another listener call that will do the reload.
+                _LOGGER.debug(
+                    "Auto sync adjusted options for %s (Entry %s); waiting for follow-up reload.",
+                    DOMAIN,
+                    entry.entry_id,
+                )
+                return
+        except Exception:
+            _LOGGER.debug("Auto sync before reload failed for entry %s", entry.entry_id, exc_info=True)
+
+        current_entry = _entry_by_id(hass, entry.entry_id)
+        if not current_entry:
+            return
+
+        options_fp = _options_fingerprint(dict(current_entry.options or {}))
+        if reload_fp.get(entry.entry_id) == options_fp:
             _LOGGER.debug(
-                "Auto sync adjusted options for %s (Entry %s); waiting for follow-up reload.",
+                "Skipping duplicate reload for %s (Entry %s): options unchanged.",
                 DOMAIN,
                 entry.entry_id,
             )
             return
-    except Exception:
-        _LOGGER.debug("Auto sync before reload failed for entry %s", entry.entry_id, exc_info=True)
 
-    current_entry = _entry_by_id(hass, entry.entry_id)
-    if current_entry:
         try:
             current_published: List[Dict[str, Any]] = list(
                 (current_entry.options or {}).get("published", [])
@@ -516,5 +550,7 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
             _LOGGER.debug(
                 "Orphan cleanup before reload failed for entry %s", entry.entry_id, exc_info=True
             )
-    _LOGGER.debug("Options update for %s (Entry %s) - starting reload.", DOMAIN, entry.entry_id)
-    await hass.config_entries.async_reload(entry.entry_id)
+
+        _LOGGER.debug("Options update for %s (Entry %s) - starting reload.", DOMAIN, entry.entry_id)
+        await hass.config_entries.async_reload(entry.entry_id)
+        reload_fp[entry.entry_id] = options_fp
