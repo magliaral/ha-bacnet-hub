@@ -255,6 +255,11 @@ class BacnetHubOptionsFlow(OptionsFlow):
                 self._opts["instance"] = inst
                 self._opts["address"] = addr
                 self._opts[CONF_PUBLISH_MODE] = mode
+                if mode != current_mode:
+                    # Hard reset on mode change: remove all mappings and restart instances.
+                    self._opts["published"] = []
+                    self._opts["counters"] = {"analogValue": 0, "binaryValue": 0}
+                    self._opts.pop("_edit_index", None)
                 if mode != PUBLISH_MODE_LABELS:
                     self._opts.pop(CONF_IMPORT_LABEL, None)
                 if mode != PUBLISH_MODE_AREAS:

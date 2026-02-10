@@ -202,12 +202,10 @@ def _auto_target_entity_ids(hass: HomeAssistant, options: Dict[str, Any], mode: 
     return set()
 
 
-async def _async_sync_auto_mappings(
-    hass: HomeAssistant, entry_id: str, suppress_reload_once: bool = False
-) -> None:
+async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> bool:
     entry = _entry_by_id(hass, entry_id)
     if not entry:
-        return
+        return False
 
     current_options = dict(entry.options or {})
     had_legacy_ui_keys = any(
@@ -289,7 +287,7 @@ async def _async_sync_auto_mappings(
 
     changed = (kept != original_published) or (counters != original_counters) or had_legacy_ui_keys
     if not changed:
-        return
+        return False
 
     new_options = dict(entry.options or {})
     new_options.pop("ui_mode", None)
@@ -297,8 +295,6 @@ async def _async_sync_auto_mappings(
     new_options.pop("label_template", None)
     new_options["published"] = kept
     new_options["counters"] = counters
-    if suppress_reload_once:
-        hass.data[DOMAIN][KEY_SUPPRESS_RELOAD] = True
     await hass.config_entries.async_update_entry(entry, options=new_options)
     _LOGGER.info(
         "Auto mapping sync updated entry %s (mode=%s, added=%d, removed=%d)",
@@ -307,6 +303,7 @@ async def _async_sync_auto_mappings(
         added_count,
         removed_count,
     )
+    return True
 
 
 def _start_auto_sync(hass: HomeAssistant, entry_id: str):
@@ -488,16 +485,36 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
     if hass.data.get(DOMAIN, {}).pop(KEY_SUPPRESS_RELOAD, False):
         _LOGGER.debug("Reload suppressed (friendly names synchronized).")
         return
-    await _async_sync_auto_mappings(hass, entry.entry_id, suppress_reload_once=True)
+
+    try:
+        changed = await _async_sync_auto_mappings(hass, entry.entry_id)
+        if changed:
+            # async_update_entry triggered another listener call that will do the reload.
+            _LOGGER.debug(
+                "Auto sync adjusted options for %s (Entry %s); waiting for follow-up reload.",
+                DOMAIN,
+                entry.entry_id,
+            )
+            return
+    except Exception:
+        _LOGGER.debug("Auto sync before reload failed for entry %s", entry.entry_id, exc_info=True)
+
     current_entry = _entry_by_id(hass, entry.entry_id)
     if current_entry:
-        current_published: List[Dict[str, Any]] = list((current_entry.options or {}).get("published", []))
-        removed = _cleanup_orphan_published_entities(hass, current_entry, current_published)
-        if removed:
-            _LOGGER.info(
-                "Removed %d stale BACnet entities for entry %s before reload",
-                removed,
-                entry.entry_id,
+        try:
+            current_published: List[Dict[str, Any]] = list(
+                (current_entry.options or {}).get("published", [])
+            )
+            removed = _cleanup_orphan_published_entities(hass, current_entry, current_published)
+            if removed:
+                _LOGGER.info(
+                    "Removed %d stale BACnet entities for entry %s before reload",
+                    removed,
+                    entry.entry_id,
+                )
+        except Exception:
+            _LOGGER.debug(
+                "Orphan cleanup before reload failed for entry %s", entry.entry_id, exc_info=True
             )
     _LOGGER.debug("Options update for %s (Entry %s) - starting reload.", DOMAIN, entry.entry_id)
     await hass.config_entries.async_reload(entry.entry_id)
