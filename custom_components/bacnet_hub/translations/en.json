@@ -22,7 +22,6 @@
         "description": "Choose a section to configure.",
         "menu_options": {
           "device": "Device settings",
-          "ui": "UI and labels",
           "publish": "Publish mappings"
         }
       },
@@ -34,17 +33,15 @@
           "address": "Local BACnet/IP address (for example 192.168.31.36/24:47808)"
         }
       },
-      "ui": {
-        "title": "UI and labels",
-        "description": "Set mapping display mode and label format. Placeholders: {{friendly_name}}, {{entity_id}}, {{object_type}}, {{instance}}, {{writable}}, {{writable_text}}.",
+      "publish_mode": {
+        "title": "Publish mappings",
+        "description": "Select import mode first. Current mappings: {mappings_count}, automatic mappings: {auto_count}.",
         "data": {
-          "ui_mode": "UI mode",
-          "show_technical_ids": "Show technical object IDs",
-          "label_template": "Label template"
+          "publish_mode": "Import mode"
         }
       },
-      "publish": {
-        "title": "Publish mappings",
+      "publish_classic": {
+        "title": "Classic mapping",
         "description": "Current mappings:\n{current_mappings}",
         "menu_options": {
           "publish_add": "Add new",
@@ -52,44 +49,84 @@
           "publish_delete": "Delete"
         }
       },
+      "publish_labels": {
+        "title": "Label import",
+        "description": "Select one label. All matching entities are mapped automatically every minute.",
+        "data": {
+          "import_label": "Label"
+        }
+      },
+      "publish_areas": {
+        "title": "Area import",
+        "description": "Select one or more areas. All matching entities are mapped automatically every minute.",
+        "data": {
+          "import_areas": "Areas"
+        }
+      },
       "publish_add": {
         "title": "Add mapping",
-        "description": "Choose an entity and whether the object should be writable.",
+        "description": "Select source type.",
+        "data": {
+          "source": "Source"
+        }
+      },
+      "publish_add_entity": {
+        "title": "Add entity mapping",
+        "description": "Select an entity and whether it is writable.",
         "data": {
           "entity_id": "Entity",
-          "writable": "Writable",
-          "friendly_name": "Label override (optional)"
+          "writable": "Writable"
+        }
+      },
+      "publish_add_device": {
+        "title": "Add device mappings",
+        "description": "Select a device. All supported entities of that device will be mapped.",
+        "data": {
+          "device_id": "Device",
+          "writable": "Writable"
         }
       },
       "publish_edit": {
         "title": "Select mapping",
-        "description": "Choose a mapping to edit."
+        "description": "Select a mapping to edit."
       },
       "publish_edit_form": {
         "title": "Edit mapping",
-        "description": "Current label: {mapping_label}",
+        "description": "Current mapping: {mapping_label}",
         "data": {
           "entity_id": "Entity",
-          "writable": "Writable",
-          "friendly_name": "Label override"
+          "writable": "Writable"
         }
       },
       "publish_delete": {
         "title": "Delete mapping",
-        "description": "Choose a mapping to delete."
+        "description": "Select a mapping to delete."
       }
     },
     "error": {
       "invalid_entity": "Invalid entity.",
-      "invalid_label_template": "Invalid label template. Use valid placeholders and max 120 characters."
+      "invalid_source": "Invalid source.",
+      "invalid_label": "Invalid label.",
+      "invalid_area_selection": "Please select at least one valid area.",
+      "mapping_exists": "This entity is already mapped.",
+      "no_supported_entities": "The selected device has no supported entities.",
+      "no_new_entities": "No new supported entities were found for this device.",
+      "no_labels_available": "No labels available.",
+      "no_areas_available": "No areas available."
     }
   },
   "selector": {
-    "ui_mode": {
+    "publish_mode": {
       "options": {
-        "simple": "Simple",
-        "advanced": "Advanced",
-        "label": "Label mode"
+        "classic": "Classic",
+        "labels": "Label",
+        "areas": "Areas"
+      }
+    },
+    "publish_add_source": {
+      "options": {
+        "entity": "Entity",
+        "device": "Device"
       }
     }
   }

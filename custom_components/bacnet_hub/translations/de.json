@@ -22,7 +22,6 @@
         "description": "Wähle einen Bereich zur Konfiguration.",
         "menu_options": {
           "device": "Geräteeinstellungen",
-          "ui": "UI und Labels",
           "publish": "Publish-Mappings"
         }
       },
@@ -34,17 +33,15 @@
           "address": "Lokale BACnet/IP-Adresse (zum Beispiel 192.168.31.36/24:47808)"
         }
       },
-      "ui": {
-        "title": "UI und Labels",
-        "description": "Anzeige-Modus und Label-Format für Mappings festlegen. Platzhalter: {{friendly_name}}, {{entity_id}}, {{object_type}}, {{instance}}, {{writable}}, {{writable_text}}.",
+      "publish_mode": {
+        "title": "Publish-Mappings",
+        "description": "Zuerst den Import-Modus wählen. Aktuelle Mappings: {mappings_count}, automatische Mappings: {auto_count}.",
         "data": {
-          "ui_mode": "UI-Modus",
-          "show_technical_ids": "Technische Objekt-IDs anzeigen",
-          "label_template": "Label-Template"
+          "publish_mode": "Import-Modus"
         }
       },
-      "publish": {
-        "title": "Publish-Mappings",
+      "publish_classic": {
+        "title": "Klassisches Mapping",
         "description": "Aktuelle Mappings:\n{current_mappings}",
         "menu_options": {
           "publish_add": "Neu hinzufügen",
@@ -52,13 +49,41 @@
           "publish_delete": "Löschen"
         }
       },
+      "publish_labels": {
+        "title": "Label-Import",
+        "description": "Ein Label auswählen. Alle passenden Entitäten werden jede Minute automatisch gemappt.",
+        "data": {
+          "import_label": "Label"
+        }
+      },
+      "publish_areas": {
+        "title": "Area-Import",
+        "description": "Eine oder mehrere Areas auswählen. Alle passenden Entitäten werden jede Minute automatisch gemappt.",
+        "data": {
+          "import_areas": "Areas"
+        }
+      },
       "publish_add": {
         "title": "Mapping hinzufügen",
-        "description": "Wähle eine Entität und ob das Objekt beschreibbar sein soll.",
+        "description": "Quelle auswählen.",
+        "data": {
+          "source": "Quelle"
+        }
+      },
+      "publish_add_entity": {
+        "title": "Entitäts-Mapping hinzufügen",
+        "description": "Entität und Schreibbarkeit auswählen.",
         "data": {
           "entity_id": "Entität",
-          "writable": "Schreibbar",
-          "friendly_name": "Label-Überschreibung (optional)"
+          "writable": "Schreibbar"
+        }
+      },
+      "publish_add_device": {
+        "title": "Geräte-Mappings hinzufügen",
+        "description": "Gerät auswählen. Alle unterstützten Entitäten dieses Geräts werden gemappt.",
+        "data": {
+          "device_id": "Gerät",
+          "writable": "Schreibbar"
         }
       },
       "publish_edit": {
@@ -67,11 +92,10 @@
       },
       "publish_edit_form": {
         "title": "Mapping bearbeiten",
-        "description": "Aktuelles Label: {mapping_label}",
+        "description": "Aktuelles Mapping: {mapping_label}",
         "data": {
           "entity_id": "Entität",
-          "writable": "Schreibbar",
-          "friendly_name": "Label-Überschreibung"
+          "writable": "Schreibbar"
         }
       },
       "publish_delete": {
@@ -81,15 +105,28 @@
     },
     "error": {
       "invalid_entity": "Ungültige Entität.",
-      "invalid_label_template": "Ungültiges Label-Template. Nur gültige Platzhalter verwenden und maximal 120 Zeichen."
+      "invalid_source": "Ungültige Quelle.",
+      "invalid_label": "Ungültiges Label.",
+      "invalid_area_selection": "Bitte mindestens eine gültige Area auswählen.",
+      "mapping_exists": "Diese Entität ist bereits gemappt.",
+      "no_supported_entities": "Das ausgewählte Gerät hat keine unterstützten Entitäten.",
+      "no_new_entities": "Für dieses Gerät wurden keine neuen unterstützten Entitäten gefunden.",
+      "no_labels_available": "Keine Labels verfügbar.",
+      "no_areas_available": "Keine Areas verfügbar."
     }
   },
   "selector": {
-    "ui_mode": {
+    "publish_mode": {
       "options": {
-        "simple": "Einfach",
-        "advanced": "Erweitert",
-        "label": "Label-Modus"
+        "classic": "Klassisch",
+        "labels": "Label",
+        "areas": "Areas"
+      }
+    },
+    "publish_add_source": {
+      "options": {
+        "entity": "Entität",
+        "device": "Gerät"
       }
     }
   }

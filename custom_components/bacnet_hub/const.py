@@ -7,3 +7,14 @@ CONF_INSTANCE = "instance"
 CONF_DEVICE_NAME = "device_name"
 CONF_DEVICE_DESCRIPTION = "device_description"
 CONF_OBJECTS_YAML = "objects_yaml"
+
+CONF_PUBLISH_MODE = "publish_mode"
+CONF_IMPORT_LABEL = "import_label"
+CONF_IMPORT_AREAS = "import_areas"
+
+PUBLISH_MODE_CLASSIC = "classic"
+PUBLISH_MODE_LABELS = "labels"
+PUBLISH_MODE_AREAS = "areas"
+
+DEFAULT_PUBLISH_MODE = PUBLISH_MODE_CLASSIC
+AUTO_SYNC_INTERVAL_SECONDS = 60
