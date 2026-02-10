@@ -139,7 +139,7 @@ def _truthy(x: Any) -> bool:
 
     if s in ("0", "false", "off", "closed"):
         return False
-    return s in ("1", "true", "on", "open", "heat", "cool")
+    return s in ("1", "true", "on", "open", "heat", "cool", "heating", "cooling")
 
 
 def _as_float(x: Any, default: float = 0.0) -> float:

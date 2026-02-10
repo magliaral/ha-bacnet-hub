@@ -169,6 +169,9 @@ class BacnetPublishedBinarySensor(BinarySensorEntity):
         source_text = str(source_state or "").strip().lower()
         if self._source_attr == "hvac_mode":
             self._attr_is_on = source_text == self._hvac_on_mode
+        elif self._source_attr == "hvac_action":
+            # Requested behavior: idle=0 (off), anything else=1 (on).
+            self._attr_is_on = bool(source_text) and source_text not in ("idle", "off")
         else:
             self._attr_is_on = source_text in (
                 STATE_ON,
@@ -178,6 +181,8 @@ class BacnetPublishedBinarySensor(BinarySensorEntity):
                 "active",
                 "heat",
                 "cool",
+                "heating",
+                "cooling",
             )
 
         # Mirror device_class exactly if present and valid

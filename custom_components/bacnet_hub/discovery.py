@@ -21,6 +21,7 @@ _AUTO_WRITABLE_DOMAINS = {"light", "switch", "fan", "group", "cover", "number", 
 _SOURCE_STATE = "__state__"
 _CLIMATE_SUFFIX: dict[str, str] = {
     "hvac_mode": "HVAC Mode",
+    "hvac_action": "HVAC Action",
     "current_temperature": "Current Temperature",
     "temperature": "Target Temperature",
     "set_temperature": "Set Temperature",
@@ -238,6 +239,16 @@ def entity_mapping_candidates(hass: HomeAssistant, entity_id: str) -> list[dict[
         }
     hvac["friendly_name"] = mapping_friendly_name(hass, hvac)
     candidates.append(hvac)
+
+    if "hvac_action" in attrs:
+        hvac_action = {
+            "entity_id": entity_id,
+            "object_type": "binaryValue",
+            "units": None,
+            "source_attr": "hvac_action",
+        }
+        hvac_action["friendly_name"] = mapping_friendly_name(hass, hvac_action)
+        candidates.append(hvac_action)
 
     temp_unit = attrs.get("temperature_unit") or attrs.get("unit_of_measurement")
     if "current_temperature" in attrs:
