@@ -48,7 +48,7 @@
         "description": "Current mappings:\n{current_mappings}",
         "menu_options": {
           "publish_labels": "Configure Labels",
-          "publish_edit": "Edit writable",
+          "publish_edit": "Edit",
           "publish_delete": "Delete"
         }
       },
@@ -57,7 +57,7 @@
         "description": "Current mappings:\n{current_mappings}",
         "menu_options": {
           "publish_areas": "Configure Areas",
-          "publish_edit": "Edit writable",
+          "publish_edit": "Edit",
           "publish_delete": "Delete"
         }
       },
@@ -84,18 +84,16 @@
       },
       "publish_add_entity": {
         "title": "Add entity mapping",
-        "description": "Select an entity and whether it is writable.",
+        "description": "Select an entity.",
         "data": {
-          "entity_id": "Entity",
-          "writable": "Writable"
+          "entity_id": "Entity"
         }
       },
       "publish_add_device": {
         "title": "Add device mappings",
         "description": "Select a device. All supported entities of that device will be mapped.",
         "data": {
-          "device_id": "Device",
-          "writable": "Writable"
+          "device_id": "Device"
         }
       },
       "publish_edit": {
@@ -106,8 +104,7 @@
         "title": "Edit mapping",
         "description": "Current mapping: {mapping_label}",
         "data": {
-          "entity_id": "Entity",
-          "writable": "Writable"
+          "entity_id": "Entity"
         }
       },
       "publish_delete": {

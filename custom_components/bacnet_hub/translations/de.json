@@ -48,7 +48,7 @@
         "description": "Aktuelle Mappings:\n{current_mappings}",
         "menu_options": {
           "publish_labels": "Labels konfigurieren",
-          "publish_edit": "Schreibbarkeit bearbeiten",
+          "publish_edit": "Bearbeiten",
           "publish_delete": "Löschen"
         }
       },
@@ -57,7 +57,7 @@
         "description": "Aktuelle Mappings:\n{current_mappings}",
         "menu_options": {
           "publish_areas": "Bereiche konfigurieren",
-          "publish_edit": "Schreibbarkeit bearbeiten",
+          "publish_edit": "Bearbeiten",
           "publish_delete": "Löschen"
         }
       },
@@ -84,18 +84,16 @@
       },
       "publish_add_entity": {
         "title": "Entitäts-Mapping hinzufügen",
-        "description": "Entität und Schreibbarkeit auswählen.",
+        "description": "Entität auswählen.",
         "data": {
-          "entity_id": "Entität",
-          "writable": "Schreibbar"
+          "entity_id": "Entität"
         }
       },
       "publish_add_device": {
         "title": "Geräte-Mappings hinzufügen",
         "description": "Gerät auswählen. Alle unterstützten Entitäten dieses Geräts werden gemappt.",
         "data": {
-          "device_id": "Gerät",
-          "writable": "Schreibbar"
+          "device_id": "Gerät"
         }
       },
       "publish_edit": {
@@ -106,8 +104,7 @@
         "title": "Mapping bearbeiten",
         "description": "Aktuelles Mapping: {mapping_label}",
         "data": {
-          "entity_id": "Entität",
-          "writable": "Schreibbar"
+          "entity_id": "Entität"
         }
       },
       "publish_delete": {

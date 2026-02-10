@@ -17,6 +17,8 @@ from bacpypes3.apdu import WritePropertyRequest
 from bacpypes3.constructeddata import AnyAtomic
 from bacpypes3.primitivedata import Real
 
+from .discovery import is_entity_auto_writable
+
 _LOGGER = logging.getLogger(__name__)
 
 SUPPORTED_TYPES = {"binaryValue", "analogValue"}
@@ -357,10 +359,11 @@ class BacnetPublisher:
         Called by HubApp after successful WriteProperty(/Multiple).
         Executes the appropriate HA service operation.
         """
-        if not mapping.get("writable", False):
+        ent = mapping["entity_id"]
+        if not is_entity_auto_writable(self.hass, ent):
+            _LOGGER.debug("BACnet->HA write skipped for %s: auto-writable check failed", ent)
             return
 
-        ent = mapping["entity_id"]
         domain = _entity_domain(ent)
 
         if domain in ("light", "switch", "fan"):

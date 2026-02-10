@@ -35,7 +35,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         if not ent_id:
             continue
         instance = int(m.get("instance", 0))
-        writable = bool(m.get("writable", False))
         friendly = m.get("friendly_name")
         name = f"(AV-{instance}) {friendly}"
         entities.append(
@@ -45,7 +44,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 source_entity_id=ent_id,
                 instance=instance,
                 name=name,
-                writable=writable,
             )
         )
     if entities:
@@ -70,7 +68,6 @@ class BacnetPublishedSensor(SensorEntity):
         source_entity_id: str,
         instance: int,
         name: str,
-        writable: bool,
     ):
         self.hass = hass
         self._entry_id = entry_id
@@ -94,9 +91,6 @@ class BacnetPublishedSensor(SensorEntity):
         self._attr_icon: Optional[str] = None
         self._attr_entity_category: Optional[EntityCategory] = EntityCategory.DIAGNOSTIC
         self._attr_native_value: Optional[StateType] = None
-
-        # Keep for possible future write function (NumberEntity)
-        self._writable = writable
 
     async def async_added_to_hass(self) -> None:
         # Initial

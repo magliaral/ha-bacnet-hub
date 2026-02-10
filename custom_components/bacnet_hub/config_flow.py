@@ -121,10 +121,9 @@ def _mapping_label(hass: HomeAssistant, mapping: Dict[str, Any]) -> str:
     ent = str(mapping.get("entity_id") or "?")
     object_type = str(mapping.get("object_type") or "?")
     instance = mapping.get("instance", "?")
-    writable = " writable" if bool(mapping.get("writable", False)) else ""
     friendly = str(mapping.get("friendly_name") or entity_friendly_name(hass, ent))
     auto_suffix = " [auto]" if bool(mapping.get("auto", False)) else ""
-    return f"{object_type}:{instance} <= {ent} ({friendly}){writable}{auto_suffix}"
+    return f"{object_type}:{instance} <= {ent} ({friendly}){auto_suffix}"
 
 
 def _as_string_list(value: Any) -> list[str]:
@@ -461,11 +460,10 @@ class BacnetHubOptionsFlow(OptionsFlow):
         errors: Dict[str, str] = {}
         if user_input is not None:
             entity_id = str(user_input.get("entity_id", "")).strip()
-            writable = bool(user_input.get("writable", False))
 
             if not entity_id or "." not in entity_id:
                 errors["entity_id"] = "invalid_entity"
-            elif self._append_mapping(entity_id, writable, auto=False):
+            elif self._append_mapping(entity_id, auto=False):
                 return self.async_create_entry(title="", data=self._opts)
             else:
                 errors["base"] = "mapping_exists"
@@ -473,7 +471,6 @@ class BacnetHubOptionsFlow(OptionsFlow):
         schema = vol.Schema(
             {
                 vol.Required("entity_id"): sel.EntitySelector(sel.EntitySelectorConfig()),
-                vol.Required("writable", default=False): sel.BooleanSelector(),
             }
         )
         return self.async_show_form(
@@ -486,14 +483,13 @@ class BacnetHubOptionsFlow(OptionsFlow):
         errors: Dict[str, str] = {}
         if user_input is not None:
             device_id = str(user_input.get("device_id", "")).strip()
-            writable = bool(user_input.get("writable", False))
             entity_ids = supported_entities_for_device(self.hass, device_id)
             if not entity_ids:
                 errors["base"] = "no_supported_entities"
             else:
                 added = 0
                 for entity_id in entity_ids:
-                    if self._append_mapping(entity_id, writable, auto=False):
+                    if self._append_mapping(entity_id, auto=False):
                         added += 1
                 if added == 0:
                     errors["base"] = "no_new_entities"
@@ -503,7 +499,6 @@ class BacnetHubOptionsFlow(OptionsFlow):
         schema = vol.Schema(
             {
                 vol.Required("device_id"): sel.DeviceSelector(sel.DeviceSelectorConfig()),
-                vol.Required("writable", default=False): sel.BooleanSelector(),
             }
         )
         return self.async_show_form(
@@ -547,14 +542,12 @@ class BacnetHubOptionsFlow(OptionsFlow):
 
         current = dict(published[idx])
         cur_entity = current.get("entity_id", "")
-        cur_writable = bool(current.get("writable", False))
         current_auto = bool(current.get("auto", False))
         current_auto_mode = current.get("auto_mode")
 
         errors: Dict[str, str] = {}
         if user_input is not None:
             new_entity = str(user_input.get("entity_id") or "").strip()
-            new_writable = bool(user_input.get("writable", False))
 
             if not new_entity or "." not in new_entity:
                 errors["entity_id"] = "invalid_entity"
@@ -565,7 +558,7 @@ class BacnetHubOptionsFlow(OptionsFlow):
                 errors["base"] = "mapping_exists"
             else:
                 current["entity_id"] = new_entity
-                current["writable"] = new_writable
+                current.pop("writable", None)
                 current["friendly_name"] = entity_friendly_name(self.hass, new_entity)
                 if new_entity == cur_entity:
                     current["auto"] = current_auto
@@ -584,7 +577,6 @@ class BacnetHubOptionsFlow(OptionsFlow):
                 vol.Required("entity_id", default=cur_entity): sel.EntitySelector(
                     sel.EntitySelectorConfig()
                 ),
-                vol.Required("writable", default=cur_writable): sel.BooleanSelector(),
             }
         )
         return self.async_show_form(
@@ -624,7 +616,7 @@ class BacnetHubOptionsFlow(OptionsFlow):
         )
         return self.async_show_form(step_id="publish_delete", data_schema=schema)
 
-    def _append_mapping(self, entity_id: str, writable: bool, auto: bool) -> bool:
+    def _append_mapping(self, entity_id: str, auto: bool) -> bool:
         published: List[Dict[str, Any]] = list(self._opts.get("published", []))
         if any((m.get("entity_id") == entity_id) for m in published):
             return False
@@ -649,7 +641,6 @@ class BacnetHubOptionsFlow(OptionsFlow):
             "object_type": object_type,
             "instance": next_idx,
             "units": units,
-            "writable": writable,
             "friendly_name": entity_friendly_name(self.hass, entity_id),
         }
         if auto:

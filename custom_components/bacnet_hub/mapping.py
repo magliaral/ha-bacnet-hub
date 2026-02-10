@@ -39,7 +39,6 @@ def clean_published_list(items: Any) -> List[Dict[str, Any]]:
       - object_type: str (in OBJECT_TYPES)
       - instance: int
       - units: Optional[str]
-      - writable: bool
     Foreign keys remain untouched (for future extensions).
     """
     result: List[Dict[str, Any]] = []
@@ -55,15 +54,14 @@ def clean_published_list(items: Any) -> List[Dict[str, Any]]:
             continue
         inst = _coerce_int(it.get("instance", 0), 0)
         units = it.get("units")
-        writable = bool(it.get("writable", False))
         # Copy original dict, then insert required fields normalized
         cleaned = dict(it)
+        cleaned.pop("writable", None)
         cleaned.update(
             entity_id=ent,
             object_type=typ,
             instance=inst,
             units=units if (units is None or isinstance(units, str)) else str(units),
-            writable=writable,
         )
         result.append(cleaned)
     return result
@@ -78,7 +76,6 @@ def schema_publish_add(default_obj_type: str, default_instance: int) -> vol.Sche
     - object_type: analogValue | binaryValue
     - instance: number (auto-filled & sequential)
     - units: optional text (only useful for AV)
-    - writable: bool
     """
     return vol.Schema({
         vol.Required("entity_id"): sel.EntitySelector(),
@@ -94,7 +91,6 @@ def schema_publish_add(default_obj_type: str, default_instance: int) -> vol.Sche
         vol.Optional("units", default=None): sel.TextSelector(
             sel.TextSelectorConfig(multiline=False, type=sel.TextSelectorType.TEXT)
         ),
-        vol.Required("writable", default=False): sel.BooleanSelector(),
     })
 
 
@@ -117,7 +113,6 @@ def schema_publish_edit(current: Dict[str, Any]) -> vol.Schema:
         vol.Optional("units", default=current.get("units")): sel.TextSelector(
             sel.TextSelectorConfig(multiline=False, type=sel.TextSelectorType.TEXT)
         ),
-        vol.Required("writable", default=bool(current.get("writable", False))): sel.BooleanSelector(),
         # Dummy field so the flow can recognize that the page was confirmed
         vol.Required("apply", default=True): sel.BooleanSelector(),
     })

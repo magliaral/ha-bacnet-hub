@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Optional
 
+from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant, State
 
 _BINARY_DOMAINS = {
@@ -15,6 +16,8 @@ _BINARY_DOMAINS = {
     "device_tracker",
     "button",
 }
+
+_AUTO_WRITABLE_DOMAINS = {"light", "switch", "fan", "cover", "number", "input_number"}
 
 
 def _safe_iter(values: Any) -> Iterable[Any]:
@@ -100,6 +103,41 @@ def _is_numeric_state(state: Optional[State]) -> bool:
         return True
     except Exception:
         return False
+
+
+def _is_state_known(state: Optional[State]) -> bool:
+    if not state:
+        return False
+    raw = str(state.state).strip().lower()
+    return raw not in (STATE_UNKNOWN, STATE_UNAVAILABLE, "none", "")
+
+
+def is_entity_auto_writable(hass: HomeAssistant, entity_id: str) -> bool:
+    """Safely infer whether BACnet -> HA writes should be allowed for this entity."""
+    if not entity_id or "." not in entity_id:
+        return False
+
+    domain = entity_id.split(".", 1)[0].lower()
+    if domain not in _AUTO_WRITABLE_DOMAINS:
+        return False
+
+    state = hass.states.get(entity_id)
+    if not _is_state_known(state):
+        return False
+
+    services = hass.services
+    if domain in ("light", "switch", "fan"):
+        return services.has_service(domain, "turn_on") and services.has_service(domain, "turn_off")
+
+    if domain == "cover":
+        return services.has_service("cover", "open_cover") and services.has_service("cover", "close_cover")
+
+    if domain in ("number", "input_number"):
+        if not services.has_service(domain, "set_value"):
+            return False
+        return _is_numeric_state(state)
+
+    return False
 
 
 def entity_friendly_name(hass: HomeAssistant, entity_id: str) -> str:

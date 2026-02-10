@@ -38,6 +38,5 @@ class PublishedMappingsSensor(SensorEntity):
                 "name": self.hass.states.get(str(m.get("entity_id") or "")) and
                         self.hass.states.get(str(m.get("entity_id") or "")).attributes.get("friendly_name"),
                 "units": m.get("units"),
-                "writable": bool(m.get("writable", False)),
             })
         return {"items": items}

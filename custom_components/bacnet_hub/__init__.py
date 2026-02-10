@@ -235,6 +235,7 @@ async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> bool:
     counters: Dict[str, int] = dict(options.get("counters", {}))
     original_published = list(published)
     original_counters = dict(counters)
+    had_legacy_mapping_keys = False
 
     _ensure_counter_floor(counters, published)
     targets = _auto_target_entity_ids(hass, options, mode)
@@ -246,7 +247,12 @@ async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> bool:
     for mapping in published:
         if not isinstance(mapping, dict):
             continue
-        entity_id = str(mapping.get("entity_id") or "")
+        current = dict(mapping)
+        if "writable" in current:
+            current.pop("writable", None)
+            had_legacy_mapping_keys = True
+
+        entity_id = str(current.get("entity_id") or "")
         if not entity_id:
             removed_count += 1
             continue
@@ -254,13 +260,13 @@ async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> bool:
             removed_count += 1
             continue
 
-        is_auto = bool(mapping.get("auto", False))
+        is_auto = bool(current.get("auto", False))
         if not is_auto:
-            kept.append(mapping)
+            kept.append(current)
             existing_entity_ids.add(entity_id)
             continue
 
-        auto_mode = str(mapping.get("auto_mode") or "")
+        auto_mode = str(current.get("auto_mode") or "")
         if mode not in (PUBLISH_MODE_LABELS, PUBLISH_MODE_AREAS):
             removed_count += 1
             continue
@@ -271,7 +277,7 @@ async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> bool:
             removed_count += 1
             continue
 
-        kept.append(mapping)
+        kept.append(current)
         existing_entity_ids.add(entity_id)
 
     added_count = 0
@@ -289,7 +295,6 @@ async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> bool:
                 "object_type": object_type,
                 "instance": instance,
                 "units": units,
-                "writable": False,
                 "friendly_name": entity_friendly_name(hass, entity_id),
                 "auto": True,
                 "auto_mode": mode,
@@ -298,7 +303,12 @@ async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> bool:
         existing_entity_ids.add(entity_id)
         added_count += 1
 
-    changed = (kept != original_published) or (counters != original_counters) or had_legacy_ui_keys
+    changed = (
+        (kept != original_published)
+        or (counters != original_counters)
+        or had_legacy_ui_keys
+        or had_legacy_mapping_keys
+    )
     if not changed:
         return False
 
