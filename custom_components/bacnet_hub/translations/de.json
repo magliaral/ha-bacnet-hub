@@ -3,34 +3,44 @@
     "step": {
       "user": {
         "title": "BACnet Hub einrichten",
-        "description": "Bitte Instanznummer und Adresse angeben.",
+        "description": "Bitte Instanznummer und lokale Adresse eingeben.",
         "data": {
           "instance": "Instanznummer",
-          "address": "Lokale BACnet/IP Adresse (z. B. 192.168.31.36/24:47808)"
+          "address": "Lokale BACnet/IP-Adresse (zum Beispiel 192.168.31.36/24:47808)"
         }
       }
     },
     "error": {
       "invalid_int": "Ungültige Zahl.",
-      "invalid_address": "Ungültige Adresse. Erlaubt: IP[/Präfix][:Port], z. B. 192.168.31.36/24:47808."
+      "invalid_address": "Ungültige Adresse. Erlaubtes Format: IP[/Präfix][:Port], zum Beispiel 192.168.31.36/24:47808."
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "BACnet Hub Optionen",
-        "description": "Wähle einen Bereich zum Konfigurieren",
+        "description": "Wähle einen Bereich zur Konfiguration.",
         "menu_options": {
           "device": "Geräteeinstellungen",
+          "ui": "UI und Labels",
           "publish": "Publish-Mappings"
         }
       },
       "device": {
         "title": "Geräteeinstellungen",
-        "description": "Instanznummer und Adresse des lokalen Geräts konfigurieren",
+        "description": "Instanznummer und lokale Adresse konfigurieren.",
         "data": {
           "instance": "Instanznummer",
-          "address": "Lokale BACnet/IP Adresse (z. B. 192.168.31.36/24:47808)"
+          "address": "Lokale BACnet/IP-Adresse (zum Beispiel 192.168.31.36/24:47808)"
+        }
+      },
+      "ui": {
+        "title": "UI und Labels",
+        "description": "Anzeige-Modus und Label-Format für Mappings festlegen. Platzhalter: {{friendly_name}}, {{entity_id}}, {{object_type}}, {{instance}}, {{writable}}, {{writable_text}}.",
+        "data": {
+          "ui_mode": "UI-Modus",
+          "show_technical_ids": "Technische Objekt-IDs anzeigen",
+          "label_template": "Label-Template"
         }
       },
       "publish": {
@@ -47,7 +57,8 @@
         "description": "Wähle eine Entität und ob das Objekt beschreibbar sein soll.",
         "data": {
           "entity_id": "Entität",
-          "writable": "Schreibbar"
+          "writable": "Schreibbar",
+          "friendly_name": "Label-Überschreibung (optional)"
         }
       },
       "publish_edit": {
@@ -56,10 +67,11 @@
       },
       "publish_edit_form": {
         "title": "Mapping bearbeiten",
-        "description": "Entität oder Schreibbarkeit anpassen.",
+        "description": "Aktuelles Label: {mapping_label}",
         "data": {
           "entity_id": "Entität",
-          "writable": "Schreibbar"
+          "writable": "Schreibbar",
+          "friendly_name": "Label-Überschreibung"
         }
       },
       "publish_delete": {
@@ -68,7 +80,17 @@
       }
     },
     "error": {
-      "invalid_entity": "Ungültige Entität."
+      "invalid_entity": "Ungültige Entität.",
+      "invalid_label_template": "Ungültiges Label-Template. Nur gültige Platzhalter verwenden und maximal 120 Zeichen."
+    }
+  },
+  "selector": {
+    "ui_mode": {
+      "options": {
+        "simple": "Einfach",
+        "advanced": "Erweitert",
+        "label": "Label-Modus"
+      }
     }
   }
 }

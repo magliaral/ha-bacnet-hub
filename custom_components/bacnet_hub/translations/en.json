@@ -3,34 +3,44 @@
     "step": {
       "user": {
         "title": "Set up BACnet Hub",
-        "description": "Please enter the instance number and local address.",
+        "description": "Please enter instance number and local address.",
         "data": {
           "instance": "Instance number",
-          "address": "Local BACnet/IP address (e.g. 192.168.31.36/24:47808)"
+          "address": "Local BACnet/IP address (for example 192.168.31.36/24:47808)"
         }
       }
     },
     "error": {
       "invalid_int": "Invalid number.",
-      "invalid_address": "Invalid address. Allowed: IP[/prefix][:port], e.g. 192.168.31.36/24:47808."
+      "invalid_address": "Invalid address. Allowed format: IP[/prefix][:port], for example 192.168.31.36/24:47808."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "BACnet Hub Options",
-        "description": "Choose a section to configure",
+        "title": "BACnet Hub options",
+        "description": "Choose a section to configure.",
         "menu_options": {
           "device": "Device settings",
+          "ui": "UI and labels",
           "publish": "Publish mappings"
         }
       },
       "device": {
         "title": "Device settings",
-        "description": "Configure the instance number and local device address",
+        "description": "Configure local instance number and address.",
         "data": {
           "instance": "Instance number",
-          "address": "Local BACnet/IP address (e.g. 192.168.31.36/24:47808)"
+          "address": "Local BACnet/IP address (for example 192.168.31.36/24:47808)"
+        }
+      },
+      "ui": {
+        "title": "UI and labels",
+        "description": "Set mapping display mode and label format. Placeholders: {{friendly_name}}, {{entity_id}}, {{object_type}}, {{instance}}, {{writable}}, {{writable_text}}.",
+        "data": {
+          "ui_mode": "UI mode",
+          "show_technical_ids": "Show technical object IDs",
+          "label_template": "Label template"
         }
       },
       "publish": {
@@ -44,10 +54,11 @@
       },
       "publish_add": {
         "title": "Add mapping",
-        "description": "Pick an entity and whether the object should be writable.",
+        "description": "Choose an entity and whether the object should be writable.",
         "data": {
           "entity_id": "Entity",
-          "writable": "Writable"
+          "writable": "Writable",
+          "friendly_name": "Label override (optional)"
         }
       },
       "publish_edit": {
@@ -56,10 +67,11 @@
       },
       "publish_edit_form": {
         "title": "Edit mapping",
-        "description": "Adjust the entity or writable flag.",
+        "description": "Current label: {mapping_label}",
         "data": {
           "entity_id": "Entity",
-          "writable": "Writable"
+          "writable": "Writable",
+          "friendly_name": "Label override"
         }
       },
       "publish_delete": {
@@ -68,7 +80,17 @@
       }
     },
     "error": {
-      "invalid_entity": "Invalid entity."
+      "invalid_entity": "Invalid entity.",
+      "invalid_label_template": "Invalid label template. Use valid placeholders and max 120 characters."
+    }
+  },
+  "selector": {
+    "ui_mode": {
+      "options": {
+        "simple": "Simple",
+        "advanced": "Advanced",
+        "label": "Label mode"
+      }
     }
   }
 }
