@@ -27,21 +27,15 @@
       },
       "device": {
         "title": "Device settings",
-        "description": "Configure local instance number and address.",
+        "description": "Configure local instance number, address and preferred import mode.",
         "data": {
           "instance": "Instance number",
-          "address": "Local BACnet/IP address (for example 192.168.31.36/24:47808)"
-        }
-      },
-      "publish_mode": {
-        "title": "Publish mappings",
-        "description": "Select import mode first. Current mappings: {mappings_count}, automatic mappings: {auto_count}.",
-        "data": {
-          "publish_mode": "Import mode"
+          "address": "Local BACnet/IP address (for example 192.168.31.36/24:47808)",
+          "publish_mode": "Preferred import mode"
         }
       },
       "publish_classic": {
-        "title": "Classic mapping",
+        "title": "Manual mapping",
         "description": "Current mappings:\n{current_mappings}",
         "menu_options": {
           "publish_add": "Add new",
@@ -49,11 +43,29 @@
           "publish_delete": "Delete"
         }
       },
+      "publish_labels_menu": {
+        "title": "Labels mapping",
+        "description": "Current mappings:\n{current_mappings}",
+        "menu_options": {
+          "publish_labels": "Configure Labels",
+          "publish_edit": "Edit writable",
+          "publish_delete": "Delete"
+        }
+      },
+      "publish_areas_menu": {
+        "title": "Areas mapping",
+        "description": "Current mappings:\n{current_mappings}",
+        "menu_options": {
+          "publish_areas": "Configure Areas",
+          "publish_edit": "Edit writable",
+          "publish_delete": "Delete"
+        }
+      },
       "publish_labels": {
-        "title": "Label import",
+        "title": "Labels import",
         "description": "Select one label. All matching entities are mapped automatically every minute.",
         "data": {
-          "import_label": "Label"
+          "import_label": "Labels"
         }
       },
       "publish_areas": {
@@ -118,8 +130,8 @@
   "selector": {
     "publish_mode": {
       "options": {
-        "classic": "Classic",
-        "labels": "Label",
+        "classic": "Manual",
+        "labels": "Labels",
         "areas": "Areas"
       }
     },

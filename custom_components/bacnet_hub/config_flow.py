@@ -226,6 +226,9 @@ class BacnetHubOptionsFlow(OptionsFlow):
         current_address = (
             self._opts.get("address") or self._entry.data.get("address") or _default_address()
         )
+        current_mode = _normalize_publish_mode(
+            self._opts.get(CONF_PUBLISH_MODE, DEFAULT_PUBLISH_MODE)
+        )
 
         placeholders = {
             "min": f"{MIN_INSTANCE}",
@@ -246,10 +249,16 @@ class BacnetHubOptionsFlow(OptionsFlow):
             err = _validate_bacnet_address(addr)
             if err:
                 errors["address"] = err
+            mode = _normalize_publish_mode(user_input.get(CONF_PUBLISH_MODE, current_mode))
 
             if not errors:
                 self._opts["instance"] = inst
                 self._opts["address"] = addr
+                self._opts[CONF_PUBLISH_MODE] = mode
+                if mode != PUBLISH_MODE_LABELS:
+                    self._opts.pop(CONF_IMPORT_LABEL, None)
+                if mode != PUBLISH_MODE_AREAS:
+                    self._opts.pop(CONF_IMPORT_AREAS, None)
                 return self.async_create_entry(title="", data=self._opts)
 
         schema = vol.Schema(
@@ -265,50 +274,6 @@ class BacnetHubOptionsFlow(OptionsFlow):
                 vol.Required("address", default=current_address): sel.TextSelector(
                     sel.TextSelectorConfig(multiline=False, type=sel.TextSelectorType.TEXT)
                 ),
-            }
-        )
-        return self.async_show_form(
-            step_id="device",
-            data_schema=schema,
-            errors=errors,
-            description_placeholders=placeholders,
-        )
-
-    async def async_step_publish(self, user_input: Optional[Dict] = None) -> ConfigFlowResult:
-        return await self.async_step_publish_mode()
-
-    async def async_step_publish_mode(
-        self, user_input: Optional[Dict] = None
-    ) -> ConfigFlowResult:
-        current_mode = _normalize_publish_mode(
-            self._opts.get(CONF_PUBLISH_MODE, DEFAULT_PUBLISH_MODE)
-        )
-        published: List[Dict[str, Any]] = list(self._opts.get("published", []))
-        mappings_count = len(published)
-        auto_count = sum(1 for item in published if bool(item.get("auto", False)))
-
-        errors: Dict[str, str] = {}
-        if user_input is not None:
-            mode = _normalize_publish_mode(user_input.get(CONF_PUBLISH_MODE))
-            self._opts[CONF_PUBLISH_MODE] = mode
-            self._opts.pop("_edit_index", None)
-
-            if mode != PUBLISH_MODE_LABELS:
-                self._opts.pop(CONF_IMPORT_LABEL, None)
-            if mode != PUBLISH_MODE_AREAS:
-                self._opts.pop(CONF_IMPORT_AREAS, None)
-
-            if mode == PUBLISH_MODE_CLASSIC:
-                if current_mode != PUBLISH_MODE_CLASSIC:
-                    # Persist mode switch immediately so stale auto mappings are cleaned up.
-                    return self.async_create_entry(title="", data=self._opts)
-                return await self.async_step_publish_classic()
-            if mode == PUBLISH_MODE_LABELS:
-                return await self.async_step_publish_labels()
-            return await self.async_step_publish_areas()
-
-        schema = vol.Schema(
-            {
                 vol.Required(CONF_PUBLISH_MODE, default=current_mode): sel.SelectSelector(
                     sel.SelectSelectorConfig(
                         options=[
@@ -319,22 +284,28 @@ class BacnetHubOptionsFlow(OptionsFlow):
                         mode=sel.SelectSelectorMode.DROPDOWN,
                         translation_key="publish_mode",
                     )
-                )
+                ),
             }
         )
         return self.async_show_form(
-            step_id="publish_mode",
+            step_id="device",
             data_schema=schema,
             errors=errors,
-            description_placeholders={
-                "mappings_count": str(mappings_count),
-                "auto_count": str(auto_count),
-            },
+            description_placeholders=placeholders,
         )
 
-    async def async_step_publish_classic(
-        self, user_input: Optional[Dict] = None
-    ) -> ConfigFlowResult:
+    async def async_step_publish(self, user_input: Optional[Dict] = None) -> ConfigFlowResult:
+        mode = _normalize_publish_mode(self._opts.get(CONF_PUBLISH_MODE, DEFAULT_PUBLISH_MODE))
+        if mode == PUBLISH_MODE_LABELS:
+            return await self.async_step_publish_labels_menu()
+        if mode == PUBLISH_MODE_AREAS:
+            return await self.async_step_publish_areas_menu()
+        return await self.async_step_publish_classic()
+
+    async def _async_step_publish_for_current_mode(self) -> ConfigFlowResult:
+        return await self.async_step_publish()
+
+    def _publish_overview(self) -> str:
         published: List[Dict[str, Any]] = list(self._opts.get("published", []))
         lines: List[str] = []
         for mapping in published:
@@ -342,12 +313,33 @@ class BacnetHubOptionsFlow(OptionsFlow):
                 lines.append(f"- {_mapping_label(self.hass, mapping)}")
             except Exception:
                 continue
+        return "\n".join(lines) if lines else "No mappings available."
 
-        desc = "\n".join(lines) if lines else "No mappings available."
+    async def async_step_publish_classic(
+        self, user_input: Optional[Dict] = None
+    ) -> ConfigFlowResult:
         return self.async_show_menu(
             step_id="publish_classic",
             menu_options=["publish_add", "publish_edit", "publish_delete"],
-            description_placeholders={"current_mappings": desc},
+            description_placeholders={"current_mappings": self._publish_overview()},
+        )
+
+    async def async_step_publish_labels_menu(
+        self, user_input: Optional[Dict] = None
+    ) -> ConfigFlowResult:
+        return self.async_show_menu(
+            step_id="publish_labels_menu",
+            menu_options=["publish_labels", "publish_edit", "publish_delete"],
+            description_placeholders={"current_mappings": self._publish_overview()},
+        )
+
+    async def async_step_publish_areas_menu(
+        self, user_input: Optional[Dict] = None
+    ) -> ConfigFlowResult:
+        return self.async_show_menu(
+            step_id="publish_areas_menu",
+            menu_options=["publish_areas", "publish_edit", "publish_delete"],
+            description_placeholders={"current_mappings": self._publish_overview()},
         )
 
     async def async_step_publish_labels(
@@ -516,7 +508,7 @@ class BacnetHubOptionsFlow(OptionsFlow):
     async def async_step_publish_edit(self, user_input: Optional[Dict] = None) -> ConfigFlowResult:
         published: List[Dict[str, Any]] = list(self._opts.get("published", []))
         if not published:
-            return await self.async_step_publish_classic()
+            return await self._async_step_publish_for_current_mode()
 
         options = {
             str(i): _mapping_label(self.hass, mapping) for i, mapping in enumerate(published)
@@ -546,11 +538,13 @@ class BacnetHubOptionsFlow(OptionsFlow):
         published: List[Dict[str, Any]] = list(self._opts.get("published", []))
         idx = int(self._opts.get("_edit_index", -1))
         if idx < 0 or idx >= len(published):
-            return await self.async_step_publish_classic()
+            return await self._async_step_publish_for_current_mode()
 
         current = dict(published[idx])
         cur_entity = current.get("entity_id", "")
         cur_writable = bool(current.get("writable", False))
+        current_auto = bool(current.get("auto", False))
+        current_auto_mode = current.get("auto_mode")
 
         errors: Dict[str, str] = {}
         if user_input is not None:
@@ -568,8 +562,12 @@ class BacnetHubOptionsFlow(OptionsFlow):
                 current["entity_id"] = new_entity
                 current["writable"] = new_writable
                 current["friendly_name"] = entity_friendly_name(self.hass, new_entity)
-                current["auto"] = False
-                current["auto_mode"] = None
+                if new_entity == cur_entity:
+                    current["auto"] = current_auto
+                    current["auto_mode"] = current_auto_mode
+                else:
+                    current["auto"] = False
+                    current["auto_mode"] = None
 
                 published[idx] = current
                 self._opts["published"] = published
@@ -596,7 +594,7 @@ class BacnetHubOptionsFlow(OptionsFlow):
     ) -> ConfigFlowResult:
         published: List[Dict[str, Any]] = list(self._opts.get("published", []))
         if not published:
-            return await self.async_step_publish_classic()
+            return await self._async_step_publish_for_current_mode()
 
         options = {
             str(i): _mapping_label(self.hass, mapping) for i, mapping in enumerate(published)

@@ -27,21 +27,15 @@
       },
       "device": {
         "title": "Geräteeinstellungen",
-        "description": "Instanznummer und lokale Adresse konfigurieren.",
+        "description": "Instanznummer, lokale Adresse und bevorzugten Import-Modus konfigurieren.",
         "data": {
           "instance": "Instanznummer",
-          "address": "Lokale BACnet/IP-Adresse (zum Beispiel 192.168.31.36/24:47808)"
-        }
-      },
-      "publish_mode": {
-        "title": "Publish-Mappings",
-        "description": "Zuerst den Import-Modus wählen. Aktuelle Mappings: {mappings_count}, automatische Mappings: {auto_count}.",
-        "data": {
-          "publish_mode": "Import-Modus"
+          "address": "Lokale BACnet/IP-Adresse (zum Beispiel 192.168.31.36/24:47808)",
+          "publish_mode": "Bevorzugter Import-Modus"
         }
       },
       "publish_classic": {
-        "title": "Klassisches Mapping",
+        "title": "Manuelles Mapping",
         "description": "Aktuelle Mappings:\n{current_mappings}",
         "menu_options": {
           "publish_add": "Neu hinzufügen",
@@ -49,18 +43,36 @@
           "publish_delete": "Löschen"
         }
       },
+      "publish_labels_menu": {
+        "title": "Labels-Mapping",
+        "description": "Aktuelle Mappings:\n{current_mappings}",
+        "menu_options": {
+          "publish_labels": "Labels konfigurieren",
+          "publish_edit": "Schreibbarkeit bearbeiten",
+          "publish_delete": "Löschen"
+        }
+      },
+      "publish_areas_menu": {
+        "title": "Bereiche-Mapping",
+        "description": "Aktuelle Mappings:\n{current_mappings}",
+        "menu_options": {
+          "publish_areas": "Bereiche konfigurieren",
+          "publish_edit": "Schreibbarkeit bearbeiten",
+          "publish_delete": "Löschen"
+        }
+      },
       "publish_labels": {
-        "title": "Label-Import",
+        "title": "Labels-Import",
         "description": "Ein Label auswählen. Alle passenden Entitäten werden jede Minute automatisch gemappt.",
         "data": {
-          "import_label": "Label"
+          "import_label": "Labels"
         }
       },
       "publish_areas": {
-        "title": "Area-Import",
-        "description": "Eine oder mehrere Areas auswählen. Alle passenden Entitäten werden jede Minute automatisch gemappt.",
+        "title": "Bereiche-Import",
+        "description": "Einen oder mehrere Bereiche auswählen. Alle passenden Entitäten werden jede Minute automatisch gemappt.",
         "data": {
-          "import_areas": "Areas"
+          "import_areas": "Bereiche"
         }
       },
       "publish_add": {
@@ -112,15 +124,15 @@
       "no_supported_entities": "Das ausgewählte Gerät hat keine unterstützten Entitäten.",
       "no_new_entities": "Für dieses Gerät wurden keine neuen unterstützten Entitäten gefunden.",
       "no_labels_available": "Keine Labels verfügbar.",
-      "no_areas_available": "Keine Areas verfügbar."
+      "no_areas_available": "Keine Bereiche verfügbar."
     }
   },
   "selector": {
     "publish_mode": {
       "options": {
-        "classic": "Klassisch",
-        "labels": "Label",
-        "areas": "Areas"
+        "classic": "Manuell",
+        "labels": "Labels",
+        "areas": "Bereiche"
       }
     },
     "publish_add_source": {
