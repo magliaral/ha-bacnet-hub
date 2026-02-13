@@ -87,7 +87,7 @@ def published_suggested_object_id(object_type: str, object_instance: Any) -> str
     # Entity object IDs must be underscore-safe; HA entity_id does not keep hyphens.
     type_slug = object_type_slug(object_type).replace("-", "_")
     inst = _as_int(object_instance, 0)
-    return f"{type_slug}_{inst}"
+    return f"{DOMAIN}_{type_slug}_{inst}"
 
 
 def published_entity_id(
