@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 import socket
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional
 
 import voluptuous as vol
 
@@ -71,9 +71,80 @@ def _detect_local_ip() -> Optional[str]:
         return None
 
 
-def _default_address() -> str:
-    ip = _detect_local_ip() or "0.0.0.0"
-    return f"{ip}/{DEFAULT_PREFIX}:{DEFAULT_PORT}"
+def _adapter_get(entry: Any, key: str, default: Any = None) -> Any:
+    if isinstance(entry, dict):
+        return entry.get(key, default)
+    return getattr(entry, key, default)
+
+
+def _iter_adapter_ipv4(adapters: Iterable[Any]) -> Iterable[tuple[str, int, bool]]:
+    for adapter in adapters:
+        is_default = bool(_adapter_get(adapter, "default", False))
+        ipv4_entries = _adapter_get(adapter, "ipv4", []) or []
+        for ip_entry in ipv4_entries:
+            address = str(_adapter_get(ip_entry, "address", "")).strip()
+            if not address:
+                continue
+            try:
+                socket.inet_aton(address)
+            except OSError:
+                continue
+            if address.startswith("127."):
+                continue
+
+            prefix_raw = _adapter_get(ip_entry, "network_prefix", DEFAULT_PREFIX)
+            try:
+                prefix = int(prefix_raw)
+            except Exception:
+                prefix = DEFAULT_PREFIX
+            if prefix < 0 or prefix > 32:
+                prefix = DEFAULT_PREFIX
+            yield address, prefix, is_default
+
+
+async def _async_detect_local_ipv4_and_prefix(
+    hass: HomeAssistant,
+) -> tuple[Optional[str], Optional[int]]:
+    routed_ip = _detect_local_ip()
+
+    adapters: list[Any] = []
+    try:
+        from homeassistant.components.network import async_get_adapters
+
+        adapters = list(await async_get_adapters(hass))
+    except Exception:
+        _LOGGER.debug("Could not read network adapters from Home Assistant", exc_info=True)
+
+    first_candidate: Optional[tuple[str, int]] = None
+    default_candidate: Optional[tuple[str, int]] = None
+
+    for ip, prefix, is_default in _iter_adapter_ipv4(adapters):
+        if first_candidate is None:
+            first_candidate = (ip, prefix)
+        if is_default and default_candidate is None:
+            default_candidate = (ip, prefix)
+        if routed_ip and ip == routed_ip:
+            return ip, prefix
+
+    if routed_ip:
+        if default_candidate:
+            return routed_ip, default_candidate[1]
+        return routed_ip, DEFAULT_PREFIX
+
+    if default_candidate:
+        return default_candidate
+    if first_candidate:
+        return first_candidate
+    return None, None
+
+
+async def _async_default_address(hass: HomeAssistant) -> str:
+    ip, prefix = await _async_detect_local_ipv4_and_prefix(hass)
+    if not ip:
+        ip = "0.0.0.0"
+    if prefix is None:
+        prefix = DEFAULT_PREFIX
+    return f"{ip}/{prefix}:{DEFAULT_PORT}"
 
 
 def _validate_bacnet_address(addr: str) -> Optional[str]:
@@ -214,6 +285,7 @@ class BacnetHubConfigFlow(ConfigFlow, domain=DOMAIN):
 
     async def async_step_user(self, user_input: Optional[Dict] = None) -> ConfigFlowResult:
         errors: Dict[str, str] = {}
+        default_address = await _async_default_address(self.hass)
         placeholders = {
             "min": f"{MIN_INSTANCE}",
             "max": "4194302",
@@ -232,7 +304,7 @@ class BacnetHubConfigFlow(ConfigFlow, domain=DOMAIN):
 
             addr = (user_input.get("address") or "").strip()
             if not addr:
-                addr = _default_address()
+                addr = default_address
             err = _validate_bacnet_address(addr)
             if err:
                 errors["address"] = err
@@ -270,7 +342,7 @@ class BacnetHubConfigFlow(ConfigFlow, domain=DOMAIN):
                         mode=sel.NumberSelectorMode.BOX,
                     )
                 ),
-                vol.Required("address", default=_default_address()): sel.TextSelector(
+                vol.Required("address", default=default_address): sel.TextSelector(
                     sel.TextSelectorConfig(multiline=False, type=sel.TextSelectorType.TEXT)
                 ),
             }
@@ -318,8 +390,9 @@ class BacnetHubOptionsFlow(OptionsFlow):
         return await self.async_step_device(user_input)
 
     async def async_step_device(self, user_input: Optional[Dict] = None) -> ConfigFlowResult:
+        detected_default = await _async_default_address(self.hass)
         current_instance = _as_int(self._opts.get("instance", DEFAULT_INSTANCE), DEFAULT_INSTANCE)
-        current_address = str(self._opts.get("address") or _default_address())
+        current_address = str(self._opts.get("address") or detected_default)
 
         default_label_id = await _async_ensure_default_label(self.hass)
         label_options = label_choices(self.hass)
@@ -346,7 +419,7 @@ class BacnetHubOptionsFlow(OptionsFlow):
 
             addr = (user_input.get("address") or "").strip()
             if not addr:
-                addr = current_address or _default_address()
+                addr = current_address or detected_default
             err = _validate_bacnet_address(addr)
             if err:
                 errors["address"] = err
