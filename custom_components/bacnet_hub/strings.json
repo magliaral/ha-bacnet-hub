@@ -3,10 +3,12 @@
     "step": {
       "user": {
         "title": "Set up BACnet Hub",
-        "description": "Please enter instance number and local address.",
+        "description": "Please enter instance number, local address, object name and description.",
         "data": {
           "instance": "Instance number",
-          "address": "Local BACnet/IP address (for example 192.168.31.36/24:47808)"
+          "address": "Local BACnet/IP address (for example 192.168.31.36/24:47808)",
+          "device_name": "BACnet Object Name",
+          "device_description": "BACnet Device Description"
         }
       }
     },
@@ -19,10 +21,12 @@
     "step": {
       "device": {
         "title": "Device settings",
-        "description": "Configure local instance number, address and labels import. Matching entities are mapped automatically every minute.",
+        "description": "Configure local instance number, address, object name, description and labels import. Matching entities are mapped automatically on registry/label updates.",
         "data": {
           "instance": "Instance number",
           "address": "Local BACnet/IP address (for example 192.168.31.36/24:47808)",
+          "device_name": "BACnet Object Name",
+          "device_description": "BACnet Device Description",
           "import_labels": "Labels"
         }
       }

@@ -12,10 +12,14 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import selector as sel
 
 from .const import (
+    CONF_DEVICE_DESCRIPTION,
+    CONF_DEVICE_NAME,
     CONF_IMPORT_AREAS,
     CONF_IMPORT_LABEL,
     CONF_IMPORT_LABELS,
     CONF_PUBLISH_MODE,
+    DEFAULT_BACNET_DEVICE_DESCRIPTION,
+    DEFAULT_BACNET_OBJECT_NAME,
     DEFAULT_IMPORT_LABEL_COLOR,
     DEFAULT_IMPORT_LABEL_ICON,
     DEFAULT_IMPORT_LABEL_NAME,
@@ -56,6 +60,11 @@ def _as_string_list(value: Any) -> list[str]:
     if isinstance(value, (list, tuple, set)):
         return [str(item).strip() for item in value if str(item).strip()]
     return []
+
+
+def _normalized_text(value: Any, fallback: str) -> str:
+    text = str(value or "").strip()
+    return text or fallback
 
 
 def _detect_local_ip() -> Optional[str]:
@@ -309,12 +318,21 @@ class BacnetHubConfigFlow(ConfigFlow, domain=DOMAIN):
             if err:
                 errors["address"] = err
 
+            object_name = _normalized_text(
+                user_input.get(CONF_DEVICE_NAME), DEFAULT_BACNET_OBJECT_NAME
+            )
+            device_description = _normalized_text(
+                user_input.get(CONF_DEVICE_DESCRIPTION), DEFAULT_BACNET_DEVICE_DESCRIPTION
+            )
+
             if not errors:
                 default_label_id = await _async_ensure_default_label(self.hass)
                 default_labels = [default_label_id] if default_label_id else []
                 data: Dict[str, Any] = {
                     "instance": inst,
                     "address": addr,
+                    CONF_DEVICE_NAME: object_name,
+                    CONF_DEVICE_DESCRIPTION: device_description,
                     CONF_PUBLISH_MODE: PUBLISH_MODE_LABELS,
                     CONF_IMPORT_LABELS: default_labels,
                     "published": [],
@@ -345,6 +363,14 @@ class BacnetHubConfigFlow(ConfigFlow, domain=DOMAIN):
                 vol.Required("address", default=default_address): sel.TextSelector(
                     sel.TextSelectorConfig(multiline=False, type=sel.TextSelectorType.TEXT)
                 ),
+                vol.Required(CONF_DEVICE_NAME, default=DEFAULT_BACNET_OBJECT_NAME): sel.TextSelector(
+                    sel.TextSelectorConfig(multiline=False, type=sel.TextSelectorType.TEXT)
+                ),
+                vol.Required(
+                    CONF_DEVICE_DESCRIPTION, default=DEFAULT_BACNET_DEVICE_DESCRIPTION
+                ): sel.TextSelector(
+                    sel.TextSelectorConfig(multiline=False, type=sel.TextSelectorType.TEXT)
+                ),
             }
         )
         return self.async_show_form(
@@ -372,6 +398,8 @@ class BacnetHubOptionsFlow(OptionsFlow):
         for key in (
             "instance",
             "address",
+            CONF_DEVICE_NAME,
+            CONF_DEVICE_DESCRIPTION,
             "published",
             "counters",
             CONF_PUBLISH_MODE,
@@ -393,6 +421,12 @@ class BacnetHubOptionsFlow(OptionsFlow):
         detected_default = await _async_default_address(self.hass)
         current_instance = _as_int(self._opts.get("instance", DEFAULT_INSTANCE), DEFAULT_INSTANCE)
         current_address = str(self._opts.get("address") or detected_default)
+        current_object_name = _normalized_text(
+            self._opts.get(CONF_DEVICE_NAME), DEFAULT_BACNET_OBJECT_NAME
+        )
+        current_device_description = _normalized_text(
+            self._opts.get(CONF_DEVICE_DESCRIPTION), DEFAULT_BACNET_DEVICE_DESCRIPTION
+        )
 
         default_label_id = await _async_ensure_default_label(self.hass)
         label_options = label_choices(self.hass)
@@ -424,6 +458,13 @@ class BacnetHubOptionsFlow(OptionsFlow):
             if err:
                 errors["address"] = err
 
+            object_name = _normalized_text(
+                user_input.get(CONF_DEVICE_NAME), current_object_name
+            )
+            device_description = _normalized_text(
+                user_input.get(CONF_DEVICE_DESCRIPTION), current_device_description
+            )
+
             selected_labels = _as_string_list(user_input.get(CONF_IMPORT_LABELS))
             selected_labels = [label_id for label_id in selected_labels if label_id in available_ids]
             if not selected_labels:
@@ -436,6 +477,8 @@ class BacnetHubOptionsFlow(OptionsFlow):
 
                 self._opts["instance"] = inst
                 self._opts["address"] = addr
+                self._opts[CONF_DEVICE_NAME] = object_name
+                self._opts[CONF_DEVICE_DESCRIPTION] = device_description
                 self._opts[CONF_PUBLISH_MODE] = PUBLISH_MODE_LABELS
                 self._opts[CONF_IMPORT_LABELS] = selected_labels
                 self._opts[CONF_IMPORT_LABEL] = selected_labels[0]
@@ -462,6 +505,14 @@ class BacnetHubOptionsFlow(OptionsFlow):
                     )
                 ),
                 vol.Required("address", default=current_address): sel.TextSelector(
+                    sel.TextSelectorConfig(multiline=False, type=sel.TextSelectorType.TEXT)
+                ),
+                vol.Required(CONF_DEVICE_NAME, default=current_object_name): sel.TextSelector(
+                    sel.TextSelectorConfig(multiline=False, type=sel.TextSelectorType.TEXT)
+                ),
+                vol.Required(
+                    CONF_DEVICE_DESCRIPTION, default=current_device_description
+                ): sel.TextSelector(
                     sel.TextSelectorConfig(multiline=False, type=sel.TextSelectorType.TEXT)
                 ),
                 vol.Required(CONF_IMPORT_LABELS, default=current_labels): sel.SelectSelector(

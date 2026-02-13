@@ -774,8 +774,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         config_entry_id=entry.entry_id,
         identifiers={(DOMAIN, entry.entry_id)},
         manufacturer="magliaral",
-        model="BACnet Hub",
-        name="BACnet Hub",
+        model=server.model_name or "BACnet Hub",
+        name=server.name or "BACnet Hub",
         sw_version=server.firmware_revision or "unknown",
         configuration_url="https://github.com/magliaral/ha-bacnet-hub",
     )

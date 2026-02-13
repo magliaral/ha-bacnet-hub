@@ -22,7 +22,13 @@ from bacpypes3.service.cov import ChangeOfValueServices
 
 from .helpers.versions import get_integration_version, get_bacpypes3_version
 from .publisher import BacnetPublisher
-from .const import DOMAIN
+from .const import (
+    CONF_DEVICE_DESCRIPTION,
+    CONF_DEVICE_NAME,
+    DEFAULT_BACNET_DEVICE_DESCRIPTION,
+    DEFAULT_BACNET_OBJECT_NAME,
+    DOMAIN,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -240,7 +246,11 @@ class BacnetHubServer:
 
         self.address_str: str = _normalize_address(str(self.cfg.get("address") or ""))
         self.network_number: Optional[int] = int(self.cfg.get("network_number", 1))
-        self.name: str = str(self.cfg.get("name", "HA-BACnetHub"))
+        self.name: str = str(
+            self.cfg.get(CONF_DEVICE_NAME)
+            or self.cfg.get("name")
+            or DEFAULT_BACNET_OBJECT_NAME
+        )
         self.instance: int = int(self.cfg.get("instance", 8123))
         self.foreign: Optional[str] = self.cfg.get("foreign")
         self.ttl: int = int(self.cfg.get("ttl", 30))
@@ -250,7 +260,9 @@ class BacnetHubServer:
         self.vendor_identifier: int = 999
         self.vendor_name: str = "magliaral"
         self.model_name: str = "BACnet Hub"
-        self.description: str = "BACnet Hub \u2013 Home Assistant Custom Integration"
+        self.description: str = str(
+            self.cfg.get(CONF_DEVICE_DESCRIPTION) or DEFAULT_BACNET_DEVICE_DESCRIPTION
+        )
         self.application_software_version: Optional[str] = None
         self.firmware_revision: Optional[str] = None
 

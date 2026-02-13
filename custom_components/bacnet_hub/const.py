@@ -5,6 +5,8 @@ from typing import Any
 
 DOMAIN = "bacnet_hub"
 DEFAULT_NAME = "BACnet Hub"
+DEFAULT_BACNET_OBJECT_NAME = "HA-BACnetHub"
+DEFAULT_BACNET_DEVICE_DESCRIPTION = "BACnet Hub - Home Assistant Custom Integration"
 
 CONF_ADDRESS = "address"
 CONF_PORT = "port"

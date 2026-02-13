@@ -16,7 +16,9 @@ from homeassistant.helpers.event import async_track_state_change_event
 
 from .const import (
     CONF_ADDRESS,
+    CONF_DEVICE_NAME,
     CONF_INSTANCE,
+    DEFAULT_BACNET_OBJECT_NAME,
     DOMAIN,
     mirrored_state_attributes,
     published_entity_id,
@@ -31,6 +33,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     merged = {**(entry.data or {}), **(entry.options or {})}
     hub_instance = merged.get(CONF_INSTANCE, 0)
     hub_address = merged.get(CONF_ADDRESS, "")
+    hub_name = str(merged.get(CONF_DEVICE_NAME) or DEFAULT_BACNET_OBJECT_NAME)
 
     entities: List[BacnetPublishedBinarySensor] = []
     for m in published:
@@ -51,6 +54,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 entry_id=entry.entry_id,
                 hub_instance=hub_instance,
                 hub_address=hub_address,
+                hub_name=hub_name,
                 source_entity_id=ent_id,
                 instance=instance,
                 name=name,
@@ -79,6 +83,7 @@ class BacnetPublishedBinarySensor(BinarySensorEntity):
         entry_id: str,
         hub_instance: int | str,
         hub_address: str,
+        hub_name: str,
         source_entity_id: str,
         instance: int,
         name: str,
@@ -106,7 +111,7 @@ class BacnetPublishedBinarySensor(BinarySensorEntity):
         self.entity_id = published_entity_id("binary_sensor", "binaryValue", instance)
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry_id)},
-            name="BACnet Hub",
+            name=hub_name or DEFAULT_BACNET_OBJECT_NAME,
             manufacturer="magliaral",
             model="BACnet Hub",
         )

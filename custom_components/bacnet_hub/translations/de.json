@@ -3,10 +3,12 @@
     "step": {
       "user": {
         "title": "BACnet Hub einrichten",
-        "description": "Bitte Instanznummer und lokale Adresse eingeben.",
+        "description": "Bitte Instanznummer, lokale Adresse, Objektnamen und Beschreibung eingeben.",
         "data": {
           "instance": "Instanznummer",
-          "address": "Lokale BACnet/IP-Adresse (zum Beispiel 192.168.31.36/24:47808)"
+          "address": "Lokale BACnet/IP-Adresse (zum Beispiel 192.168.31.36/24:47808)",
+          "device_name": "BACnet Objektname",
+          "device_description": "BACnet Gerätebeschreibung"
         }
       }
     },
@@ -19,10 +21,12 @@
     "step": {
       "device": {
         "title": "Geräteeinstellungen",
-        "description": "Instanznummer, lokale Adresse und Labels-Import konfigurieren. Passende Entitäten werden jede Minute automatisch gemappt.",
+        "description": "Instanznummer, lokale Adresse, Objektname, Beschreibung und Labels-Import konfigurieren. Passende Entitäten werden bei Registry-/Label-Änderungen automatisch gemappt.",
         "data": {
           "instance": "Instanznummer",
           "address": "Lokale BACnet/IP-Adresse (zum Beispiel 192.168.31.36/24:47808)",
+          "device_name": "BACnet Objektname",
+          "device_description": "BACnet Gerätebeschreibung",
           "import_labels": "Labels"
         }
       }

@@ -64,11 +64,15 @@ Required fields:
 
 - `instance`: BACnet device instance
 - `address`: local BACnet/IP bind address (`IPv4/prefix:port`)
+- `device_name`: BACnet Device `objectName` (default: `HA-BACnetHub`)
+- `device_description`: BACnet Device `description` (default: `BACnet Hub - Home Assistant Custom Integration`)
 
 After setup, open integration options and configure:
 
 - `instance`
 - `address`
+- `device_name`
+- `device_description`
 - `labels` (one or multiple)
 
 At least one valid label must be selected.
