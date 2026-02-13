@@ -41,8 +41,14 @@ KEY_LOCKS = "locks"
 KEY_PUBLISHED_CACHE = "published"
 KEY_SUPPRESS_RELOAD = "suppress_reload"
 KEY_AUTO_SYNC_UNSUB = "auto_sync_unsub"
+KEY_EVENT_SYNC_TASKS = "event_sync_tasks"
 KEY_RELOAD_LOCKS = "reload_locks"
 KEY_LAST_RELOAD_FP = "last_reload_fingerprint"
+
+EVENT_ENTITY_REGISTRY_UPDATED = "entity_registry_updated"
+EVENT_DEVICE_REGISTRY_UPDATED = "device_registry_updated"
+EVENT_LABEL_REGISTRY_UPDATED = "label_registry_updated"
+EVENT_SYNC_DEBOUNCE_SECONDS = 2.0
 
 PLATFORMS: List[str] = ["sensor", "binary_sensor"]
 
@@ -57,6 +63,7 @@ def _ensure_domain(hass: HomeAssistant) -> Dict[str, Any]:
     hass.data[DOMAIN].setdefault(KEY_LOCKS, {})
     hass.data[DOMAIN].setdefault(KEY_PUBLISHED_CACHE, {})
     hass.data[DOMAIN].setdefault(KEY_AUTO_SYNC_UNSUB, {})
+    hass.data[DOMAIN].setdefault(KEY_EVENT_SYNC_TASKS, {})
     hass.data[DOMAIN].setdefault(KEY_RELOAD_LOCKS, {})
     hass.data[DOMAIN].setdefault(KEY_LAST_RELOAD_FP, {})
     return hass.data[DOMAIN]
@@ -573,6 +580,96 @@ def _start_auto_sync(hass: HomeAssistant, entry_id: str):
     )
 
 
+def _cancel_event_sync_task(hass: HomeAssistant, entry_id: str) -> None:
+    data = _ensure_domain(hass)
+    tasks: dict[str, asyncio.Task] = data[KEY_EVENT_SYNC_TASKS]
+    task = tasks.pop(entry_id, None)
+    if task and not task.done():
+        task.cancel()
+
+
+def _schedule_event_sync(hass: HomeAssistant, entry_id: str, reason: str) -> None:
+    data = _ensure_domain(hass)
+    tasks: dict[str, asyncio.Task] = data[KEY_EVENT_SYNC_TASKS]
+
+    prev = tasks.get(entry_id)
+    if prev and not prev.done():
+        prev.cancel()
+
+    async def _run() -> None:
+        try:
+            await asyncio.sleep(EVENT_SYNC_DEBOUNCE_SECONDS)
+            await _async_sync_auto_mappings(hass, entry_id)
+            _LOGGER.debug("Event-driven sync executed for %s (%s)", entry_id, reason)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            _LOGGER.debug(
+                "Event-driven sync failed for %s (%s)", entry_id, reason, exc_info=True
+            )
+        finally:
+            if tasks.get(entry_id) is task:
+                tasks.pop(entry_id, None)
+
+    task = hass.async_create_task(_run())
+    tasks[entry_id] = task
+
+
+def _start_event_sync(hass: HomeAssistant, entry_id: str):
+    relevant_actions = {"create", "remove", "update"}
+
+    @callback
+    def _on_entity_registry_updated(event) -> None:
+        action = str((event.data or {}).get("action") or "").strip().lower()
+        if action and action not in relevant_actions:
+            return
+        _schedule_event_sync(hass, entry_id, f"{EVENT_ENTITY_REGISTRY_UPDATED}:{action or 'n/a'}")
+
+    @callback
+    def _on_device_registry_updated(event) -> None:
+        action = str((event.data or {}).get("action") or "").strip().lower()
+        if action and action not in relevant_actions:
+            return
+        _schedule_event_sync(hass, entry_id, f"{EVENT_DEVICE_REGISTRY_UPDATED}:{action or 'n/a'}")
+
+    @callback
+    def _on_label_registry_updated(event) -> None:
+        action = str((event.data or {}).get("action") or "").strip().lower()
+        if action and action not in relevant_actions:
+            return
+        _schedule_event_sync(hass, entry_id, f"{EVENT_LABEL_REGISTRY_UPDATED}:{action or 'n/a'}")
+
+    unsubs = [
+        hass.bus.async_listen(EVENT_ENTITY_REGISTRY_UPDATED, _on_entity_registry_updated),
+        hass.bus.async_listen(EVENT_DEVICE_REGISTRY_UPDATED, _on_device_registry_updated),
+        hass.bus.async_listen(EVENT_LABEL_REGISTRY_UPDATED, _on_label_registry_updated),
+    ]
+
+    def _unsub() -> None:
+        for unsub in unsubs:
+            try:
+                unsub()
+            except Exception:
+                pass
+
+    return _unsub
+
+
+def _start_sync_triggers(hass: HomeAssistant, entry_id: str):
+    auto_unsub = _start_auto_sync(hass, entry_id)
+    event_unsub = _start_event_sync(hass, entry_id)
+
+    def _unsub_all() -> None:
+        for unsub in (auto_unsub, event_unsub):
+            try:
+                unsub()
+            except Exception:
+                pass
+        _cancel_event_sync_task(hass, entry_id)
+
+    return _unsub_all
+
+
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     data = _ensure_domain(hass)
 
@@ -708,7 +805,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             entry.entry_id,
         )
 
-    auto_unsubs[entry.entry_id] = _start_auto_sync(hass, entry.entry_id)
+    auto_unsubs[entry.entry_id] = _start_sync_triggers(hass, entry.entry_id)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     hass.async_create_task(_async_sync_auto_mappings(hass, entry.entry_id))
     _LOGGER.info("%s started (Entry %s)", DOMAIN, entry.entry_id)
@@ -722,6 +819,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     servers: dict[str, Any] = data[KEY_SERVERS]
     locks: dict[str, asyncio.Lock] = data[KEY_LOCKS]
     auto_unsubs: dict[str, Any] = data[KEY_AUTO_SYNC_UNSUB]
+    event_sync_tasks: dict[str, asyncio.Task] = data[KEY_EVENT_SYNC_TASKS]
     reload_locks: dict[str, asyncio.Lock] = data[KEY_RELOAD_LOCKS]
     reload_fp: dict[str, str] = data[KEY_LAST_RELOAD_FP]
 
@@ -738,6 +836,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     lock = locks.setdefault(entry.entry_id, asyncio.Lock())
 
     data[KEY_PUBLISHED_CACHE].pop(entry.entry_id, None)
+    pending = event_sync_tasks.pop(entry.entry_id, None)
+    if pending and not pending.done():
+        pending.cancel()
     reload_locks.pop(entry.entry_id, None)
     reload_fp.pop(entry.entry_id, None)
 
