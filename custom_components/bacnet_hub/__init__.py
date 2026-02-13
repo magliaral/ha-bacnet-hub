@@ -496,6 +496,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except Exception:
             pass
 
+    # Run one sync before startup so first install already has imported mappings
+    # without requiring an extra manual reload.
+    try:
+        if await _async_sync_auto_mappings(hass, entry.entry_id):
+            refreshed = _entry_by_id(hass, entry.entry_id)
+            if refreshed is not None:
+                entry = refreshed
+    except Exception:
+        _LOGGER.debug("Initial auto sync before setup failed for entry %s", entry.entry_id, exc_info=True)
+
     merged_config: Dict[str, Any] = {**(entry.data or {}), **(entry.options or {})}
     _LOGGER.debug("Merged options for %s (%s): %s", DOMAIN, entry.entry_id, merged_config)
 
@@ -569,9 +579,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     auto_unsubs[entry.entry_id] = _start_auto_sync(hass, entry.entry_id)
-    hass.async_create_task(_async_sync_auto_mappings(hass, entry.entry_id))
-
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+    hass.async_create_task(_async_sync_auto_mappings(hass, entry.entry_id))
     _LOGGER.info("%s started (Entry %s)", DOMAIN, entry.entry_id)
 
     logging.getLogger("bacpypes3.service.cov").setLevel(logging.DEBUG)
