@@ -27,6 +27,18 @@ DEFAULT_IMPORT_LABEL_NAME = "BACnet"
 DEFAULT_IMPORT_LABEL_ICON = "mdi:server-network-outline"
 DEFAULT_IMPORT_LABEL_COLOR = "light-green"
 
+MIRRORED_STATE_ATTRIBUTE_EXCLUDE = frozenset(
+    {
+        # Core entity presentation attributes managed by the mirror entity itself.
+        "friendly_name",
+        "icon",
+        "unit_of_measurement",
+        "device_class",
+        "state_class",
+        "entity_category",
+    }
+)
+
 
 def _as_int(value: Any, fallback: int = 0) -> int:
     try:
@@ -82,3 +94,11 @@ def published_entity_id(
     object_instance: Any,
 ) -> str:
     return f"{entity_domain}.{published_suggested_object_id(object_type, object_instance)}"
+
+
+def mirrored_state_attributes(attrs: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in (attrs or {}).items()
+        if key not in MIRRORED_STATE_ATTRIBUTE_EXCLUDE
+    }

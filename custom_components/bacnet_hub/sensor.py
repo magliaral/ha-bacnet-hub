@@ -24,6 +24,7 @@ from .const import (
     CONF_ADDRESS,
     CONF_INSTANCE,
     DOMAIN,
+    mirrored_state_attributes,
     published_entity_id,
     published_suggested_object_id,
     published_unique_id,
@@ -124,6 +125,7 @@ class BacnetPublishedSensor(SensorEntity):
         self._attr_icon: Optional[str] = None
         self._attr_entity_category: Optional[EntityCategory] = EntityCategory.DIAGNOSTIC
         self._attr_native_value: Optional[StateType] = None
+        self._attr_extra_state_attributes: Dict[str, Any] = {}
 
     @property
     def suggested_object_id(self) -> str | None:
@@ -183,6 +185,7 @@ class BacnetPublishedSensor(SensorEntity):
             self._attr_state_class = None
             self._attr_icon = None
             self._attr_entity_category = EntityCategory.DIAGNOSTIC
+            self._attr_extra_state_attributes = {}
             self.async_write_ha_state()
             return
 
@@ -222,6 +225,9 @@ class BacnetPublishedSensor(SensorEntity):
 
         # Mirror icon exactly if explicitly set
         self._attr_icon = st.attributes.get("icon") or None
+        mirrored_attrs = mirrored_state_attributes(dict(st.attributes or {}))
+        mirrored_attrs["source_entity_id"] = self._source
+        self._attr_extra_state_attributes = mirrored_attrs
 
         # Do NOT mirror entity_category anymore – always stays diagnostic
         self._attr_entity_category = EntityCategory.DIAGNOSTIC

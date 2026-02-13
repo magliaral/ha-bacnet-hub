@@ -18,6 +18,7 @@ from .const import (
     CONF_ADDRESS,
     CONF_INSTANCE,
     DOMAIN,
+    mirrored_state_attributes,
     published_entity_id,
     published_suggested_object_id,
     published_unique_id,
@@ -114,6 +115,7 @@ class BacnetPublishedBinarySensor(BinarySensorEntity):
         self._attr_entity_category: Optional[EntityCategory] = EntityCategory.DIAGNOSTIC
         self._attr_icon: Optional[str] = None
         self._attr_is_on: Optional[bool] = None  # initially unknown
+        self._attr_extra_state_attributes: Dict[str, Any] = {}
 
     @property
     def suggested_object_id(self) -> str | None:
@@ -170,6 +172,7 @@ class BacnetPublishedBinarySensor(BinarySensorEntity):
             self._attr_device_class = None
             self._attr_icon = None
             self._attr_entity_category = EntityCategory.DIAGNOSTIC
+            self._attr_extra_state_attributes = {}
             self.async_write_ha_state()
             return
 
@@ -235,6 +238,9 @@ class BacnetPublishedBinarySensor(BinarySensorEntity):
                 self._attr_icon = "mdi:lightbulb" if self._attr_is_on else "mdi:lightbulb-outline"
             else:
                 self._attr_icon = None
+        mirrored_attrs = mirrored_state_attributes(dict(st.attributes or {}))
+        mirrored_attrs["source_entity_id"] = self._source
+        self._attr_extra_state_attributes = mirrored_attrs
         # ---------------------------------------------------------------------
 
         # Do NOT mirror entity_category anymore – always stays diagnostic
