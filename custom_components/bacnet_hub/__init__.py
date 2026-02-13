@@ -147,19 +147,21 @@ def _ensure_counter_floor(counters: Dict[str, int], published: List[Dict[str, An
     return changed
 
 
-def _first_free_instance(object_type: str, published: List[Dict[str, Any]]) -> int:
-    used: set[int] = set()
+def _next_higher_instance(
+    object_type: str,
+    counters: Dict[str, int],
+    published: List[Dict[str, Any]],
+) -> int:
+    max_instance = -1
     for mapping in published:
         if mapping.get("object_type") != object_type:
             continue
         inst = _as_int(mapping.get("instance"), -1)
-        if inst >= 0:
-            used.add(inst)
+        if inst > max_instance:
+            max_instance = inst
 
-    candidate = 0
-    while candidate in used:
-        candidate += 1
-    return candidate
+    floor = max_instance + 1
+    return max(_as_int(counters.get(object_type), 0), floor)
 
 
 def _allocate_instance(
@@ -179,7 +181,7 @@ def _allocate_instance(
     if preferred is not None and preferred >= 0 and preferred not in used:
         instance = preferred
     else:
-        instance = _first_free_instance(object_type, published)
+        instance = _next_higher_instance(object_type, counters, published)
 
     counters[object_type] = max(_as_int(counters.get(object_type), 0), instance + 1)
     return instance
