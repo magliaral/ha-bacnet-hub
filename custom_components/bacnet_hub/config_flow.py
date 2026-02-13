@@ -413,6 +413,8 @@ class BacnetHubOptionsFlow(OptionsFlow):
         self._opts.pop("show_technical_ids", None)
         self._opts.pop("label_template", None)
         self._opts.pop("_edit_index", None)
+        self._previous_mode = str(self._opts.get(CONF_PUBLISH_MODE) or "").strip().lower()
+        self._previous_labels = set(_current_labels_from_store(self._opts))
 
     async def async_step_init(self, user_input: Optional[Dict] = None) -> ConfigFlowResult:
         return await self.async_step_device(user_input)
@@ -471,28 +473,11 @@ class BacnetHubOptionsFlow(OptionsFlow):
                 errors[CONF_IMPORT_LABELS] = "invalid_label_selection"
 
             if not errors:
-                previous_mode = str(self._opts.get(CONF_PUBLISH_MODE) or "").strip().lower()
-                previous_labels = set(current_labels)
-                new_labels = set(selected_labels)
-
                 self._opts["instance"] = inst
                 self._opts["address"] = addr
                 self._opts[CONF_DEVICE_NAME] = object_name
                 self._opts[CONF_DEVICE_DESCRIPTION] = device_description
-                self._opts[CONF_PUBLISH_MODE] = PUBLISH_MODE_LABELS
-                self._opts[CONF_IMPORT_LABELS] = selected_labels
-                self._opts[CONF_IMPORT_LABEL] = selected_labels[0]
-                self._opts.pop(CONF_IMPORT_AREAS, None)
-
-                if previous_mode != PUBLISH_MODE_LABELS or previous_labels != new_labels:
-                    self._opts["published"] = []
-                    self._opts["counters"] = {
-                        "analogValue": 0,
-                        "binaryValue": 0,
-                        "multiStateValue": 0,
-                    }
-
-                return self.async_create_entry(title="", data=self._opts)
+                return await self.async_step_labels()
 
         schema = vol.Schema(
             {
@@ -532,4 +517,58 @@ class BacnetHubOptionsFlow(OptionsFlow):
             data_schema=schema,
             errors=errors,
             description_placeholders=placeholders,
+        )
+
+    async def async_step_labels(self, user_input: Optional[Dict] = None) -> ConfigFlowResult:
+        default_label_id = await _async_ensure_default_label(self.hass)
+        label_options = label_choices(self.hass)
+        available_ids = {label_id for label_id, _ in label_options}
+
+        current_labels = [
+            item for item in _current_labels_from_store(self._opts) if item in available_ids
+        ]
+        if not current_labels and default_label_id and default_label_id in available_ids:
+            current_labels = [default_label_id]
+
+        errors: Dict[str, str] = {}
+        if user_input is not None:
+            selected_labels = _as_string_list(user_input.get(CONF_IMPORT_LABELS))
+            selected_labels = [label_id for label_id in selected_labels if label_id in available_ids]
+            if not selected_labels:
+                errors[CONF_IMPORT_LABELS] = "invalid_label_selection"
+            else:
+                new_labels = set(selected_labels)
+                self._opts[CONF_PUBLISH_MODE] = PUBLISH_MODE_LABELS
+                self._opts[CONF_IMPORT_LABELS] = selected_labels
+                self._opts[CONF_IMPORT_LABEL] = selected_labels[0]
+                self._opts.pop(CONF_IMPORT_AREAS, None)
+
+                if self._previous_mode != PUBLISH_MODE_LABELS or self._previous_labels != new_labels:
+                    self._opts["published"] = []
+                    self._opts["counters"] = {
+                        "analogValue": 0,
+                        "binaryValue": 0,
+                        "multiStateValue": 0,
+                    }
+
+                return self.async_create_entry(title="", data=self._opts)
+
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_IMPORT_LABELS, default=current_labels): sel.SelectSelector(
+                    sel.SelectSelectorConfig(
+                        options=[
+                            sel.SelectOptionDict(value=label_id, label=label_name)
+                            for label_id, label_name in label_options
+                        ],
+                        mode=sel.SelectSelectorMode.DROPDOWN,
+                        multiple=True,
+                    )
+                ),
+            }
+        )
+        return self.async_show_form(
+            step_id="labels",
+            data_schema=schema,
+            errors=errors,
         )

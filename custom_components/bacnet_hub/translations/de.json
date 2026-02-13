@@ -21,12 +21,18 @@
     "step": {
       "device": {
         "title": "Geräteeinstellungen",
-        "description": "Instanznummer, lokale Adresse, Objektname, Beschreibung und Labels-Import konfigurieren. Passende Entitäten werden bei Registry-/Label-Änderungen automatisch gemappt.",
+        "description": "Lokale BACnet-Geräteparameter konfigurieren.",
         "data": {
           "instance": "Instanznummer",
           "address": "Lokale BACnet/IP-Adresse (zum Beispiel 192.168.31.36/24:47808)",
           "device_name": "BACnet Objektname",
-          "device_description": "BACnet Gerätebeschreibung",
+          "device_description": "BACnet Gerätebeschreibung"
+        }
+      },
+      "labels": {
+        "title": "Label-Import",
+        "description": "Ein oder mehrere Labels auswählen. Passende Entitäten werden bei Registry-/Label-Änderungen automatisch gemappt.",
+        "data": {
           "import_labels": "Labels"
         }
       }
