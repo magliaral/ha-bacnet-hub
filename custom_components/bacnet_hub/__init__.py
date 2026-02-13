@@ -147,20 +147,46 @@ def _ensure_counter_floor(counters: Dict[str, int], published: List[Dict[str, An
     return changed
 
 
-def _next_instance(
-    object_type: str, counters: Dict[str, int], published: List[Dict[str, Any]]
-) -> int:
-    max_instance = -1
+def _first_free_instance(object_type: str, published: List[Dict[str, Any]]) -> int:
+    used: set[int] = set()
     for mapping in published:
         if mapping.get("object_type") != object_type:
             continue
         inst = _as_int(mapping.get("instance"), -1)
-        if inst > max_instance:
-            max_instance = inst
-    floor = max_instance + 1
-    next_idx = max(_as_int(counters.get(object_type), 0), floor)
-    counters[object_type] = next_idx + 1
-    return next_idx
+        if inst >= 0:
+            used.add(inst)
+
+    candidate = 0
+    while candidate in used:
+        candidate += 1
+    return candidate
+
+
+def _allocate_instance(
+    object_type: str,
+    counters: Dict[str, int],
+    published: List[Dict[str, Any]],
+    preferred: int | None = None,
+) -> int:
+    used: set[int] = set()
+    for mapping in published:
+        if mapping.get("object_type") != object_type:
+            continue
+        inst = _as_int(mapping.get("instance"), -1)
+        if inst >= 0:
+            used.add(inst)
+
+    if preferred is not None and preferred >= 0 and preferred not in used:
+        instance = preferred
+    else:
+        instance = _first_free_instance(object_type, published)
+
+    counters[object_type] = max(_as_int(counters.get(object_type), 0), instance + 1)
+    return instance
+
+
+def _instance_hint_key(map_key: str, object_type: str) -> str:
+    return f"{map_key}|{object_type}"
 
 
 def _expected_unique_ids(entry: ConfigEntry, published: List[Dict[str, Any]]) -> set[str]:
@@ -333,8 +359,10 @@ async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> bool:
 
     published: List[Dict[str, Any]] = list(options.get("published", []))
     counters: Dict[str, int] = dict(options.get("counters", {}))
+    instance_hints: Dict[str, int] = dict(options.get("instance_hints", {}))
     original_published = list(published)
     original_counters = dict(counters)
+    original_instance_hints = dict(instance_hints)
 
     _ensure_counter_floor(counters, published)
     targets = _auto_target_entity_ids(hass, options, mode)
@@ -369,6 +397,10 @@ async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> bool:
             continue
 
         key = mapping_key(current)
+        current_object_type = str(current.get("object_type") or "")
+        current_instance = _as_int(current.get("instance"), -1)
+        if current_object_type and current_instance >= 0:
+            instance_hints[_instance_hint_key(key, current_object_type)] = current_instance
         if key in existing_mapping_keys:
             removed_count += 1
             continue
@@ -399,9 +431,18 @@ async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> bool:
         new_object_type = str(candidate.get("object_type") or "")
         if old_object_type != new_object_type:
             current["object_type"] = new_object_type
-            current["instance"] = _next_instance(new_object_type, counters, kept)
+            preferred = _as_int(instance_hints.get(_instance_hint_key(key, new_object_type)), -1)
+            current["instance"] = _allocate_instance(
+                new_object_type,
+                counters,
+                kept,
+                preferred=preferred if preferred >= 0 else None,
+            )
         else:
             current["object_type"] = new_object_type
+            instance_hints[_instance_hint_key(key, new_object_type)] = _as_int(
+                current.get("instance"), 0
+            )
         current["units"] = candidate.get("units")
         current["friendly_name"] = str(
             candidate.get("friendly_name") or mapping_friendly_name(hass, current)
@@ -451,7 +492,14 @@ async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> bool:
             if not object_type:
                 continue
 
-            instance = _next_instance(object_type, counters, kept)
+            preferred = _as_int(instance_hints.get(_instance_hint_key(key, object_type)), -1)
+            instance = _allocate_instance(
+                object_type,
+                counters,
+                kept,
+                preferred=preferred if preferred >= 0 else None,
+            )
+            instance_hints[_instance_hint_key(key, object_type)] = instance
             new_map = {
                 "entity_id": entity_id,
                 "object_type": object_type,
@@ -485,6 +533,7 @@ async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> bool:
     changed = (
         (kept != original_published)
         or (counters != original_counters)
+        or (instance_hints != original_instance_hints)
         or had_legacy_ui_keys
         or had_legacy_mapping_keys
     )
@@ -498,6 +547,7 @@ async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> bool:
     new_options.pop("label_template", None)
     new_options["published"] = kept
     new_options["counters"] = counters
+    new_options["instance_hints"] = instance_hints
     hass.config_entries.async_update_entry(entry, options=new_options)
     _LOGGER.info(
         "Auto mapping sync updated entry %s (mode=%s, added=%d, removed=%d)",
