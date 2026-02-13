@@ -26,7 +26,6 @@ DEFAULT_PUBLISH_MODE = PUBLISH_MODE_LABELS
 DEFAULT_IMPORT_LABEL_NAME = "BACnet"
 DEFAULT_IMPORT_LABEL_ICON = "mdi:server-network-outline"
 DEFAULT_IMPORT_LABEL_COLOR = "light-green"
-AUTO_SYNC_INTERVAL_SECONDS = 60
 
 
 def _as_int(value: Any, fallback: int = 0) -> int:

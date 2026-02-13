@@ -15,7 +15,7 @@ This integration now uses a labels-first workflow:
 
 - Mapping mode is labels-only.
 - Entities are auto-discovered from selected Home Assistant labels.
-- Auto sync runs every 60 seconds.
+- Auto sync is event-driven (registry/label updates) with debounce.
 
 During setup, the integration tries to create a default label:
 
@@ -80,7 +80,7 @@ At least one valid label must be selected.
 - Matching entities are auto-mapped.
 - Sync cycle:
   - once at startup
-  - every 60 seconds afterward
+  - on registry/label changes (debounced)
 
 ## Mapping Behavior
 
@@ -143,7 +143,7 @@ Local PV and COV are not mutated for denied writes.
 - Import seems not updating:
   - Verify selected labels in options.
   - Verify entities or devices actually carry those labels.
-  - Wait at least one sync interval (60 seconds) or trigger integration reload.
+  - Trigger integration reload if no relevant registry/label event occurred.
 - BACnet write has no effect:
   - Check if domain and action are supported.
   - Check Home Assistant service availability for that domain.

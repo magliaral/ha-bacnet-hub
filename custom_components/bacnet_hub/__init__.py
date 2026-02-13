@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import timedelta
 from typing import Any, Dict, List
 
 from homeassistant.config_entries import ConfigEntry
@@ -11,10 +10,8 @@ from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.event import async_track_time_interval
 
 from .const import (
-    AUTO_SYNC_INTERVAL_SECONDS,
     CONF_ADDRESS,
     CONF_IMPORT_LABEL,
     CONF_IMPORT_LABELS,
@@ -40,7 +37,7 @@ KEY_SERVERS = "servers"
 KEY_LOCKS = "locks"
 KEY_PUBLISHED_CACHE = "published"
 KEY_SUPPRESS_RELOAD = "suppress_reload"
-KEY_AUTO_SYNC_UNSUB = "auto_sync_unsub"
+KEY_SYNC_UNSUB = "sync_unsub"
 KEY_EVENT_SYNC_TASKS = "event_sync_tasks"
 KEY_RELOAD_LOCKS = "reload_locks"
 KEY_LAST_RELOAD_FP = "last_reload_fingerprint"
@@ -62,7 +59,7 @@ def _ensure_domain(hass: HomeAssistant) -> Dict[str, Any]:
     hass.data[DOMAIN].setdefault(KEY_SERVERS, {})
     hass.data[DOMAIN].setdefault(KEY_LOCKS, {})
     hass.data[DOMAIN].setdefault(KEY_PUBLISHED_CACHE, {})
-    hass.data[DOMAIN].setdefault(KEY_AUTO_SYNC_UNSUB, {})
+    hass.data[DOMAIN].setdefault(KEY_SYNC_UNSUB, {})
     hass.data[DOMAIN].setdefault(KEY_EVENT_SYNC_TASKS, {})
     hass.data[DOMAIN].setdefault(KEY_RELOAD_LOCKS, {})
     hass.data[DOMAIN].setdefault(KEY_LAST_RELOAD_FP, {})
@@ -568,18 +565,6 @@ async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> bool:
     return True
 
 
-def _start_auto_sync(hass: HomeAssistant, entry_id: str):
-    @callback
-    def _tick(_now):
-        hass.async_create_task(_async_sync_auto_mappings(hass, entry_id))
-
-    return async_track_time_interval(
-        hass,
-        _tick,
-        timedelta(seconds=AUTO_SYNC_INTERVAL_SECONDS),
-    )
-
-
 def _cancel_event_sync_task(hass: HomeAssistant, entry_id: str) -> None:
     data = _ensure_domain(hass)
     tasks: dict[str, asyncio.Task] = data[KEY_EVENT_SYNC_TASKS]
@@ -656,11 +641,10 @@ def _start_event_sync(hass: HomeAssistant, entry_id: str):
 
 
 def _start_sync_triggers(hass: HomeAssistant, entry_id: str):
-    auto_unsub = _start_auto_sync(hass, entry_id)
     event_unsub = _start_event_sync(hass, entry_id)
 
     def _unsub_all() -> None:
-        for unsub in (auto_unsub, event_unsub):
+        for unsub in (event_unsub,):
             try:
                 unsub()
             except Exception:
@@ -697,7 +681,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     data = _ensure_domain(hass)
     servers: dict[str, BacnetHubServer] = data[KEY_SERVERS]
     locks: dict[str, asyncio.Lock] = data[KEY_LOCKS]
-    auto_unsubs: dict[str, Any] = data[KEY_AUTO_SYNC_UNSUB]
+    sync_unsubs: dict[str, Any] = data[KEY_SYNC_UNSUB]
 
     prev = servers.get(entry.entry_id)
     if prev is not None:
@@ -709,7 +693,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         finally:
             servers.pop(entry.entry_id, None)
 
-    prev_unsub = auto_unsubs.pop(entry.entry_id, None)
+    prev_unsub = sync_unsubs.pop(entry.entry_id, None)
     if prev_unsub:
         try:
             prev_unsub()
@@ -805,7 +789,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             entry.entry_id,
         )
 
-    auto_unsubs[entry.entry_id] = _start_sync_triggers(hass, entry.entry_id)
+    sync_unsubs[entry.entry_id] = _start_sync_triggers(hass, entry.entry_id)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     hass.async_create_task(_async_sync_auto_mappings(hass, entry.entry_id))
     _LOGGER.info("%s started (Entry %s)", DOMAIN, entry.entry_id)
@@ -818,12 +802,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     data = _ensure_domain(hass)
     servers: dict[str, Any] = data[KEY_SERVERS]
     locks: dict[str, asyncio.Lock] = data[KEY_LOCKS]
-    auto_unsubs: dict[str, Any] = data[KEY_AUTO_SYNC_UNSUB]
+    sync_unsubs: dict[str, Any] = data[KEY_SYNC_UNSUB]
     event_sync_tasks: dict[str, asyncio.Task] = data[KEY_EVENT_SYNC_TASKS]
     reload_locks: dict[str, asyncio.Lock] = data[KEY_RELOAD_LOCKS]
     reload_fp: dict[str, str] = data[KEY_LAST_RELOAD_FP]
 
-    unsub = auto_unsubs.pop(entry.entry_id, None)
+    unsub = sync_unsubs.pop(entry.entry_id, None)
     if unsub:
         try:
             unsub()
