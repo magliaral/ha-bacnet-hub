@@ -108,7 +108,7 @@ class BacnetPublishedSensor(SensorEntity):
             object_type="analogValue",
             object_instance=instance,
         )
-        self._attr_suggested_object_id = published_suggested_object_id("analogValue", instance)
+        self._suggested_object_id = published_suggested_object_id("analogValue", instance)
         self.entity_id = published_entity_id("sensor", "analogValue", instance)
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry_id)},
@@ -124,6 +124,10 @@ class BacnetPublishedSensor(SensorEntity):
         self._attr_icon: Optional[str] = None
         self._attr_entity_category: Optional[EntityCategory] = EntityCategory.DIAGNOSTIC
         self._attr_native_value: Optional[StateType] = None
+
+    @property
+    def suggested_object_id(self) -> str | None:
+        return self._suggested_object_id
 
     async def async_added_to_hass(self) -> None:
         # Initial
