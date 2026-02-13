@@ -18,6 +18,7 @@ from .const import (
     CONF_ADDRESS,
     CONF_INSTANCE,
     DOMAIN,
+    published_entity_id,
     published_suggested_object_id,
     published_unique_id,
 )
@@ -101,6 +102,7 @@ class BacnetPublishedBinarySensor(BinarySensorEntity):
             object_instance=instance,
         )
         self._attr_suggested_object_id = published_suggested_object_id("binaryValue", instance)
+        self.entity_id = published_entity_id("binary_sensor", "binaryValue", instance)
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry_id)},
             name="BACnet Hub",

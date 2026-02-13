@@ -71,6 +71,15 @@ def published_unique_id(
 
 
 def published_suggested_object_id(object_type: str, object_instance: Any) -> str:
-    type_slug = object_type_slug(object_type)
+    # Entity object IDs must be underscore-safe; HA entity_id does not keep hyphens.
+    type_slug = object_type_slug(object_type).replace("-", "_")
     inst = _as_int(object_instance, 0)
     return f"{type_slug}_{inst}"
+
+
+def published_entity_id(
+    entity_domain: str,
+    object_type: str,
+    object_instance: Any,
+) -> str:
+    return f"{entity_domain}.{published_suggested_object_id(object_type, object_instance)}"
