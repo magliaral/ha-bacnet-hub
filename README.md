@@ -137,23 +137,11 @@ If mapping is read-only, BACnet `WriteProperty` is rejected with `writeAccessDen
 
 - BACnet UDP bind conflicts are handled with preflight retries and backoff
 
-## Service
-
-- `bacnet_hub.reload`: reload one config entry by `entry_id`
-- If only one entry exists, `entry_id` can be omitted
-
 ## Troubleshooting
 
-- Import not updating: check selected labels, verify labels on entity/device, and check HA events `entity_registry_updated`, `device_registry_updated`, `label_registry_updated`.
+- Import not updating: check selected labels, verify labels on entity/device.
 - Old/legacy entity IDs still visible: remove stale entity registry entries and reload integration.
-- BACnet write has no effect: verify mapping is writable and required HA service exists.
 - Address already in use: ensure no second BACnet process is bound to the same `IP:port`.
-
-## Development
-
-- Integration domain: `bacnet_hub`
-- Current dependency pin: `bacpypes3==0.0.102`
-- Integration version is read from `custom_components/bacnet_hub/manifest.json`
 
 ## License
 
