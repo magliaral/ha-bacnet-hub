@@ -23,6 +23,7 @@ from .const import (
     DEFAULT_PUBLISH_MODE,
     DOMAIN,
     PUBLISH_MODE_LABELS,
+    published_entity_id,
     published_unique_id,
 )
 from .discovery import (
@@ -225,6 +226,54 @@ def _cleanup_orphan_published_entities(
             _LOGGER.debug("Could not remove stale entity %s", entity_id, exc_info=True)
 
     return removed
+
+
+def _normalize_published_entity_ids(
+    hass: HomeAssistant, entry: ConfigEntry, published: List[Dict[str, Any]]
+) -> int:
+    """Force deterministic entity_ids for published points based on type+instance."""
+    registry = er.async_get(hass)
+    merged = {**(entry.data or {}), **(entry.options or {})}
+    hub_instance = merged.get(CONF_INSTANCE, 0)
+    hub_address = merged.get(CONF_ADDRESS, "")
+    renamed = 0
+
+    for mapping in published:
+        if not isinstance(mapping, dict):
+            continue
+        object_type = str(mapping.get("object_type") or "")
+        instance = _as_int(mapping.get("instance"), -1)
+        if instance < 0:
+            continue
+
+        if object_type == "analogValue":
+            entity_domain = "sensor"
+        elif object_type == "binaryValue":
+            entity_domain = "binary_sensor"
+        else:
+            # No HA entity platform currently for other BACnet object types.
+            continue
+
+        unique_id = published_unique_id(
+            hub_instance=hub_instance,
+            hub_address=hub_address,
+            object_type=object_type,
+            object_instance=instance,
+        )
+        wanted_entity_id = published_entity_id(entity_domain, object_type, instance)
+        current_entity_id = registry.async_get_entity_id(entity_domain, DOMAIN, unique_id)
+        if not current_entity_id or current_entity_id == wanted_entity_id:
+            continue
+
+        try:
+            registry.async_update_entity(current_entity_id, new_entity_id=wanted_entity_id)
+            renamed += 1
+        except Exception:
+            _LOGGER.debug(
+                "Could not rename %s to %s", current_entity_id, wanted_entity_id, exc_info=True
+            )
+
+    return renamed
 
 
 def _auto_target_entity_ids(hass: HomeAssistant, options: Dict[str, Any], mode: str) -> set[str]:
@@ -599,6 +648,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    renamed_entities = _normalize_published_entity_ids(hass, entry, published)
+    if renamed_entities:
+        _LOGGER.info(
+            "Normalized %d published entity IDs for entry %s",
+            renamed_entities,
+            entry.entry_id,
+        )
 
     auto_unsubs[entry.entry_id] = _start_auto_sync(hass, entry.entry_id)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
