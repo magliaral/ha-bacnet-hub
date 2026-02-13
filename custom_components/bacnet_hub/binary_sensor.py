@@ -14,12 +14,21 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.event import async_track_state_change_event
 
-from .const import DOMAIN
+from .const import (
+    CONF_ADDRESS,
+    CONF_INSTANCE,
+    DOMAIN,
+    published_suggested_object_id,
+    published_unique_id,
+)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
     data = hass.data[DOMAIN]
     published: List[Dict[str, Any]] = data.get("published", {}).get(entry.entry_id, []) or []
+    merged = {**(entry.data or {}), **(entry.options or {})}
+    hub_instance = merged.get(CONF_INSTANCE, 0)
+    hub_address = merged.get(CONF_ADDRESS, "")
 
     entities: List[BacnetPublishedBinarySensor] = []
     for m in published:
@@ -38,6 +47,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             BacnetPublishedBinarySensor(
                 hass=hass,
                 entry_id=entry.entry_id,
+                hub_instance=hub_instance,
+                hub_address=hub_address,
                 source_entity_id=ent_id,
                 instance=instance,
                 name=name,
@@ -64,6 +75,8 @@ class BacnetPublishedBinarySensor(BinarySensorEntity):
         self,
         hass: HomeAssistant,
         entry_id: str,
+        hub_instance: int | str,
+        hub_address: str,
         source_entity_id: str,
         instance: int,
         name: str,
@@ -81,7 +94,13 @@ class BacnetPublishedBinarySensor(BinarySensorEntity):
         self._attr_name = name
         self._remove_listener = None
         self._late_unsub: Optional[Callable[[], None]] = None
-        self._attr_unique_id = f"{DOMAIN}:{entry_id}:bv:{instance}"
+        self._attr_unique_id = published_unique_id(
+            hub_instance=hub_instance,
+            hub_address=hub_address,
+            object_type="binaryValue",
+            object_instance=instance,
+        )
+        self._attr_suggested_object_id = published_suggested_object_id("binaryValue", instance)
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry_id)},
             name="BACnet Hub",

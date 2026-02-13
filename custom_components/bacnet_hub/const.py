@@ -1,3 +1,8 @@
+from __future__ import annotations
+
+import re
+from typing import Any
+
 DOMAIN = "bacnet_hub"
 DEFAULT_NAME = "BACnet Hub"
 
@@ -22,3 +27,50 @@ DEFAULT_IMPORT_LABEL_NAME = "BACnet"
 DEFAULT_IMPORT_LABEL_ICON = "mdi:server-network-outline"
 DEFAULT_IMPORT_LABEL_COLOR = "light-green"
 AUTO_SYNC_INTERVAL_SECONDS = 60
+
+
+def _as_int(value: Any, fallback: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return fallback
+
+
+def _slug_part(value: Any, fallback: str = "unknown") -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return fallback
+    slug = re.sub(r"[^a-z0-9]+", "_", text).strip("_")
+    return slug or fallback
+
+
+def object_type_slug(object_type: str) -> str:
+    text = str(object_type or "").strip()
+    if not text:
+        return "obj"
+    # Convert BACnet style camelCase names to kebab-case (e.g. analogValue -> analog-value).
+    return re.sub(r"(?<!^)(?=[A-Z])", "-", text).lower()
+
+
+def stable_hub_key(instance: Any, address: Any) -> str:
+    inst = _as_int(instance, 0)
+    addr = _slug_part(address, fallback="addr_unknown")
+    return f"inst_{inst}_{addr}"
+
+
+def published_unique_id(
+    *,
+    hub_instance: Any,
+    hub_address: Any,
+    object_type: str,
+    object_instance: Any,
+) -> str:
+    type_slug = object_type_slug(object_type)
+    inst = _as_int(object_instance, 0)
+    return f"{DOMAIN}:hub:{stable_hub_key(hub_instance, hub_address)}:{type_slug}:{inst}"
+
+
+def published_suggested_object_id(object_type: str, object_instance: Any) -> str:
+    type_slug = object_type_slug(object_type)
+    inst = _as_int(object_instance, 0)
+    return f"{type_slug}_{inst}"

@@ -15,12 +15,15 @@ from homeassistant.helpers.event import async_track_time_interval
 
 from .const import (
     AUTO_SYNC_INTERVAL_SECONDS,
+    CONF_ADDRESS,
     CONF_IMPORT_LABEL,
     CONF_IMPORT_LABELS,
+    CONF_INSTANCE,
     CONF_PUBLISH_MODE,
     DEFAULT_PUBLISH_MODE,
     DOMAIN,
     PUBLISH_MODE_LABELS,
+    published_unique_id,
 )
 from .discovery import (
     entity_mapping_candidates,
@@ -159,8 +162,12 @@ def _next_instance(
     return next_idx
 
 
-def _expected_unique_ids(entry_id: str, published: List[Dict[str, Any]]) -> set[str]:
+def _expected_unique_ids(entry: ConfigEntry, published: List[Dict[str, Any]]) -> set[str]:
     expected: set[str] = set()
+    merged = {**(entry.data or {}), **(entry.options or {})}
+    hub_instance = merged.get(CONF_INSTANCE, 0)
+    hub_address = merged.get(CONF_ADDRESS, "")
+
     for mapping in published:
         if not isinstance(mapping, dict):
             continue
@@ -168,13 +175,29 @@ def _expected_unique_ids(entry_id: str, published: List[Dict[str, Any]]) -> set[
         inst = _as_int(mapping.get("instance"), -1)
         if inst < 0:
             continue
-        if obj_type == "analogValue":
-            expected.add(f"{DOMAIN}:{entry_id}:av:{inst}")
-        elif obj_type == "binaryValue":
-            expected.add(f"{DOMAIN}:{entry_id}:bv:{inst}")
-        elif obj_type == "multiStateValue":
-            expected.add(f"{DOMAIN}:{entry_id}:msv:{inst}")
+        expected.add(
+            published_unique_id(
+                hub_instance=hub_instance,
+                hub_address=hub_address,
+                object_type=obj_type,
+                object_instance=inst,
+            )
+        )
     return expected
+
+
+def _is_managed_published_unique_id(unique_id: str) -> bool:
+    # Current format only: bacnet_hub:hub:<hub_key>:<type-slug>:<instance>
+    parts = unique_id.split(":")
+    if len(parts) < 5:
+        return False
+    if parts[0] != DOMAIN or parts[1] != "hub":
+        return False
+    return parts[-2] in {
+        "analog-value",
+        "binary-value",
+        "multi-state-value",
+    }
 
 
 def _cleanup_orphan_published_entities(
@@ -183,14 +206,13 @@ def _cleanup_orphan_published_entities(
     """Delete stale BACnet entities no longer present in published mappings."""
     registry = er.async_get(hass)
     entries = er.async_entries_for_config_entry(registry, entry.entry_id)
-    expected = _expected_unique_ids(entry.entry_id, published)
-    uid_prefix = f"{DOMAIN}:{entry.entry_id}:"
+    expected = _expected_unique_ids(entry, published)
     removed = 0
 
     for reg_entry in entries:
         unique_id = str(getattr(reg_entry, "unique_id", "") or "")
         entity_id = getattr(reg_entry, "entity_id", None)
-        if not unique_id.startswith(uid_prefix):
+        if not _is_managed_published_unique_id(unique_id):
             continue
         if unique_id in expected:
             continue
