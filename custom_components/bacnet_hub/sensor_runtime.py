@@ -32,6 +32,7 @@ from .sensor_helpers import (
     _object_identifier_text,
     _object_instance,
     _parse_object_list_item,
+    _point_is_writable,
     _safe_text,
     _supported_point_type,
     _to_int,
@@ -135,6 +136,42 @@ async def _read_remote_property_any_objid(
     if last_err:
         raise last_err
     return None
+
+
+async def _write_client_point_present_value(
+    app: Any,
+    address: str,
+    object_type: str,
+    object_instance: int,
+    value: Any,
+    *,
+    priority: int | None = None,
+    timeout: float = CLIENT_READ_TIMEOUT_SECONDS,
+) -> Any:
+    objid = f"{str(object_type)}{','}{int(object_instance)}"
+    write_fn = getattr(app, "write_property", None)
+    if not callable(write_fn):
+        raise RuntimeError("write_property is not available on BACnet app")
+
+    attempts: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    kwargs_with_priority = {"priority": int(priority)} if priority is not None else {}
+    attempts.append(((address, objid, "presentValue", value), kwargs_with_priority))
+    if priority is not None:
+        attempts.append(((address, objid, "presentValue", value, int(priority)), {}))
+        attempts.append(((address, objid, "presentValue", value, None, int(priority)), {}))
+
+    last_err: BaseException | None = None
+    for args, kwargs in attempts:
+        try:
+            return await asyncio.wait_for(write_fn(*args, **kwargs), timeout=timeout)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as err:
+            last_err = err
+            continue
+    if last_err is not None:
+        raise last_err
+    raise RuntimeError("Unable to write presentValue")
 
 
 async def _read_client_object_list(
@@ -436,6 +473,7 @@ async def _read_client_point_payload(
         "numberOfStates",
         "activeText",
         "inactiveText",
+        "priorityArray",
     ]
     values = await _read_remote_properties(app, address, objid, props)
     state_text_value = values.get("stateText")
@@ -454,6 +492,13 @@ async def _read_client_point_payload(
         int(object_instance),
     )
     point_key = f"{type_slug}_{int(object_instance)}"
+    has_priority_array = values.get("priorityArray") is not None
+    writable_from_ha = _point_is_writable(
+        {
+            "type_slug": type_slug,
+            "has_priority_array": has_priority_array,
+        }
+    )
     return {
         "point_key": point_key,
         "client_instance": int(client_instance),
@@ -473,6 +518,8 @@ async def _read_client_point_payload(
         "number_of_states": _to_int(values.get("numberOfStates")),
         "active_text": _safe_text(values.get("activeText")),
         "inactive_text": _safe_text(values.get("inactiveText")),
+        "has_priority_array": has_priority_array,
+        "writable_from_ha": writable_from_ha,
     }
 
 

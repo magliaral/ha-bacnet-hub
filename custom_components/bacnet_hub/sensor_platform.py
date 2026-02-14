@@ -11,9 +11,9 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dis
 from homeassistant.helpers.event import async_track_time_interval
 
 from .const import CONF_ADDRESS, CONF_INSTANCE, DOMAIN, client_iam_signal, hub_display_name
+from .client_point_entities import BacnetClientPointSensor
 from .sensor_entities import (
     BacnetClientDetailSensor,
-    BacnetClientPointSensor,
     BacnetHubDetailSensor,
     BacnetPublishedSensor,
 )
@@ -32,7 +32,9 @@ from .sensor_helpers import (
     _client_points_set,
     _client_points_signal,
     _client_rescan_signal,
+    _entry_points_signal,
     _hub_diag_signal,
+    _point_platform,
     _safe_text,
     _supported_point_type,
     _to_int,
@@ -158,6 +160,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         for point_key in sorted(point_cache):
             if point_key in added:
                 continue
+            point_payload = dict(point_cache.get(point_key, {}) or {})
+            if _point_platform(point_payload) != "sensor":
+                continue
             entities_to_add.append(
                 BacnetClientPointSensor(
                     hass=hass,
@@ -262,6 +267,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
         _client_points_set(hass, entry.entry_id, client_id, payload)
         async_dispatcher_send(hass, _client_points_signal(entry.entry_id, client_id))
+        async_dispatcher_send(hass, _entry_points_signal(entry.entry_id), {"client_id": client_id})
         return _client_point_entities(instance, client_id, _client_points_get(hass, entry.entry_id, client_id))
 
     def _update_client_point_addresses(client_id: str, client_address: str) -> bool:
@@ -284,6 +290,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             return False
         _client_points_set(hass, entry.entry_id, client_id, updated_payload)
         async_dispatcher_send(hass, _client_points_signal(entry.entry_id, client_id))
+        async_dispatcher_send(hass, _entry_points_signal(entry.entry_id), {"client_id": client_id})
         return True
 
     async def _process_client_iam(client_instance: int, client_address: str) -> None:

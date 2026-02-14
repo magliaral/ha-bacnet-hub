@@ -39,7 +39,10 @@ CLIENT_DIAGNOSTIC_FIELDS: list[tuple[str, str]] = list(HUB_DIAGNOSTIC_FIELDS)
 NETWORK_DIAGNOSTIC_KEYS = {"ip_address", "ip_subnet_mask", "mac_address_raw"}
 CLIENT_POINT_SUPPORTED_TYPES: dict[str, tuple[str, str]] = {
     "analoginput": ("ai", "analog-input"),
+    "analogoutput": ("ao", "analog-output"),
     "analogvalue": ("av", "analog-value"),
+    "binaryinput": ("bi", "binary-input"),
+    "binaryoutput": ("bo", "binary-output"),
     "binaryvalue": ("bv", "binary-value"),
     "multistatevalue": ("mv", "multi-state-value"),
     "characterstringvalue": ("csv", "characterstring-value"),
@@ -207,6 +210,10 @@ def _client_points_signal(entry_id: str, client_id: str) -> str:
     return f"{DOMAIN}_client_points_{entry_id}_{client_id}"
 
 
+def _entry_points_signal(entry_id: str) -> str:
+    return f"{DOMAIN}_entry_points_{entry_id}"
+
+
 def _client_cov_signal(entry_id: str, client_id: str) -> str:
     return f"{DOMAIN}_client_cov_{entry_id}_{client_id}"
 
@@ -230,8 +237,17 @@ def _doi_entity_id(instance: int | str | None, field_key: str, *, network: bool)
     return f"sensor.bacnet_doi_{int(inst)}_{prefix}{_diag_field_slug(field_key)}"
 
 
-def _point_entity_id(client_instance: int, type_slug: str, object_instance: int) -> str:
-    return f"sensor.bacnet_doi_{int(client_instance)}_{type_slug}_{int(object_instance)}"
+def _point_entity_id(
+    client_instance: int,
+    type_slug: str,
+    object_instance: int,
+    *,
+    entity_domain: str = "sensor",
+) -> str:
+    return (
+        f"{str(entity_domain or 'sensor').strip().lower()}."
+        f"bacnet_doi_{int(client_instance)}_{type_slug}_{int(object_instance)}"
+    )
 
 
 def _point_unique_id(entry_id: str, client_id: str, type_slug: str, object_instance: int) -> str:
@@ -266,6 +282,10 @@ def _client_points_root(hass: HomeAssistant) -> dict[str, dict[str, dict[str, di
 def _client_points_get(hass: HomeAssistant, entry_id: str, client_id: str) -> dict[str, dict[str, Any]]:
     per_entry = _client_points_root(hass).setdefault(entry_id, {})
     return per_entry.setdefault(client_id, {})
+
+
+def _entry_client_points(hass: HomeAssistant, entry_id: str) -> dict[str, dict[str, dict[str, Any]]]:
+    return _client_points_root(hass).setdefault(entry_id, {})
 
 
 def _client_points_set(
@@ -333,8 +353,14 @@ def _supported_point_type(value: Any) -> tuple[str, str] | None:
     low = raw.lower()
     if "analog" in low and "input" in low:
         return CLIENT_POINT_SUPPORTED_TYPES.get("analoginput")
+    if "analog" in low and "output" in low:
+        return CLIENT_POINT_SUPPORTED_TYPES.get("analogoutput")
     if "analog" in low and "value" in low:
         return CLIENT_POINT_SUPPORTED_TYPES.get("analogvalue")
+    if "binary" in low and "input" in low:
+        return CLIENT_POINT_SUPPORTED_TYPES.get("binaryinput")
+    if "binary" in low and "output" in low:
+        return CLIENT_POINT_SUPPORTED_TYPES.get("binaryoutput")
     if "binary" in low and "value" in low:
         return CLIENT_POINT_SUPPORTED_TYPES.get("binaryvalue")
     if "multistate" in low and "value" in low:
@@ -452,7 +478,7 @@ def _point_native_value_from_payload(point: dict[str, Any]) -> StateType:
         return None
 
     type_slug = str(point.get("type_slug") or "")
-    if type_slug in {"ai", "av"}:
+    if type_slug in {"ai", "ao", "av"}:
         try:
             rounded = round(float(value), 3)
             if rounded == -0.0:
@@ -460,7 +486,7 @@ def _point_native_value_from_payload(point: dict[str, Any]) -> StateType:
             return rounded
         except Exception:
             pass
-    if type_slug == "bv":
+    if type_slug in {"bi", "bo", "bv"}:
         text = str(value).strip().lower()
         if text in ("active", "on", "true", "1"):
             active_text = _safe_text(point.get("active_text"))
@@ -490,3 +516,39 @@ def _property_slug(value: Any) -> str:
     if "." in text:
         text = text.split(".")[-1]
     return re.sub(r"[^a-z0-9]+", "", text)
+
+
+def _point_has_priority_array(point: dict[str, Any]) -> bool:
+    raw = point.get("has_priority_array")
+    if isinstance(raw, bool):
+        return raw
+    if raw is None:
+        return False
+    if isinstance(raw, (list, tuple, set, dict)):
+        return len(raw) > 0
+    text = str(raw).strip().lower()
+    return bool(text and text not in {"none", "null", "false", "0", "[]", "()"})
+
+
+def _point_is_writable(point: dict[str, Any]) -> bool:
+    type_slug = str(point.get("type_slug") or "").strip().lower()
+    if type_slug in {"av", "bv", "mv"}:
+        return True
+    if type_slug in {"ao", "bo"}:
+        return _point_has_priority_array(point)
+    return False
+
+
+def _point_platform(point: dict[str, Any]) -> str:
+    type_slug = str(point.get("type_slug") or "").strip().lower()
+    if type_slug in {"ai", "csv"}:
+        return "sensor"
+    if type_slug == "bi":
+        return "binary_sensor"
+    if type_slug == "mv":
+        return "select" if _point_is_writable(point) else "sensor"
+    if type_slug in {"av", "ao"}:
+        return "number" if _point_is_writable(point) else "sensor"
+    if type_slug in {"bv", "bo"}:
+        return "switch" if _point_is_writable(point) else "binary_sensor"
+    return "sensor"

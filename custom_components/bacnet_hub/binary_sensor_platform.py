@@ -3,10 +3,13 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 from .binary_sensor_entities import BacnetPublishedBinarySensor
+from .client_point_entities import BacnetClientPointBinarySensor
 from .const import CONF_ADDRESS, CONF_INSTANCE, DOMAIN, hub_display_name
+from .sensor_helpers import _entry_client_points, _entry_points_signal, _point_platform, _to_int
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
@@ -17,7 +20,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     hub_address = merged.get(CONF_ADDRESS, "")
     hub_name = hub_display_name(hub_instance)
 
-    entities: List[BacnetPublishedBinarySensor] = []
+    entities: List[Any] = []
     for m in published:
         if (m or {}).get("object_type") != "binaryValue":
             continue
@@ -47,3 +50,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         )
     if entities:
         async_add_entities(entities)
+
+    added_client_points: set[tuple[str, str]] = set()
+
+    @callback
+    def _add_client_point_entities(_payload=None) -> None:
+        new_entities: list[BacnetClientPointBinarySensor] = []
+        per_entry = _entry_client_points(hass, entry.entry_id)
+        for client_id, point_cache in per_entry.items():
+            for point_key, point in sorted(point_cache.items()):
+                if _point_platform(dict(point or {})) != "binary_sensor":
+                    continue
+                key = (str(client_id), str(point_key))
+                if key in added_client_points:
+                    continue
+                client_instance = _to_int((point or {}).get("client_instance"))
+                if client_instance is None:
+                    client_instance = _to_int(str(client_id).split("_")[-1]) or 0
+                new_entities.append(
+                    BacnetClientPointBinarySensor(
+                        hass=hass,
+                        entry_id=entry.entry_id,
+                        client_id=str(client_id),
+                        client_instance=int(client_instance),
+                        point_key=str(point_key),
+                    )
+                )
+                added_client_points.add(key)
+        if new_entities:
+            async_add_entities(new_entities)
+
+    _add_client_point_entities()
+    unsub = async_dispatcher_connect(hass, _entry_points_signal(entry.entry_id), _add_client_point_entities)
+    entry.async_on_unload(unsub)
