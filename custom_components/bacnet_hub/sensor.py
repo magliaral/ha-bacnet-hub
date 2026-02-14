@@ -1,6 +1,7 @@
 # custom_components/bacnet_hub/sensor.py
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, List, Optional, Callable
 
 from homeassistant.components.sensor import (
@@ -48,6 +49,7 @@ HUB_DIAGNOSTIC_FIELDS: list[tuple[str, str]] = [
     ("ip_subnet_mask", "IP subnet mask"),
     ("mac_address_raw", "MAC address"),
 ]
+DIAGNOSTIC_REFRESH_DELAY_SECONDS = 2.0
 
 
 def _to_state(value: Any) -> StateType:
@@ -84,9 +86,11 @@ def _hub_diagnostics(server: Any, merged: Dict[str, Any]) -> Dict[str, Any]:
         getattr(server, "application_software_version", None) if server is not None else None
     )
     hardware_revision = getattr(server, "hardware_revision", "1.0.2") if server is not None else "1.0.2"
-    system_status = getattr(server, "system_status", None) if server is not None else None
+    system_status = (
+        getattr(server, "system_status", "operational") if server is not None else "operational"
+    )
     system_status_code = (
-        getattr(server, "system_status_code", None) if server is not None else None
+        getattr(server, "system_status_code", 0) if server is not None else 0
     )
     object_identifier = (
         getattr(server, "device_object_identifier", None) if server is not None else None
@@ -97,9 +101,7 @@ def _hub_diagnostics(server: Any, merged: Dict[str, Any]) -> Dict[str, Any]:
     ip_address = getattr(server, "ip_address", None) if server is not None else None
     subnet_mask = getattr(server, "subnet_mask", None) if server is not None else None
     mac_address = getattr(server, "mac_address", None) if server is not None else None
-    mac_address_raw = (
-        str(mac_address).replace(":", "").replace("-", "").upper() if mac_address else None
-    )
+    mac_address_raw = str(mac_address).replace(":", "").replace("-", "").upper() if mac_address else None
     interface = getattr(server, "network_interface", None) if server is not None else None
     udp_port = getattr(server, "udp_port", None) if server is not None else None
     network_prefix = getattr(server, "network_prefix", None) if server is not None else None
@@ -414,6 +416,16 @@ class BacnetHubInfoSensor(SensorEntity):
     def _server(self) -> Any:
         return (self.hass.data.get(DOMAIN, {}).get("servers", {}) or {}).get(self._entry_id)
 
+    async def async_added_to_hass(self) -> None:
+        # Ensure diagnostics are refreshed once after startup/reload.
+        self.async_write_ha_state()
+
+        async def _late_refresh() -> None:
+            await asyncio.sleep(DIAGNOSTIC_REFRESH_DELAY_SECONDS)
+            self.async_write_ha_state()
+
+        self.hass.async_create_task(_late_refresh())
+
     @property
     def native_value(self) -> StateType:
         server = self._server()
@@ -454,6 +466,15 @@ class BacnetHubDetailSensor(SensorEntity):
 
     def _server(self) -> Any:
         return (self.hass.data.get(DOMAIN, {}).get("servers", {}) or {}).get(self._entry_id)
+
+    async def async_added_to_hass(self) -> None:
+        self.async_write_ha_state()
+
+        async def _late_refresh() -> None:
+            await asyncio.sleep(DIAGNOSTIC_REFRESH_DELAY_SECONDS)
+            self.async_write_ha_state()
+
+        self.hass.async_create_task(_late_refresh())
 
     @property
     def native_value(self) -> StateType:

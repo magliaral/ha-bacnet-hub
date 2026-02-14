@@ -123,8 +123,6 @@ async def _async_network_adapter_for_ip(hass: HomeAssistant, ip_address: str) ->
         "network_prefix": None,
     }
     ip_address = str(ip_address or "").strip()
-    if not ip_address:
-        return details
 
     try:
         from homeassistant.components.network import async_get_adapters
@@ -137,23 +135,43 @@ async def _async_network_adapter_for_ip(hass: HomeAssistant, ip_address: str) ->
         _LOGGER.debug("Could not read network adapters from Home Assistant", exc_info=True)
         return details
 
+    default_candidate: dict[str, Any] | None = None
+    first_candidate: dict[str, Any] | None = None
+
     for adapter in adapters:
+        is_default = bool(_adapter_get(adapter, "default", False))
+        interface = str(_adapter_get(adapter, "name", "")).strip() or None
+        adapter_mac = _normalize_mac(_adapter_get(adapter, "mac_address"))
         ipv4_entries = _adapter_get(adapter, "ipv4", []) or []
         for ip_entry in ipv4_entries:
             addr = str(_adapter_get(ip_entry, "address", "")).strip()
-            if addr != ip_address:
-                continue
-            details["interface"] = str(_adapter_get(adapter, "name", "")).strip() or None
-            details["mac_address"] = _normalize_mac(_adapter_get(adapter, "mac_address"))
             prefix_raw = _adapter_get(ip_entry, "network_prefix", None)
+            prefix: int | None = None
             try:
-                prefix = int(prefix_raw)
-                if 0 <= prefix <= 32:
-                    details["network_prefix"] = prefix
+                maybe_prefix = int(prefix_raw)
+                if 0 <= maybe_prefix <= 32:
+                    prefix = maybe_prefix
             except Exception:
                 pass
-            return details
 
+            candidate = {
+                "mac_address": adapter_mac,
+                "interface": interface,
+                "network_prefix": prefix,
+            }
+
+            if first_candidate is None:
+                first_candidate = candidate
+            if is_default and default_candidate is None:
+                default_candidate = candidate
+
+            if ip_address and addr == ip_address:
+                return candidate
+
+    if default_candidate:
+        return default_candidate
+    if first_candidate:
+        return first_candidate
     return details
 
 
