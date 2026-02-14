@@ -59,12 +59,23 @@ CLIENT_DISCOVERY_TIMEOUT_SECONDS = 3.0
 CLIENT_READ_TIMEOUT_SECONDS = 2.5
 CLIENT_OBJECTLIST_SCAN_LIMIT = 16
 CLIENT_OBJECTLIST_READ_TIMEOUT_SECONDS = 0.6
+CLIENT_POINT_REFRESH_TIMEOUT_SECONDS = 6.0
+CLIENT_POINT_SCAN_LIMIT = 128
 CLIENT_REDISCOVERY_INTERVAL = timedelta(seconds=60)
 CLIENT_SCAN_INTERVAL = timedelta(seconds=60)
 CLIENT_REFRESH_MIN_SECONDS = 55.0
+CLIENT_COV_LEASE_SECONDS = 300
+CLIENT_COV_RENEW_SECONDS = 240
 
 CLIENT_DIAGNOSTIC_FIELDS: list[tuple[str, str]] = list(HUB_DIAGNOSTIC_FIELDS)
 NETWORK_DIAGNOSTIC_KEYS = {"ip_address", "ip_subnet_mask", "mac_address_raw"}
+CLIENT_POINT_SUPPORTED_TYPES: dict[str, tuple[str, str]] = {
+    "analoginput": ("ai", "analogInput"),
+    "analogvalue": ("av", "analogValue"),
+    "binaryvalue": ("bv", "binaryValue"),
+    "multistatevalue": ("mv", "multiStateValue"),
+    "characterstringvalue": ("csv", "characterStringValue"),
+}
 
 
 def _to_state(value: Any) -> StateType:
@@ -225,6 +236,10 @@ def _hub_diag_signal(entry_id: str) -> str:
     return f"{DOMAIN}_hub_diag_{entry_id}"
 
 
+def _client_points_signal(entry_id: str, client_id: str) -> str:
+    return f"{DOMAIN}_client_points_{entry_id}_{client_id}"
+
+
 def _diag_field_slug(key: str) -> str:
     text = str(key or "").strip().lower()
     if text == "mac_address_raw":
@@ -240,6 +255,19 @@ def _doi_entity_id(instance: int | str | None, field_key: str, *, network: bool)
     return f"sensor.bacnet_doi_{int(inst)}_{prefix}{_diag_field_slug(field_key)}"
 
 
+def _point_entity_id(client_instance: int, type_slug: str, object_instance: int) -> str:
+    return f"sensor.bacnet_doi_{int(client_instance)}_{type_slug}_{int(object_instance)}"
+
+
+def _point_unique_id(entry_id: str, client_id: str, type_slug: str, object_instance: int) -> str:
+    return f"{entry_id}-{client_id}-point-{type_slug}-{int(object_instance)}"
+
+
+def _cov_process_identifier(entry_id: str, client_id: str, point_key: str) -> int:
+    seed = f"{entry_id}:{client_id}:{point_key}"
+    return (abs(hash(seed)) % 4194303) + 1
+
+
 def _client_cache_root(hass: HomeAssistant) -> dict[str, dict[str, dict[str, Any]]]:
     root = hass.data.setdefault(DOMAIN, {})
     return root.setdefault("client_diag_cache", {})
@@ -252,6 +280,26 @@ def _client_cache_get(hass: HomeAssistant, entry_id: str, client_id: str) -> dic
 
 def _client_cache_set(hass: HomeAssistant, entry_id: str, client_id: str, payload: dict[str, Any]) -> None:
     cache = _client_cache_get(hass, entry_id, client_id)
+    cache.update(payload or {})
+
+
+def _client_points_root(hass: HomeAssistant) -> dict[str, dict[str, dict[str, dict[str, Any]]]]:
+    root = hass.data.setdefault(DOMAIN, {})
+    return root.setdefault("client_point_cache", {})
+
+
+def _client_points_get(hass: HomeAssistant, entry_id: str, client_id: str) -> dict[str, dict[str, Any]]:
+    per_entry = _client_points_root(hass).setdefault(entry_id, {})
+    return per_entry.setdefault(client_id, {})
+
+
+def _client_points_set(
+    hass: HomeAssistant,
+    entry_id: str,
+    client_id: str,
+    payload: dict[str, dict[str, Any]],
+) -> None:
+    cache = _client_points_get(hass, entry_id, client_id)
     cache.update(payload or {})
 
 
@@ -288,6 +336,77 @@ def _object_identifier_instance(value: Any, object_type: str) -> int | None:
     return None
 
 
+def _normalize_object_type_key(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return re.sub(r"[^a-z0-9]+", "", text)
+
+
+def _supported_point_type(value: Any) -> tuple[str, str] | None:
+    if isinstance(value, tuple) and len(value) == 2:
+        return _supported_point_type(value[0])
+    key = _normalize_object_type_key(value)
+    return CLIENT_POINT_SUPPORTED_TYPES.get(key)
+
+
+def _object_instance(value: Any) -> int | None:
+    if isinstance(value, tuple) and len(value) == 2:
+        return _to_int(value[1])
+    text = str(value or "").strip()
+    m = re.search(r"(\d+)\s*$", text)
+    if m:
+        return _to_int(m.group(1))
+    return None
+
+
+def _object_identifier_compact(value: Any, fallback_type: str, fallback_instance: int) -> str:
+    if isinstance(value, tuple) and len(value) == 2:
+        return f"{value[0]},{int(value[1])}"
+    text = str(value or "").strip()
+    return text or f"{fallback_type},{int(fallback_instance)}"
+
+
+def _normalize_bacnet_unit(value: Any) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    norm = re.sub(r"[^a-z0-9]+", "", raw.lower())
+    mapping = {
+        "degreescelsius": "°C",
+        "degreescelsius": "°C",
+        "degreesfahrenheit": "°F",
+        "percent": "%",
+        "partspermillion": "ppm",
+        "pascals": "Pa",
+        "kilopascals": "kPa",
+        "watts": "W",
+        "kilowatts": "kW",
+        "wattshour": "Wh",
+        "watthours": "Wh",
+        "kilowatthours": "kWh",
+        "volts": "V",
+        "amperes": "A",
+        "hertz": "Hz",
+    }
+    return mapping.get(norm, raw)
+
+
+def _sensor_device_class_from_unit(unit: str | None) -> SensorDeviceClass | None:
+    u = str(unit or "").strip().lower()
+    if u in {"°c", "°f"}:
+        return SensorDeviceClass.TEMPERATURE
+    if u in {"w", "kw"}:
+        return SensorDeviceClass.POWER
+    if u in {"wh", "kwh"}:
+        return SensorDeviceClass.ENERGY
+    if u == "v":
+        return SensorDeviceClass.VOLTAGE
+    if u == "a":
+        return SensorDeviceClass.CURRENT
+    if u == "hz":
+        return SensorDeviceClass.FREQUENCY
+    return None
+
+
 async def _read_remote_property(
     app: Any,
     address: str,
@@ -300,6 +419,54 @@ async def _read_remote_property(
         app.read_property(address, objid, prop, array_index=array_index),
         timeout=timeout,
     )
+
+
+async def _read_remote_properties(
+    app: Any,
+    address: str,
+    objid: str,
+    properties: list[str],
+    timeout: float = CLIENT_POINT_REFRESH_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    unique_props: list[str] = []
+    seen: set[str] = set()
+    for prop in properties:
+        key = str(prop).strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique_props.append(key)
+
+    rpm = getattr(app, "read_property_multiple", None)
+    if callable(rpm):
+        for args in (
+            (address, objid, unique_props),
+            (address, [(objid, unique_props)]),
+        ):
+            try:
+                raw = await asyncio.wait_for(rpm(*args), timeout=timeout)
+                if isinstance(raw, dict):
+                    for prop in unique_props:
+                        if prop in raw:
+                            result[prop] = raw.get(prop)
+                    if result:
+                        return result
+            except Exception:
+                continue
+
+    for prop in unique_props:
+        try:
+            result[prop] = await _read_remote_property(
+                app,
+                address,
+                objid,
+                prop,
+                timeout=CLIENT_READ_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            result[prop] = None
+    return result
 
 
 async def _read_remote_property_any_objid(
@@ -319,6 +486,87 @@ async def _read_remote_property_any_objid(
         raise last_err
     return None
 
+
+async def _read_client_object_list(
+    app: Any,
+    address: str,
+    client_instance: int,
+) -> list[tuple[str, int]]:
+    device_obj = f"device,{int(client_instance)}"
+    object_list: list[tuple[str, int]] = []
+    try:
+        list_len = _to_int(
+            await _read_remote_property(
+                app,
+                address,
+                device_obj,
+                "objectList",
+                array_index=0,
+                timeout=CLIENT_OBJECTLIST_READ_TIMEOUT_SECONDS,
+            )
+        )
+    except Exception:
+        list_len = None
+    if not list_len or list_len <= 0:
+        return object_list
+
+    for idx in range(1, min(list_len, CLIENT_POINT_SCAN_LIMIT) + 1):
+        try:
+            item = await _read_remote_property(
+                app,
+                address,
+                device_obj,
+                "objectList",
+                array_index=idx,
+                timeout=CLIENT_OBJECTLIST_READ_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            continue
+        if not (isinstance(item, tuple) and len(item) == 2):
+            continue
+        type_info = _supported_point_type(item[0])
+        inst = _object_instance(item)
+        if not type_info or inst is None:
+            continue
+        canonical_type = type_info[1]
+        object_list.append((canonical_type, int(inst)))
+    return object_list
+
+
+def _point_native_value_from_payload(point: dict[str, Any]) -> StateType:
+    value = point.get("present_value")
+    if value is None:
+        return None
+
+    type_slug = str(point.get("type_slug") or "")
+    if type_slug in {"ai", "av"}:
+        try:
+            return float(value)
+        except Exception:
+            pass
+    if type_slug == "bv":
+        text = str(value).strip().lower()
+        if text in ("active", "on", "true", "1"):
+            active_text = _safe_text(point.get("active_text"))
+            return active_text or "active"
+        if text in ("inactive", "off", "false", "0"):
+            inactive_text = _safe_text(point.get("inactive_text"))
+            return inactive_text or "inactive"
+        return str(value)
+
+    if type_slug == "mv":
+        idx = _to_int(value)
+        texts = point.get("state_text")
+        if idx is not None and isinstance(texts, (list, tuple)):
+            pos = idx - 1
+            if 0 <= pos < len(texts):
+                label = _safe_text(texts[pos])
+                if label:
+                    return label
+
+    if isinstance(value, (str, int, float)):
+        return value
+    return str(value)
 
 async def _discover_remote_clients(server: Any) -> list[tuple[int, str]]:
     app = getattr(server, "app", None)
@@ -544,6 +792,71 @@ async def _read_client_runtime(
     }
 
 
+async def _read_client_point_payload(
+    app: Any,
+    address: str,
+    client_instance: int,
+    object_type: str,
+    object_instance: int,
+) -> dict[str, Any]:
+    supported = _supported_point_type(object_type)
+    if not supported:
+        return {}
+    type_slug, canonical_type = supported
+    objid = f"{canonical_type},{int(object_instance)}"
+    props = [
+        "objectIdentifier",
+        "objectName",
+        "description",
+        "presentValue",
+        "units",
+        "statusFlags",
+        "outOfService",
+        "reliability",
+        "stateText",
+        "numberOfStates",
+        "activeText",
+        "inactiveText",
+    ]
+    values = await _read_remote_properties(app, address, objid, props)
+    state_text_value = values.get("stateText")
+    state_text: list[str] | None = None
+    if isinstance(state_text_value, (list, tuple)):
+        state_text = [str(item) for item in state_text_value]
+    elif state_text_value is not None and not isinstance(state_text_value, str):
+        try:
+            state_text = [str(item) for item in list(state_text_value)]
+        except Exception:
+            state_text = None
+    object_identifier_raw = values.get("objectIdentifier")
+    object_identifier = _object_identifier_compact(
+        object_identifier_raw,
+        canonical_type,
+        int(object_instance),
+    )
+    point_key = f"{type_slug}_{int(object_instance)}"
+    return {
+        "point_key": point_key,
+        "client_instance": int(client_instance),
+        "client_address": str(address),
+        "object_type": canonical_type,
+        "type_slug": type_slug,
+        "object_instance": int(object_instance),
+        "object_identifier": object_identifier,
+        "object_name": _safe_text(values.get("objectName")) or f"{canonical_type} {int(object_instance)}",
+        "description": _safe_text(values.get("description")),
+        "present_value": values.get("presentValue"),
+        "unit": _normalize_bacnet_unit(values.get("units")),
+        "status_flags": _safe_text(values.get("statusFlags")),
+        "out_of_service": values.get("outOfService"),
+        "reliability": _safe_text(values.get("reliability")),
+        "state_text": state_text,
+        "number_of_states": _to_int(values.get("numberOfStates")),
+        "active_text": _safe_text(values.get("activeText")),
+        "inactive_text": _safe_text(values.get("inactiveText")),
+    }
+
+
 def _hub_diagnostics(server: Any, merged: Dict[str, Any]) -> Dict[str, Any]:
     device_obj = getattr(server, "device_object", None) if server is not None else None
     network_obj = getattr(server, "network_port_object", None) if server is not None else None
@@ -722,6 +1035,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     client_targets: dict[str, tuple[int, str]] = {}
     client_network_port_hints: dict[str, int] = {}
     client_added_field_keys: dict[str, set[tuple[str, str]]] = {}
+    client_added_point_keys: dict[str, set[str]] = {}
 
     def _client_entities(
         client_instance: int,
@@ -760,6 +1074,120 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             added_keys.add(field_key)
         return client_entities
 
+    def _client_point_entities(
+        client_instance: int,
+        client_id: str,
+        point_cache: dict[str, dict[str, Any]],
+    ) -> list[SensorEntity]:
+        added = client_added_point_keys.setdefault(client_id, set())
+        entities_to_add: list[SensorEntity] = []
+        for point_key, point_data in sorted(point_cache.items()):
+            if point_key in added:
+                continue
+            entities_to_add.append(
+                BacnetClientPointSensor(
+                    hass=hass,
+                    entry_id=entry.entry_id,
+                    client_id=client_id,
+                    client_instance=int(client_instance),
+                    point_key=point_key,
+                )
+            )
+            added.add(point_key)
+        return entities_to_add
+
+    async def _import_client_points(
+        client_instance: int,
+        client_address: str,
+    ) -> list[SensorEntity]:
+        live_server = hass.data.get(DOMAIN, {}).get("servers", {}).get(entry.entry_id)
+        app = getattr(live_server, "app", None) if live_server is not None else None
+        if app is None:
+            return []
+
+        instance = int(client_instance)
+        client_id = _client_id(instance)
+        address = str(client_address or "").strip()
+        if not address:
+            _, fallback_address = client_targets.get(client_id, (instance, ""))
+            address = str(fallback_address or "").strip()
+        if not address:
+            return []
+
+        object_list = await _read_client_object_list(app, address, instance)
+        if not object_list:
+            return []
+
+        payload: dict[str, dict[str, Any]] = {}
+        for object_type, object_instance in object_list:
+            try:
+                point = await _read_client_point_payload(
+                    app,
+                    address,
+                    instance,
+                    object_type,
+                    int(object_instance),
+                )
+            except Exception:
+                continue
+            point_key = str(point.get("point_key") or "").strip()
+            if not point_key:
+                continue
+            payload[point_key] = point
+
+        if not payload:
+            return []
+
+        _client_points_set(hass, entry.entry_id, client_id, payload)
+        async_dispatcher_send(hass, _client_points_signal(entry.entry_id, client_id))
+        return _client_point_entities(instance, client_id, _client_points_get(hass, entry.entry_id, client_id))
+
+    async def _refresh_client_points(
+        client_instance: int,
+        client_address: str,
+    ) -> list[SensorEntity]:
+        live_server = hass.data.get(DOMAIN, {}).get("servers", {}).get(entry.entry_id)
+        app = getattr(live_server, "app", None) if live_server is not None else None
+        if app is None:
+            return []
+
+        instance = int(client_instance)
+        client_id = _client_id(instance)
+        point_cache = _client_points_get(hass, entry.entry_id, client_id)
+        if not point_cache:
+            return await _import_client_points(instance, client_address)
+
+        address = str(client_address or "").strip()
+        if not address:
+            _, fallback_address = client_targets.get(client_id, (instance, ""))
+            address = str(fallback_address or "").strip()
+        if not address:
+            return []
+
+        updates: dict[str, dict[str, Any]] = {}
+        for point_key, point in list(point_cache.items()):
+            obj_type = _safe_text(point.get("object_type"))
+            obj_instance = _to_int(point.get("object_instance"))
+            if not obj_type or obj_instance is None:
+                continue
+            try:
+                payload = await _read_client_point_payload(
+                    app,
+                    address,
+                    instance,
+                    obj_type,
+                    int(obj_instance),
+                )
+            except Exception:
+                continue
+            if payload:
+                updates[point_key] = payload
+
+        if updates:
+            _client_points_set(hass, entry.entry_id, client_id, updates)
+            async_dispatcher_send(hass, _client_points_signal(entry.entry_id, client_id))
+        return _client_point_entities(instance, client_id, _client_points_get(hass, entry.entry_id, client_id))
+
     async def _process_client_iam(client_instance: int, client_address: str) -> None:
         instance = int(client_instance)
         address = str(client_address or "").strip()
@@ -784,9 +1212,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             client_targets=client_targets,
             force=True,
         )
+        _, latest_address = client_targets.get(client_id, (instance, address))
         cache = _client_cache_get(hass, entry.entry_id, client_id)
         if bool(cache.get("has_network_object")):
-            new_entities.extend(_client_entities(instance, address, include_network=True))
+            new_entities.extend(_client_entities(instance, latest_address, include_network=True))
+        new_entities.extend(await _import_client_points(instance, latest_address))
 
         if new_entities:
             async_add_entities(new_entities)
@@ -833,15 +1263,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 network_port_hints=client_network_port_hints,
                 client_targets=client_targets,
             )
+            _, latest_address = client_targets.get(client_id, (client_instance, client_address))
             cache = _client_cache_get(hass, entry.entry_id, client_id)
             if bool(cache.get("has_network_object")):
                 new_entities.extend(
                     _client_entities(
                         client_instance,
-                        client_address,
+                        latest_address,
                         include_network=True,
                     )
                 )
+            new_entities.extend(await _refresh_client_points(client_instance, latest_address))
         if new_entities:
             async_add_entities(new_entities)
 
@@ -866,6 +1298,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 new_entities.extend(
                     _client_entities(client_instance, client_address, include_network=False)
                 )
+                new_entities.extend(await _import_client_points(client_instance, client_address))
             else:
                 _client_entities(client_instance, client_address, include_network=False)
                 client_id = _client_id(int(client_instance))
@@ -878,6 +1311,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                             include_network=True,
                         )
                     )
+                new_entities.extend(await _refresh_client_points(client_instance, client_address))
         if new_entities:
             async_add_entities(new_entities)
 
@@ -1278,4 +1712,158 @@ class BacnetClientDetailSensor(SensorEntity):
             hw_version=_safe_text(device_data.get("hardware_revision")),
             serial_number=_safe_text(device_data.get("serial_number")),
         )
+        self.async_write_ha_state()
+
+
+class BacnetClientPointSensor(SensorEntity):
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_entity_registry_enabled_default = False
+    _attr_icon = "mdi:vector-point"
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        client_id: str,
+        client_instance: int,
+        point_key: str,
+    ) -> None:
+        self.hass = hass
+        self._entry_id = entry_id
+        self._client_id = client_id
+        self._client_instance = int(client_instance)
+        self._point_key = str(point_key)
+        self._unsub_dispatcher: Callable[[], None] | None = None
+        self._unsub_cov_renew: Callable[[], None] | None = None
+        self._cov_registered = False
+        self._attr_native_value: StateType = None
+        self._attr_native_unit_of_measurement: str | None = None
+        self._attr_device_class: SensorDeviceClass | None = None
+        self._attr_state_class: SensorStateClass | None = None
+        self._attr_extra_state_attributes: dict[str, Any] = {}
+
+        cache = _client_points_get(hass, entry_id, client_id).get(self._point_key, {})
+        type_slug = str(cache.get("type_slug") or "point")
+        object_instance = _to_int(cache.get("object_instance")) or 0
+        self._attr_unique_id = _point_unique_id(entry_id, client_id, type_slug, object_instance)
+        self.entity_id = _point_entity_id(self._client_instance, type_slug, object_instance)
+        self._attr_name = str(cache.get("object_name") or f"{type_slug.upper()} {object_instance}")
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        diag_cache = _client_cache_get(self.hass, self._entry_id, self._client_id)
+        device_data = dict(diag_cache.get("device", {}) or {})
+        return DeviceInfo(
+            identifiers={(DOMAIN, self._client_id)},
+            via_device=(DOMAIN, self._entry_id),
+            name=str(diag_cache.get("name") or client_display_name(self._client_instance)),
+            manufacturer=_safe_text(device_data.get("vendor_name")),
+            model=_safe_text(device_data.get("model_name")),
+            sw_version=_safe_text(device_data.get("firmware_revision")),
+            hw_version=_safe_text(device_data.get("hardware_revision")),
+            serial_number=_safe_text(device_data.get("serial_number")),
+        )
+
+    async def async_added_to_hass(self) -> None:
+        signal = _client_points_signal(self._entry_id, self._client_id)
+        self._unsub_dispatcher = async_dispatcher_connect(
+            self.hass,
+            signal,
+            self._handle_points_update,
+        )
+        self._handle_points_update()
+        await self._async_register_cov()
+        self._handle_points_update()
+
+        def _renew_cov(_now) -> None:
+            self.hass.add_job(self._async_register_cov())
+
+        self._unsub_cov_renew = async_track_time_interval(
+            self.hass,
+            _renew_cov,
+            timedelta(seconds=CLIENT_COV_RENEW_SECONDS),
+        )
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._unsub_dispatcher is not None:
+            self._unsub_dispatcher()
+            self._unsub_dispatcher = None
+        if self._unsub_cov_renew is not None:
+            self._unsub_cov_renew()
+            self._unsub_cov_renew = None
+
+    async def _async_register_cov(self) -> None:
+        point = _client_points_get(self.hass, self._entry_id, self._client_id).get(self._point_key, {})
+        object_identifier = _safe_text(point.get("object_identifier"))
+        address = _safe_text(point.get("client_address"))
+        if not object_identifier or not address:
+            return
+
+        server = self.hass.data.get(DOMAIN, {}).get("servers", {}).get(self._entry_id)
+        app = getattr(server, "app", None) if server is not None else None
+        if app is None:
+            return
+
+        subscribe = getattr(app, "subscribe_cov", None)
+        if not callable(subscribe):
+            return
+
+        process_id = _cov_process_identifier(self._entry_id, self._client_id, self._point_key)
+        try:
+            await subscribe(
+                address,
+                object_identifier,
+                process_id,
+                confirmed=False,
+                lifetime=CLIENT_COV_LEASE_SECONDS,
+            )
+            self._cov_registered = True
+        except TypeError:
+            try:
+                await subscribe(
+                    address,
+                    object_identifier,
+                    process_id,
+                    CLIENT_COV_LEASE_SECONDS,
+                )
+                self._cov_registered = True
+            except Exception:
+                self._cov_registered = False
+        except Exception:
+            self._cov_registered = False
+
+    @callback
+    def _handle_points_update(self) -> None:
+        point = dict(_client_points_get(self.hass, self._entry_id, self._client_id).get(self._point_key, {}) or {})
+        if not point:
+            return
+
+        object_name = _safe_text(point.get("object_name"))
+        if object_name:
+            self._attr_name = object_name
+        self._attr_native_unit_of_measurement = _safe_text(point.get("unit"))
+        self._attr_device_class = _sensor_device_class_from_unit(self._attr_native_unit_of_measurement)
+        native_value = _point_native_value_from_payload(point)
+        self._attr_state_class = None
+        if str(point.get("type_slug") or "") in {"ai", "av"} and isinstance(
+            native_value,
+            (int, float),
+        ):
+            self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_native_value = native_value
+        self._attr_extra_state_attributes = {
+            "object_identifier": _safe_text(point.get("object_identifier")),
+            "object_type": _safe_text(point.get("object_type")),
+            "object_instance": _to_int(point.get("object_instance")),
+            "description": _safe_text(point.get("description")),
+            "status_flags": _safe_text(point.get("status_flags")),
+            "out_of_service": point.get("out_of_service"),
+            "reliability": _safe_text(point.get("reliability")),
+            "active_text": _safe_text(point.get("active_text")),
+            "inactive_text": _safe_text(point.get("inactive_text")),
+            "state_text": point.get("state_text"),
+            "number_of_states": _to_int(point.get("number_of_states")),
+            "cov_registered": self._cov_registered,
+        }
         self.async_write_ha_state()

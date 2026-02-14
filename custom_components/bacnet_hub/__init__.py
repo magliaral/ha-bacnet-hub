@@ -991,6 +991,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     data[KEY_PUBLISHED_CACHE].pop(entry.entry_id, None)
     data.setdefault("client_diag_cache", {}).pop(entry.entry_id, None)
+    data.setdefault("client_point_cache", {}).pop(entry.entry_id, None)
     pending = event_sync_tasks.pop(entry.entry_id, None)
     if pending and not pending.done():
         pending.cancel()
@@ -1016,6 +1017,7 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     data = _ensure_domain(hass)
     data[KEY_PUBLISHED_CACHE].pop(entry.entry_id, None)
     data.setdefault("client_diag_cache", {}).pop(entry.entry_id, None)
+    data.setdefault("client_point_cache", {}).pop(entry.entry_id, None)
 
     removed_entities, removed_devices = _hard_cleanup_entry_registries(hass, entry.entry_id)
     if removed_entities or removed_devices:
