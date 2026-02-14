@@ -233,6 +233,11 @@ async def _resolve_client_address(
     instance = int(client_instance)
     address_text = str(fallback_address or "").strip()
 
+    # I-Am / explicit scan source is authoritative for reconnects.
+    # Do not override it with potentially stale device-info cache entries.
+    if address_text:
+        return address_text
+
     try:
         device_info = await app.get_device_info(instance)
         device_address = getattr(device_info, "device_address", None) if device_info else None
