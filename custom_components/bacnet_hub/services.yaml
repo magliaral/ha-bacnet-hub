@@ -1,0 +1,10 @@
+reload:
+  name: Reload
+  description: Reload a BACnet Hub config entry.
+  fields:
+    entry_id:
+      name: Config entry ID
+      description: Optional. If omitted and only one BACnet Hub entry exists, that entry is reloaded.
+      example: 01KHE05WAZNH9B5A6PW7FPX1J0
+      selector:
+        text:

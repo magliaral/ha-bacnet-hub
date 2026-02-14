@@ -56,6 +56,8 @@ HUB_DIAGNOSTIC_FIELDS: list[tuple[str, str]] = [
 DIAGNOSTIC_REFRESH_DELAY_SECONDS = 2.0
 CLIENT_DISCOVERY_TIMEOUT_SECONDS = 3.0
 CLIENT_READ_TIMEOUT_SECONDS = 2.5
+CLIENT_OBJECTLIST_SCAN_LIMIT = 16
+CLIENT_OBJECTLIST_READ_TIMEOUT_SECONDS = 0.6
 CLIENT_REDISCOVERY_INTERVAL = timedelta(minutes=5)
 CLIENT_SCAN_INTERVAL = timedelta(seconds=90)
 
@@ -318,8 +320,30 @@ async def _read_client_runtime(
         except Exception:
             return None
 
+    # Fast probe: if device cannot even answer a basic property,
+    # return an offline payload quickly and avoid long sequential timeouts.
+    probe_object_name = _safe_text(await read_device("objectName"))
+    if probe_object_name is None:
+        probe_object_identifier = _object_identifier_text(await read_device("objectIdentifier"))
+        if probe_object_identifier is None:
+            return {
+                "online": False,
+                "device": {
+                    "client_instance": instance,
+                    "client_address": address,
+                    "object_identifier": f"OBJECT_DEVICE:{instance}",
+                },
+                "network": {
+                    "client_instance": instance,
+                    "client_address": address,
+                    "network_port_instance": network_port_instance,
+                },
+                "network_port_instance": network_port_instance,
+                "name": f"BACnet Client {instance}",
+            }
+
     # Device object
-    object_name = _safe_text(await read_device("objectName"))
+    object_name = probe_object_name or _safe_text(await read_device("objectName"))
     description = _safe_text(await read_device("description"))
     model_name = _safe_text(await read_device("modelName"))
     vendor_name = _safe_text(await read_device("vendorName"))
@@ -338,13 +362,23 @@ async def _read_client_runtime(
         try:
             list_len = _to_int(
                 await _read_remote_property(
-                    app, address, device_obj, "objectList", array_index=0, timeout=CLIENT_READ_TIMEOUT_SECONDS
+                    app,
+                    address,
+                    device_obj,
+                    "objectList",
+                    array_index=0,
+                    timeout=CLIENT_OBJECTLIST_READ_TIMEOUT_SECONDS,
                 )
             )
             if list_len and list_len > 0:
-                for idx in range(1, min(list_len, 64) + 1):
+                for idx in range(1, min(list_len, CLIENT_OBJECTLIST_SCAN_LIMIT) + 1):
                     oid = await _read_remote_property(
-                        app, address, device_obj, "objectList", array_index=idx, timeout=CLIENT_READ_TIMEOUT_SECONDS
+                        app,
+                        address,
+                        device_obj,
+                        "objectList",
+                        array_index=idx,
+                        timeout=CLIENT_OBJECTLIST_READ_TIMEOUT_SECONDS,
                     )
                     inst = _object_identifier_instance(oid, "network-port")
                     if inst is not None:
@@ -511,7 +545,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     server = data.get("servers", {}).get(entry.entry_id)
     known_clients: set[tuple[int, str]] = set()
     entity_registry = er.async_get(hass)
-    for client_instance, client_address in await _discover_remote_clients(server):
+    try:
+        discovered_clients = await asyncio.wait_for(
+            _discover_remote_clients(server),
+            timeout=CLIENT_DISCOVERY_TIMEOUT_SECONDS + 1.0,
+        )
+    except Exception:
+        discovered_clients = []
+
+    for client_instance, client_address in discovered_clients:
         known_clients.add((client_instance, client_address))
         client_id = f"client_{int(client_instance)}_{_addr_slug(client_address)}"
         legacy_unique_id = f"{entry.entry_id}-{client_id}-diagnostics"
@@ -590,7 +632,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     async def _scan_and_add_new_clients() -> None:
         live_server = hass.data.get(DOMAIN, {}).get("servers", {}).get(entry.entry_id)
         new_entities: list[SensorEntity] = []
-        for client_instance, client_address in await _discover_remote_clients(live_server):
+        try:
+            discovered_clients = await asyncio.wait_for(
+                _discover_remote_clients(live_server),
+                timeout=CLIENT_DISCOVERY_TIMEOUT_SECONDS + 1.0,
+            )
+        except Exception:
+            discovered_clients = []
+
+        for client_instance, client_address in discovered_clients:
             key = (client_instance, client_address)
             if key in known_clients:
                 continue
@@ -974,12 +1024,17 @@ class BacnetClientObjectSensor(SensorEntity):
         return self._device_info_cache
 
     async def async_added_to_hass(self) -> None:
-        try:
-            await self.async_update()
-        except Exception:
-            self._attr_native_value = "offline"
-            self._attr_available = True
         self.async_write_ha_state()
+
+        async def _initial_refresh() -> None:
+            try:
+                await self.async_update()
+            except Exception:
+                self._attr_native_value = "offline"
+                self._attr_available = True
+            self.async_write_ha_state()
+
+        self.hass.async_create_task(_initial_refresh())
 
     async def async_update(self) -> None:
         server = self._server()
@@ -989,12 +1044,29 @@ class BacnetClientObjectSensor(SensorEntity):
             self._attr_available = True
             return
 
-        data = await _read_client_runtime(
-            app,
-            self._instance,
-            self._address,
-            network_port_instance_hint=self._network_port_instance_hint,
-        )
+        try:
+            data = await _read_client_runtime(
+                app,
+                self._instance,
+                self._address,
+                network_port_instance_hint=self._network_port_instance_hint,
+            )
+        except Exception:
+            data = {
+                "online": False,
+                "device": {
+                    "client_instance": self._instance,
+                    "client_address": self._address,
+                    "object_identifier": f"OBJECT_DEVICE:{self._instance}",
+                },
+                "network": {
+                    "client_instance": self._instance,
+                    "client_address": self._address,
+                    "network_port_instance": self._network_port_instance_hint,
+                },
+                "network_port_instance": self._network_port_instance_hint,
+                "name": f"BACnet Client {self._instance}",
+            }
         self._network_port_instance_hint = int(data.get("network_port_instance") or 1)
         _client_cache_set(self.hass, self._entry_id, self._client_id, data)
         async_dispatcher_send(self.hass, _client_diag_signal(self._entry_id, self._client_id))

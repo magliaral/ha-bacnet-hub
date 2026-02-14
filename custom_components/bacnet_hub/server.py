@@ -346,6 +346,7 @@ class BacnetHubServer:
         self.app: Optional[HubApp] = None
         self.device_object: Any | None = None
         self.network_port_object: Any | None = None
+        self._kick_iam_task: asyncio.Task | None = None
 
     async def start(self) -> None:
         if self.debug_bacpypes:
@@ -441,11 +442,15 @@ class BacnetHubServer:
 
         # Optional: I-Am on startup (broadcast)
         if self.kick_iam and self.app:
-            asyncio.create_task(self._kick_iam(self.app))
+            if self._kick_iam_task and not self._kick_iam_task.done():
+                self._kick_iam_task.cancel()
+            self._kick_iam_task = asyncio.create_task(self._kick_iam(self.app))
 
     async def _kick_iam(self, app: Application) -> None:
         try:
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(1.0)
+            if self.app is not app:
+                return
             dev = getattr(app, "device_object", None)
             if not dev:
                 raise RuntimeError("Local device not found")
@@ -458,10 +463,22 @@ class BacnetHubServer:
             req.pduDestination = Address("*:*")
             await app.request(req)
             _LOGGER.debug("I-Am sent (broadcast *:*)")
+        except asyncio.CancelledError:
+            return
         except Exception as e:
             _LOGGER.debug("I-Am failed: %s", e, exc_info=True)
 
     async def stop(self) -> None:
+        if self._kick_iam_task and not self._kick_iam_task.done():
+            self._kick_iam_task.cancel()
+            try:
+                await self._kick_iam_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                _LOGGER.debug("Kick I-Am task stop failed", exc_info=True)
+        self._kick_iam_task = None
+
         if self.publisher:
             try:
                 await self.publisher.stop()
