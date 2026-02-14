@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from datetime import timedelta
 from typing import Any, Dict, List, Optional, Callable
 
@@ -46,7 +47,6 @@ HUB_DIAGNOSTIC_FIELDS: list[tuple[str, str]] = [
     ("object_identifier", "Object identifier"),
     ("object_name", "Object name"),
     ("system_status", "System status"),
-    ("system_status_code", "System status code"),
     ("vendor_identifier", "Vendor identifier"),
     ("vendor_name", "Vendor name"),
     ("ip_address", "IP address"),
@@ -54,33 +54,17 @@ HUB_DIAGNOSTIC_FIELDS: list[tuple[str, str]] = [
     ("mac_address_raw", "MAC address"),
 ]
 DIAGNOSTIC_REFRESH_DELAY_SECONDS = 2.0
+HUB_DIAGNOSTIC_SCAN_INTERVAL = timedelta(seconds=15)
 CLIENT_DISCOVERY_TIMEOUT_SECONDS = 3.0
 CLIENT_READ_TIMEOUT_SECONDS = 2.5
 CLIENT_OBJECTLIST_SCAN_LIMIT = 16
 CLIENT_OBJECTLIST_READ_TIMEOUT_SECONDS = 0.6
 CLIENT_REDISCOVERY_INTERVAL = timedelta(minutes=5)
-CLIENT_SCAN_INTERVAL = timedelta(seconds=90)
+CLIENT_SCAN_INTERVAL = timedelta(seconds=15)
+CLIENT_REFRESH_MIN_SECONDS = 5.0
 
-CLIENT_DEVICE_OBJECT_FIELDS: list[tuple[str, str]] = [
-    ("description", "Description"),
-    ("firmware_revision", "Firmware revision"),
-    ("model_name", "Model name"),
-    ("object_identifier", "Object identifier"),
-    ("object_name", "Object name"),
-    ("system_status", "System status"),
-    ("system_status_code", "System status code"),
-    ("vendor_identifier", "Vendor identifier"),
-    ("vendor_name", "Vendor name"),
-]
-CLIENT_NETWORK_OBJECT_FIELDS: list[tuple[str, str]] = [
-    ("ip_address", "IP address"),
-    ("ip_subnet_mask", "IP subnet mask"),
-    ("mac_address_raw", "MAC address"),
-    ("network_number", "Network number"),
-    ("network_port_instance", "Network port instance"),
-    ("network_port_object_identifier", "Network port object identifier"),
-    ("udp_port", "UDP port"),
-]
+CLIENT_DIAGNOSTIC_FIELDS: list[tuple[str, str]] = list(HUB_DIAGNOSTIC_FIELDS)
+NETWORK_DIAGNOSTIC_KEYS = {"ip_address", "ip_subnet_mask", "mac_address_raw"}
 
 
 def _to_state(value: Any) -> StateType:
@@ -108,6 +92,23 @@ def _object_identifier_text(value: Any) -> str | None:
     return text or None
 
 
+def _object_identifier_instance_text(value: Any, fallback: int | None = None) -> str | None:
+    if isinstance(value, tuple) and len(value) == 2:
+        inst = _to_int(value[1])
+        if inst is not None:
+            return str(inst)
+    text = str(value or "").strip()
+    if text:
+        m = re.search(r":\s*(\d+)\s*$", text)
+        if m:
+            return m.group(1)
+        if text.isdigit():
+            return text
+    if fallback is not None:
+        return str(int(fallback))
+    return None
+
+
 def _normalize_system_status(value: Any) -> tuple[int | None, str | None]:
     labels = {
         0: "operational",
@@ -117,25 +118,43 @@ def _normalize_system_status(value: Any) -> tuple[int | None, str | None]:
         4: "non_operational",
         5: "backup_in_progress",
     }
-    text = str(value or "").strip()
-    if not text:
+    if value is None:
         return None, None
 
-    m = re.search(r"\b([0-5])\b", text)
+    # Enum/Int fast path
+    for raw in (getattr(value, "value", None), value):
+        try:
+            code = int(raw)  # type: ignore[arg-type]
+            if code in labels:
+                return code, labels[code]
+        except Exception:
+            pass
+
+    text = str(value).strip()
+    if not text:
+        return None, None
+    norm = re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
+
+    m = re.search(r"(?<!\d)(\d+)(?!\d)", text)
     if m:
-        code = int(m.group(1))
-        return code, labels.get(code)
+        code = _to_int(m.group(1))
+        if code is not None and code in labels:
+            return code, labels[code]
 
-    token = text.split(".")[-1].strip().lower()
-    token = re.sub(r"[^a-z0-9]+", "_", token).strip("_")
-    if token.isdigit():
-        code = int(token)
-        return code, labels.get(code)
+    aliases = {
+        "operational": 0,
+        "operational_read_only": 1,
+        "operational_readonly": 1,
+        "download_required": 2,
+        "download_in_progress": 3,
+        "non_operational": 4,
+        "backup_in_progress": 5,
+    }
+    for token, code in aliases.items():
+        if token in norm:
+            return code, labels[code]
 
-    for code, label in labels.items():
-        if token == label:
-            return code, label
-    return None, token or None
+    return None, None
 
 
 def _mac_hex(value: Any) -> str | None:
@@ -150,6 +169,13 @@ def _mac_hex(value: Any) -> str | None:
     if len(hex_only) >= 12 and len(hex_only) % 2 == 0:
         return hex_only.upper()
     return None
+
+
+def _mac_colon(value: Any) -> str | None:
+    hex_text = _mac_hex(value)
+    if not hex_text:
+        return None
+    return ":".join(hex_text[idx:idx + 2] for idx in range(0, len(hex_text), 2))
 
 
 def _bacnet_mac_from_ip_port(ip_address: Any, udp_port: Any) -> str | None:
@@ -210,6 +236,20 @@ def _client_cache_get(hass: HomeAssistant, entry_id: str, client_id: str) -> dic
 def _client_cache_set(hass: HomeAssistant, entry_id: str, client_id: str, payload: dict[str, Any]) -> None:
     cache = _client_cache_get(hass, entry_id, client_id)
     cache.update(payload or {})
+
+
+def _client_locks_root(hass: HomeAssistant) -> dict[str, dict[str, asyncio.Lock]]:
+    root = hass.data.setdefault(DOMAIN, {})
+    return root.setdefault("client_diag_locks", {})
+
+
+def _client_lock_get(hass: HomeAssistant, entry_id: str, client_id: str) -> asyncio.Lock:
+    per_entry = _client_locks_root(hass).setdefault(entry_id, {})
+    lock = per_entry.get(client_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        per_entry[client_id] = lock
+    return lock
 
 
 def _safe_text(value: Any) -> str | None:
@@ -331,12 +371,11 @@ async def _read_client_runtime(
                 "device": {
                     "client_instance": instance,
                     "client_address": address,
-                    "object_identifier": f"OBJECT_DEVICE:{instance}",
+                    "object_identifier": str(instance),
                 },
                 "network": {
                     "client_instance": instance,
                     "client_address": address,
-                    "network_port_instance": network_port_instance,
                 },
                 "network_port_instance": network_port_instance,
                 "name": f"BACnet Client {instance}",
@@ -352,9 +391,12 @@ async def _read_client_runtime(
     hardware_revision = _safe_text(await read_device("hardwareRevision"))
     application_software_version = _safe_text(await read_device("applicationSoftwareVersion"))
     serial_number = _safe_text(await read_device("serialNumber"))
-    object_identifier = _object_identifier_text(await read_device("objectIdentifier"))
+    object_identifier = _object_identifier_instance_text(
+        await read_device("objectIdentifier"),
+        fallback=instance,
+    )
     raw_system_status = await read_device("systemStatus")
-    system_status_code, system_status = _normalize_system_status(raw_system_status)
+    _, system_status = _normalize_system_status(raw_system_status)
 
     # Resolve network-port instance (if not instance 1).
     net_object_identifier = await read_network("objectIdentifier", network_port_instance)
@@ -391,13 +433,13 @@ async def _read_client_runtime(
     ip_address_raw = await read_network("ipAddress", network_port_instance)
     ip_subnet_mask_raw = await read_network("ipSubnetMask", network_port_instance)
     udp_port = _to_int(await read_network("bacnetIPUDPPort", network_port_instance))
-    network_number = _to_int(await read_network("networkNumber", network_port_instance))
     mac_raw = _mac_hex(await read_network("macAddress", network_port_instance))
 
     ip_address = _to_ipv4_text(ip_address_raw) or _safe_text(ip_address_raw)
     ip_subnet_mask = _to_ipv4_text(ip_subnet_mask_raw) or _safe_text(ip_subnet_mask_raw)
     if not mac_raw:
         mac_raw = _bacnet_mac_from_ip_port(ip_address, udp_port)
+    mac_colon = _mac_colon(mac_raw)
 
     device_data = {
         "client_instance": instance,
@@ -407,10 +449,9 @@ async def _read_client_runtime(
         "hardware_revision": hardware_revision,
         "application_software_version": application_software_version,
         "model_name": model_name,
-        "object_identifier": object_identifier or f"OBJECT_DEVICE:{instance}",
+        "object_identifier": object_identifier or str(instance),
         "object_name": object_name,
         "system_status": system_status,
-        "system_status_code": system_status_code,
         "vendor_identifier": vendor_identifier,
         "vendor_name": vendor_name,
         "serial_number": serial_number,
@@ -420,11 +461,7 @@ async def _read_client_runtime(
         "client_address": address,
         "ip_address": ip_address,
         "ip_subnet_mask": ip_subnet_mask,
-        "mac_address_raw": mac_raw,
-        "network_number": network_number,
-        "network_port_instance": network_port_instance,
-        "network_port_object_identifier": _object_identifier_text(net_object_identifier),
-        "udp_port": udp_port,
+        "mac_address_raw": mac_colon,
     }
     online = any(
         value is not None
@@ -462,28 +499,23 @@ def _hub_diagnostics(server: Any, merged: Dict[str, Any]) -> Dict[str, Any]:
     integration_version = _safe_text(getattr(device_obj, "applicationSoftwareVersion", None))
     hardware_revision = _safe_text(getattr(device_obj, "hardwareRevision", None))
 
-    status_code, status_label = _normalize_system_status(getattr(device_obj, "systemStatus", None))
+    _, status_label = _normalize_system_status(getattr(device_obj, "systemStatus", None))
     system_status = status_label
-    system_status_code = status_code
 
-    object_identifier = _object_identifier_text(getattr(device_obj, "objectIdentifier", None))
-
-    network_port_object_identifier = _object_identifier_text(
-        getattr(network_obj, "objectIdentifier", None)
+    object_identifier = _object_identifier_instance_text(
+        getattr(device_obj, "objectIdentifier", None),
+        fallback=instance,
     )
 
     ip_address = _to_ipv4_text(getattr(network_obj, "ipAddress", None))
     subnet_mask = _to_ipv4_text(getattr(network_obj, "ipSubnetMask", None))
     udp_port = _to_int(getattr(network_obj, "bacnetIPUDPPort", None))
-    network_prefix = None
-    network_port_instance = _object_identifier_instance(getattr(network_obj, "objectIdentifier", None), "network-port")
-    network_number = _to_int(getattr(network_obj, "networkNumber", None))
 
     mac_address_raw = _mac_hex(getattr(network_obj, "macAddress", None))
     if not mac_address_raw:
         mac_address_raw = _bacnet_mac_from_ip_port(ip_address, udp_port)
+    mac_colon = _mac_colon(mac_address_raw)
 
-    interface = None
     address = None
 
     return {
@@ -495,7 +527,6 @@ def _hub_diagnostics(server: Any, merged: Dict[str, Any]) -> Dict[str, Any]:
         "vendor_identifier": vendor_identifier,
         "vendor_name": vendor_name,
         "system_status": system_status,
-        "system_status_code": system_status_code,
         "firmware_revision": firmware_revision,
         "integration_version": integration_version,
         "firmware": integration_version,
@@ -504,16 +535,76 @@ def _hub_diagnostics(server: Any, merged: Dict[str, Any]) -> Dict[str, Any]:
         "address": address,
         "ip_address": ip_address,
         "ip_subnet_mask": subnet_mask,
-        "network_prefix": network_prefix,
         "subnet_mask": subnet_mask,
-        "mac_address": mac_address_raw,
-        "mac_address_raw": mac_address_raw,
-        "network_interface": interface,
-        "udp_port": udp_port,
-        "network_number": network_number,
-        "network_port_instance": network_port_instance,
-        "network_port_object_identifier": network_port_object_identifier,
+        "mac_address": mac_colon,
+        "mac_address_raw": mac_colon,
     }
+
+
+def _client_offline_payload(
+    client_instance: int,
+    client_address: str,
+    network_port_instance_hint: int = 1,
+) -> dict[str, Any]:
+    instance = int(client_instance)
+    address = str(client_address)
+    return {
+        "online": False,
+        "device": {
+            "client_instance": instance,
+            "client_address": address,
+            "object_identifier": str(instance),
+        },
+        "network": {
+            "client_instance": instance,
+            "client_address": address,
+        },
+        "network_port_instance": int(network_port_instance_hint or 1),
+        "name": f"BACnet Client {instance}",
+    }
+
+
+async def _refresh_client_cache(
+    hass: HomeAssistant,
+    entry_id: str,
+    client_id: str,
+    client_instance: int,
+    client_address: str,
+    network_port_hints: dict[str, int],
+) -> None:
+    cache = _client_cache_get(hass, entry_id, client_id)
+    now = time.monotonic()
+    last_refresh = float(cache.get("_last_refresh_ts") or 0.0)
+    if (now - last_refresh) < CLIENT_REFRESH_MIN_SECONDS:
+        return
+
+    lock = _client_lock_get(hass, entry_id, client_id)
+    async with lock:
+        cache = _client_cache_get(hass, entry_id, client_id)
+        now = time.monotonic()
+        last_refresh = float(cache.get("_last_refresh_ts") or 0.0)
+        if (now - last_refresh) < CLIENT_REFRESH_MIN_SECONDS:
+            return
+
+        server = hass.data.get(DOMAIN, {}).get("servers", {}).get(entry_id)
+        app = getattr(server, "app", None) if server is not None else None
+        hint = int(network_port_hints.get(client_id, 1))
+        data = _client_offline_payload(client_instance, client_address, hint)
+        if app is not None:
+            try:
+                data = await _read_client_runtime(
+                    app,
+                    int(client_instance),
+                    str(client_address),
+                    network_port_instance_hint=hint,
+                )
+            except Exception:
+                data = _client_offline_payload(client_instance, client_address, hint)
+
+        network_port_hints[client_id] = int(data.get("network_port_instance") or hint or 1)
+        data["_last_refresh_ts"] = now
+        _client_cache_set(hass, entry_id, client_id, data)
+    async_dispatcher_send(hass, _client_diag_signal(entry_id, client_id))
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
@@ -525,13 +616,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     hub_name = str(merged.get(CONF_DEVICE_NAME) or DEFAULT_BACNET_OBJECT_NAME)
 
     entities: List[SensorEntity] = []
-    entities.append(
-        BacnetHubInfoSensor(
-            hass=hass,
-            entry_id=entry.entry_id,
-            merged=merged,
-        )
-    )
+    entity_registry = er.async_get(hass)
+
+    def _remove_unique_id(unique_id: str) -> None:
+        entity_id = entity_registry.async_get_entity_id("sensor", DOMAIN, unique_id)
+        if entity_id:
+            entity_registry.async_remove(entity_id)
+
+    # Remove legacy diagnostic entities no longer used.
+    _remove_unique_id(f"{entry.entry_id}-hub-information")
+    _remove_unique_id(f"{entry.entry_id}-hub-diagnostic-system_status_code")
+    for reg_entry in er.async_entries_for_config_entry(entity_registry, entry.entry_id):
+        unique_id = str(getattr(reg_entry, "unique_id", "") or "")
+        entity_id = getattr(reg_entry, "entity_id", None)
+        if not entity_id:
+            continue
+        if unique_id.endswith("-device-object") or unique_id.endswith("-network-object"):
+            entity_registry.async_remove(entity_id)
+            continue
+        if (
+            "-device-system_status_code" in unique_id
+            or "-network-system_status_code" in unique_id
+            or "-network-network_number" in unique_id
+            or "-network-network_port_instance" in unique_id
+            or "-network-network_port_object_identifier" in unique_id
+            or "-network-udp_port" in unique_id
+        ):
+            entity_registry.async_remove(entity_id)
+
     for key, label in HUB_DIAGNOSTIC_FIELDS:
         entities.append(
             BacnetHubDetailSensor(
@@ -542,9 +654,45 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 label=label,
             )
         )
+
     server = data.get("servers", {}).get(entry.entry_id)
     known_clients: set[tuple[int, str]] = set()
-    entity_registry = er.async_get(hass)
+    client_targets: dict[str, tuple[int, str]] = {}
+    client_network_port_hints: dict[str, int] = {}
+
+    def _client_entities(client_instance: int, client_address: str) -> list[SensorEntity]:
+        client_id = f"client_{int(client_instance)}_{_addr_slug(client_address)}"
+        client_targets[client_id] = (int(client_instance), str(client_address))
+        client_network_port_hints.setdefault(client_id, 1)
+
+        # Remove legacy client entities no longer used.
+        for legacy_unique_id in (
+            f"{entry.entry_id}-{client_id}-device-object",
+            f"{entry.entry_id}-{client_id}-network-object",
+            f"{entry.entry_id}-{client_id}-device-system_status_code",
+            f"{entry.entry_id}-{client_id}-network-network_number",
+            f"{entry.entry_id}-{client_id}-network-network_port_instance",
+            f"{entry.entry_id}-{client_id}-network-network_port_object_identifier",
+            f"{entry.entry_id}-{client_id}-network-udp_port",
+            f"{entry.entry_id}-{client_id}-diagnostics",
+        ):
+            _remove_unique_id(legacy_unique_id)
+
+        client_entities: list[SensorEntity] = []
+        for key, label in CLIENT_DIAGNOSTIC_FIELDS:
+            source = "network" if key in NETWORK_DIAGNOSTIC_KEYS else "device"
+            client_entities.append(
+                BacnetClientDetailSensor(
+                    hass=hass,
+                    entry_id=entry.entry_id,
+                    client_id=client_id,
+                    key=key,
+                    label=label,
+                    source=source,
+                )
+            )
+        return client_entities
+
     try:
         discovered_clients = await asyncio.wait_for(
             _discover_remote_clients(server),
@@ -555,51 +703,52 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     for client_instance, client_address in discovered_clients:
         known_clients.add((client_instance, client_address))
-        client_id = f"client_{int(client_instance)}_{_addr_slug(client_address)}"
-        legacy_unique_id = f"{entry.entry_id}-{client_id}-diagnostics"
-        legacy_entity_id = entity_registry.async_get_entity_id("sensor", DOMAIN, legacy_unique_id)
-        if legacy_entity_id:
-            entity_registry.async_remove(legacy_entity_id)
-        entities.append(
-            BacnetClientObjectSensor(
+        for client_entity in _client_entities(client_instance, client_address):
+            entities.append(client_entity)
+
+    # Remove legacy system_status_code entities that might remain in registry.
+    for client_id in list(client_targets.keys()):
+        _remove_unique_id(f"{entry.entry_id}-{client_id}-device-system_status_code")
+        _remove_unique_id(f"{entry.entry_id}-{client_id}-network-system_status_code")
+
+    async def _refresh_all_clients() -> None:
+        for client_id, (client_instance, client_address) in list(client_targets.items()):
+            await _refresh_client_cache(
                 hass=hass,
                 entry_id=entry.entry_id,
+                client_id=client_id,
                 client_instance=client_instance,
                 client_address=client_address,
-                object_kind="device",
+                network_port_hints=client_network_port_hints,
             )
-        )
-        entities.append(
-            BacnetClientObjectSensor(
-                hass=hass,
-                entry_id=entry.entry_id,
-                client_instance=client_instance,
-                client_address=client_address,
-                object_kind="network",
+
+    async def _scan_and_add_new_clients() -> None:
+        live_server = hass.data.get(DOMAIN, {}).get("servers", {}).get(entry.entry_id)
+        new_entities: list[SensorEntity] = []
+        try:
+            scan_clients = await asyncio.wait_for(
+                _discover_remote_clients(live_server),
+                timeout=CLIENT_DISCOVERY_TIMEOUT_SECONDS + 1.0,
             )
-        )
-        for key, label in CLIENT_DEVICE_OBJECT_FIELDS:
-            entities.append(
-                BacnetClientDetailSensor(
-                    hass=hass,
-                    entry_id=entry.entry_id,
-                    client_id=client_id,
-                    key=key,
-                    label=label,
-                    source="device",
-                )
-            )
-        for key, label in CLIENT_NETWORK_OBJECT_FIELDS:
-            entities.append(
-                BacnetClientDetailSensor(
-                    hass=hass,
-                    entry_id=entry.entry_id,
-                    client_id=client_id,
-                    key=key,
-                    label=label,
-                    source="network",
-                )
-            )
+        except Exception:
+            scan_clients = []
+
+        for client_instance, client_address in scan_clients:
+            key = (client_instance, client_address)
+            if key in known_clients:
+                continue
+            known_clients.add(key)
+            new_entities.extend(_client_entities(client_instance, client_address))
+        if new_entities:
+            async_add_entities(new_entities)
+        await _refresh_all_clients()
+
+    def _schedule_client_refresh(_now) -> None:
+        hass.async_create_task(_refresh_all_clients())
+
+    def _schedule_rescan(_now) -> None:
+        hass.async_create_task(_scan_and_add_new_clients())
+
     for m in published:
         if (m or {}).get("object_type") != "analogValue":
             continue
@@ -628,71 +777,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             )
         )
     async_add_entities(entities)
+    hass.async_create_task(_refresh_all_clients())
 
-    async def _scan_and_add_new_clients() -> None:
-        live_server = hass.data.get(DOMAIN, {}).get("servers", {}).get(entry.entry_id)
-        new_entities: list[SensorEntity] = []
-        try:
-            discovered_clients = await asyncio.wait_for(
-                _discover_remote_clients(live_server),
-                timeout=CLIENT_DISCOVERY_TIMEOUT_SECONDS + 1.0,
-            )
-        except Exception:
-            discovered_clients = []
-
-        for client_instance, client_address in discovered_clients:
-            key = (client_instance, client_address)
-            if key in known_clients:
-                continue
-            known_clients.add(key)
-            client_id = f"client_{int(client_instance)}_{_addr_slug(client_address)}"
-            new_entities.append(
-                BacnetClientObjectSensor(
-                    hass=hass,
-                    entry_id=entry.entry_id,
-                    client_instance=client_instance,
-                    client_address=client_address,
-                    object_kind="device",
-                )
-            )
-            new_entities.append(
-                BacnetClientObjectSensor(
-                    hass=hass,
-                    entry_id=entry.entry_id,
-                    client_instance=client_instance,
-                    client_address=client_address,
-                    object_kind="network",
-                )
-            )
-            for f_key, f_label in CLIENT_DEVICE_OBJECT_FIELDS:
-                new_entities.append(
-                    BacnetClientDetailSensor(
-                        hass=hass,
-                        entry_id=entry.entry_id,
-                        client_id=client_id,
-                        key=f_key,
-                        label=f_label,
-                        source="device",
-                    )
-                )
-            for f_key, f_label in CLIENT_NETWORK_OBJECT_FIELDS:
-                new_entities.append(
-                    BacnetClientDetailSensor(
-                        hass=hass,
-                        entry_id=entry.entry_id,
-                        client_id=client_id,
-                        key=f_key,
-                        label=f_label,
-                        source="network",
-                    )
-                )
-        if new_entities:
-            async_add_entities(new_entities)
-
-    def _schedule_rescan(_now) -> None:
-        hass.async_create_task(_scan_and_add_new_clients())
-
+    unsub_refresh = async_track_time_interval(hass, _schedule_client_refresh, CLIENT_SCAN_INTERVAL)
     unsub_rescan = async_track_time_interval(hass, _schedule_rescan, CLIENT_REDISCOVERY_INTERVAL)
+    entry.async_on_unload(unsub_refresh)
     entry.async_on_unload(unsub_rescan)
 
 
@@ -933,10 +1022,11 @@ class BacnetHubInfoSensor(SensorEntity):
 
 
 class BacnetHubDetailSensor(SensorEntity):
-    _attr_should_poll = False
+    _attr_should_poll = True
     _attr_has_entity_name = True
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_icon = "mdi:information-outline"
+    SCAN_INTERVAL = HUB_DIAGNOSTIC_SCAN_INTERVAL
 
     def __init__(
         self,
@@ -961,15 +1051,6 @@ class BacnetHubDetailSensor(SensorEntity):
 
     def _server(self) -> Any:
         return (self.hass.data.get(DOMAIN, {}).get("servers", {}) or {}).get(self._entry_id)
-
-    async def async_added_to_hass(self) -> None:
-        self.async_write_ha_state()
-
-        async def _late_refresh() -> None:
-            await asyncio.sleep(DIAGNOSTIC_REFRESH_DELAY_SECONDS)
-            self.async_write_ha_state()
-
-        self.hass.async_create_task(_late_refresh())
 
     @property
     def native_value(self) -> StateType:
@@ -1057,7 +1138,7 @@ class BacnetClientObjectSensor(SensorEntity):
                 "device": {
                     "client_instance": self._instance,
                     "client_address": self._address,
-                    "object_identifier": f"OBJECT_DEVICE:{self._instance}",
+                    "object_identifier": str(self._instance),
                 },
                 "network": {
                     "client_instance": self._instance,
