@@ -57,14 +57,14 @@ HUB_DIAGNOSTIC_FIELDS: list[tuple[str, str]] = [
     ("mac_address_raw", "MAC address"),
 ]
 DIAGNOSTIC_REFRESH_DELAY_SECONDS = 2.0
-HUB_DIAGNOSTIC_SCAN_INTERVAL = timedelta(seconds=15)
+HUB_DIAGNOSTIC_SCAN_INTERVAL = timedelta(seconds=2)
 CLIENT_DISCOVERY_TIMEOUT_SECONDS = 3.0
 CLIENT_READ_TIMEOUT_SECONDS = 2.5
 CLIENT_OBJECTLIST_SCAN_LIMIT = 16
 CLIENT_OBJECTLIST_READ_TIMEOUT_SECONDS = 0.6
-CLIENT_REDISCOVERY_INTERVAL = timedelta(seconds=30)
-CLIENT_SCAN_INTERVAL = timedelta(seconds=15)
-CLIENT_REFRESH_MIN_SECONDS = 5.0
+CLIENT_REDISCOVERY_INTERVAL = timedelta(seconds=20)
+CLIENT_SCAN_INTERVAL = timedelta(seconds=5)
+CLIENT_REFRESH_MIN_SECONDS = 2.0
 
 CLIENT_DIAGNOSTIC_FIELDS: list[tuple[str, str]] = list(HUB_DIAGNOSTIC_FIELDS)
 NETWORK_DIAGNOSTIC_KEYS = {"ip_address", "ip_subnet_mask", "mac_address_raw"}
@@ -222,6 +222,10 @@ def _addr_slug(value: Any) -> str:
     return text or "unknown"
 
 
+def _client_id(instance: int) -> str:
+    return f"client_{int(instance)}"
+
+
 def _client_diag_signal(entry_id: str, client_id: str) -> str:
     return f"{DOMAIN}_client_diag_{entry_id}_{client_id}"
 
@@ -335,6 +339,37 @@ async def _discover_remote_clients(server: Any) -> list[tuple[int, str]]:
     if clients:
         _LOGGER.debug("Discovered BACnet clients: %s", sorted(clients.values()))
     return sorted(clients.values(), key=lambda item: (item[0], item[1]))
+
+
+async def _resolve_client_address(
+    app: Any,
+    server: Any,
+    client_instance: int,
+    fallback_address: str | None = None,
+) -> str:
+    instance = int(client_instance)
+    address_text = str(fallback_address or "").strip()
+
+    # Prefer BACpypes device cache if available.
+    try:
+        device_info = await app.get_device_info(instance)
+        device_address = getattr(device_info, "device_address", None) if device_info else None
+        if device_address:
+            addr = str(device_address).strip()
+            if addr:
+                return addr
+    except Exception:
+        pass
+
+    # Fallback to a quick discovery pass for this specific instance.
+    try:
+        for found_instance, found_address in await _discover_remote_clients(server):
+            if int(found_instance) == instance and str(found_address or "").strip():
+                return str(found_address).strip()
+    except Exception:
+        pass
+
+    return address_text
 
 
 async def _read_client_runtime(
@@ -576,6 +611,7 @@ async def _refresh_client_cache(
     client_instance: int,
     client_address: str,
     network_port_hints: dict[str, int],
+    client_targets: dict[str, tuple[int, str]] | None = None,
 ) -> None:
     cache = _client_cache_get(hass, entry_id, client_id)
     now = time.monotonic()
@@ -594,25 +630,38 @@ async def _refresh_client_cache(
         server = hass.data.get(DOMAIN, {}).get("servers", {}).get(entry_id)
         app = getattr(server, "app", None) if server is not None else None
         hint = int(network_port_hints.get(client_id, 1))
-        data = _client_offline_payload(client_instance, client_address, hint)
+        resolved_address = str(client_address or "").strip()
+        if app is not None:
+            resolved_address = await _resolve_client_address(
+                app=app,
+                server=server,
+                client_instance=int(client_instance),
+                fallback_address=resolved_address,
+            )
+        data = _client_offline_payload(client_instance, resolved_address, hint)
         if app is not None:
             try:
                 data = await _read_client_runtime(
                     app,
                     int(client_instance),
-                    str(client_address),
+                    resolved_address,
                     network_port_instance_hint=hint,
                 )
             except Exception:
                 _LOGGER.debug(
                     "Client runtime read failed for %s (%s)",
                     client_instance,
-                    client_address,
+                    resolved_address,
                     exc_info=True,
                 )
-                data = _client_offline_payload(client_instance, client_address, hint)
+                data = _client_offline_payload(client_instance, resolved_address, hint)
 
         network_port_hints[client_id] = int(data.get("network_port_instance") or hint or 1)
+        if client_targets is not None:
+            client_targets[client_id] = (
+                int(client_instance),
+                str(data.get("device", {}).get("client_address") or resolved_address),
+            )
         data["_last_refresh_ts"] = now
         _client_cache_set(hass, entry_id, client_id, data)
     async_dispatcher_send(hass, _client_diag_signal(entry_id, client_id))
@@ -667,13 +716,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         )
 
     server = data.get("servers", {}).get(entry.entry_id)
-    known_clients: set[tuple[int, str]] = set()
+    known_client_instances: set[int] = set()
     client_targets: dict[str, tuple[int, str]] = {}
     client_network_port_hints: dict[str, int] = {}
 
     def _client_entities(client_instance: int, client_address: str) -> list[SensorEntity]:
-        client_id = f"client_{int(client_instance)}_{_addr_slug(client_address)}"
-        client_targets[client_id] = (int(client_instance), str(client_address))
+        client_id = _client_id(int(client_instance))
+        prev_instance, prev_address = client_targets.get(
+            client_id,
+            (int(client_instance), str(client_address)),
+        )
+        merged_address = str(client_address or "").strip() or str(prev_address or "").strip()
+        client_targets[client_id] = (int(prev_instance), merged_address)
         client_network_port_hints.setdefault(client_id, 1)
 
         # Remove legacy client entities no longer used.
@@ -704,6 +758,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             )
         return client_entities
 
+    # Remove old address-based client unique_ids and stale legacy keys.
+    for reg_entry in er.async_entries_for_config_entry(entity_registry, entry.entry_id):
+        unique_id = str(getattr(reg_entry, "unique_id", "") or "")
+        entity_id = getattr(reg_entry, "entity_id", None)
+        if not entity_id:
+            continue
+        if re.match(
+            rf"^{re.escape(entry.entry_id)}-client_\d+_[^-]+-",
+            unique_id,
+        ):
+            entity_registry.async_remove(entity_id)
+
     try:
         discovered_clients = await asyncio.wait_for(
             _discover_remote_clients(server),
@@ -712,8 +778,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     except Exception:
         discovered_clients = []
 
+    discovered_by_instance: dict[int, str] = {}
     for client_instance, client_address in discovered_clients:
-        known_clients.add((client_instance, client_address))
+        discovered_by_instance[int(client_instance)] = str(client_address)
+
+    for client_instance, client_address in discovered_by_instance.items():
+        known_client_instances.add(int(client_instance))
         for client_entity in _client_entities(client_instance, client_address):
             entities.append(client_entity)
 
@@ -731,6 +801,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 client_instance=client_instance,
                 client_address=client_address,
                 network_port_hints=client_network_port_hints,
+                client_targets=client_targets,
             )
 
     async def _scan_and_add_new_clients() -> None:
@@ -744,12 +815,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         except Exception:
             scan_clients = []
 
+        discovered_map: dict[int, str] = {}
         for client_instance, client_address in scan_clients:
-            key = (client_instance, client_address)
-            if key in known_clients:
-                continue
-            known_clients.add(key)
-            new_entities.extend(_client_entities(client_instance, client_address))
+            discovered_map[int(client_instance)] = str(client_address)
+
+        for client_instance, client_address in discovered_map.items():
+            if int(client_instance) not in known_client_instances:
+                known_client_instances.add(int(client_instance))
+                new_entities.extend(_client_entities(client_instance, client_address))
+            else:
+                _client_entities(client_instance, client_address)
         if new_entities:
             async_add_entities(new_entities)
 
