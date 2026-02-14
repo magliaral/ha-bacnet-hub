@@ -322,13 +322,30 @@ class BacnetHubInfoSensor(SensorEntity):
         )
         model_name = getattr(server, "model_name", "BACnet Hub") if server is not None else "BACnet Hub"
         vendor_name = getattr(server, "vendor_name", "magliaral") if server is not None else "magliaral"
-        firmware = getattr(server, "firmware_revision", None) if server is not None else None
-        app_version = (
+        vendor_identifier = (
+            getattr(server, "vendor_identifier", None) if server is not None else None
+        )
+        firmware_revision = getattr(server, "firmware_revision", None) if server is not None else None
+        integration_version = (
             getattr(server, "application_software_version", None) if server is not None else None
+        )
+        hardware_revision = getattr(server, "hardware_revision", "1.0.2") if server is not None else "1.0.2"
+        system_status = getattr(server, "system_status", None) if server is not None else None
+        system_status_code = (
+            getattr(server, "system_status_code", None) if server is not None else None
+        )
+        object_identifier = (
+            getattr(server, "device_object_identifier", None) if server is not None else None
+        )
+        network_port_object_identifier = (
+            getattr(server, "network_port_object_identifier", None) if server is not None else None
         )
         ip_address = getattr(server, "ip_address", None) if server is not None else None
         subnet_mask = getattr(server, "subnet_mask", None) if server is not None else None
         mac_address = getattr(server, "mac_address", None) if server is not None else None
+        mac_address_raw = (
+            str(mac_address).replace(":", "").replace("-", "").upper() if mac_address else None
+        )
         interface = getattr(server, "network_interface", None) if server is not None else None
         udp_port = getattr(server, "udp_port", None) if server is not None else None
         network_prefix = getattr(server, "network_prefix", None) if server is not None else None
@@ -344,19 +361,29 @@ class BacnetHubInfoSensor(SensorEntity):
 
         return {
             "device_object_instance": instance,
+            "object_identifier": object_identifier,
             "object_name": object_name,
             "description": description,
             "model_name": model_name,
+            "vendor_identifier": vendor_identifier,
             "vendor_name": vendor_name,
-            "firmware": firmware,
-            "application_software_version": app_version,
+            "system_status": system_status,
+            "system_status_code": system_status_code,
+            "firmware_revision": firmware_revision,
+            "integration_version": integration_version,
+            "firmware": integration_version,
+            "application_software_version": integration_version,
+            "hardware_revision": hardware_revision,
             "address": address,
             "ip_address": ip_address,
+            "ip_subnet_mask": subnet_mask,
             "network_prefix": network_prefix,
             "subnet_mask": subnet_mask,
             "mac_address": mac_address,
+            "mac_address_raw": mac_address_raw,
             "network_interface": interface,
             "udp_port": udp_port,
             "network_number": network_number,
             "network_port_instance": network_port_instance,
+            "network_port_object_identifier": network_port_object_identifier,
         }

@@ -853,14 +853,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "manufacturer": server.vendor_name or "magliaral",
         "model": server.model_name or "BACnet Hub",
         "name": server.name or "BACnet Hub",
-        "sw_version": server.firmware_revision or "unknown",
+        "sw_version": server.application_software_version or "unknown",
+        "hw_version": server.hardware_revision or "1.0.2",
         "configuration_url": "https://github.com/magliaral/ha-bacnet-hub",
     }
     serial_number = str(server.instance).strip()
     if serial_number:
         device_kwargs["serial_number"] = serial_number
-    if server.application_software_version:
-        device_kwargs["hw_version"] = server.application_software_version
     if server.mac_address:
         device_kwargs["connections"] = {(dr.CONNECTION_NETWORK_MAC, server.mac_address)}
 

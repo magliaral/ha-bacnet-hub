@@ -46,6 +46,15 @@ _ADDR_RE = re.compile(
     r"(?::(?P<port>\d{1,5}))?\s*$"
 )
 
+_SYSTEM_STATUS_LABELS: dict[int, str] = {
+    0: "operational",
+    1: "operational_read_only",
+    2: "download_required",
+    3: "download_in_progress",
+    4: "non_operational",
+    5: "backup_in_progress",
+}
+
 # ---------------------- Network/Address Helpers -----------------------------
 
 def _detect_local_ip() -> Optional[str]:
@@ -112,6 +121,29 @@ def _prefix_to_netmask(prefix: int) -> str:
         return str(ipaddress.ip_network(f"0.0.0.0/{prefix}", strict=False).netmask)
     except Exception:
         return "255.255.255.0"
+
+
+def _normalize_system_status(value: Any) -> tuple[int | None, str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None, "unknown"
+
+    code_match = re.search(r"\b([0-5])\b", raw)
+    if code_match:
+        code = int(code_match.group(1))
+        return code, _SYSTEM_STATUS_LABELS.get(code, "unknown")
+
+    token = raw.split(".")[-1].strip().lower()
+    token = re.sub(r"[^a-z0-9]+", "_", token).strip("_")
+    if token.isdigit():
+        code = int(token)
+        return code, _SYSTEM_STATUS_LABELS.get(code, "unknown")
+
+    for code, label in _SYSTEM_STATUS_LABELS.items():
+        if token == label:
+            return code, label
+
+    return None, token or "unknown"
 
 
 def _preflight_bind(address_str: str) -> None:
@@ -286,6 +318,11 @@ class BacnetHubServer:
         self.application_software_version: Optional[str] = None
         self.firmware_revision: Optional[str] = None
         self.network_port_instance: int = 1
+        self.hardware_revision: str = "1.0.2"
+        self.system_status: str = "operational"
+        self.system_status_code: int | None = 0
+        self.device_object_identifier: str = f"OBJECT_DEVICE:{self.instance}"
+        self.network_port_object_identifier: str = f"OBJECT_NETWORK_PORT:{self.network_port_instance}"
         try:
             ip_addr, prefix, udp_port = _split_ip_prefix_port(self.address_str)
         except Exception:
@@ -357,6 +394,9 @@ class BacnetHubServer:
             firmwareRevision=str(self.firmware_revision) if self.firmware_revision else None,
             applicationSoftwareVersion=str(self.application_software_version) if self.application_software_version else None,
         )
+        self.device_object_identifier = f"OBJECT_DEVICE:{self.instance}"
+        status_value = getattr(device_object, "systemStatus", self.system_status)
+        self.system_status_code, self.system_status = _normalize_system_status(status_value)
 
         # Network port object
         network_port_object = network_port_object_class(
@@ -365,6 +405,9 @@ class BacnetHubServer:
             objectName=f"NetworkPort-{self.network_port_instance}",
             networkNumber=int(self.network_number),
             networkNumberQuality="configured" if self.network_number else "unknown",
+        )
+        self.network_port_object_identifier = (
+            f"OBJECT_NETWORK_PORT:{self.network_port_instance}"
         )
 
         # Foreign device?
