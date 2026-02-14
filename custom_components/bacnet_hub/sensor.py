@@ -34,6 +34,114 @@ from .const import (
     published_unique_id,
 )
 
+HUB_DIAGNOSTIC_FIELDS: list[tuple[str, str]] = [
+    ("description", "Description"),
+    ("firmware_revision", "Firmware revision"),
+    ("model_name", "Model name"),
+    ("object_identifier", "Object identifier"),
+    ("object_name", "Object name"),
+    ("system_status", "System status"),
+    ("system_status_code", "System status code"),
+    ("vendor_identifier", "Vendor identifier"),
+    ("vendor_name", "Vendor name"),
+    ("ip_address", "IP address"),
+    ("ip_subnet_mask", "IP subnet mask"),
+    ("mac_address_raw", "MAC address"),
+]
+
+
+def _to_state(value: Any) -> StateType:
+    if value is None:
+        return None
+    if isinstance(value, (str, int, float)):
+        return value
+    return str(value)
+
+
+def _hub_diagnostics(server: Any, merged: Dict[str, Any]) -> Dict[str, Any]:
+    instance = (
+        getattr(server, "instance", None)
+        if server is not None
+        else merged.get(CONF_INSTANCE)
+    )
+    object_name = (
+        getattr(server, "name", None)
+        if server is not None
+        else merged.get(CONF_DEVICE_NAME)
+    )
+    description = (
+        getattr(server, "description", None)
+        if server is not None
+        else merged.get(CONF_DEVICE_DESCRIPTION, DEFAULT_BACNET_DEVICE_DESCRIPTION)
+    )
+    model_name = getattr(server, "model_name", "BACnet Hub") if server is not None else "BACnet Hub"
+    vendor_name = getattr(server, "vendor_name", "magliaral") if server is not None else "magliaral"
+    vendor_identifier = (
+        getattr(server, "vendor_identifier", None) if server is not None else None
+    )
+    firmware_revision = getattr(server, "firmware_revision", None) if server is not None else None
+    integration_version = (
+        getattr(server, "application_software_version", None) if server is not None else None
+    )
+    hardware_revision = getattr(server, "hardware_revision", "1.0.2") if server is not None else "1.0.2"
+    system_status = getattr(server, "system_status", None) if server is not None else None
+    system_status_code = (
+        getattr(server, "system_status_code", None) if server is not None else None
+    )
+    object_identifier = (
+        getattr(server, "device_object_identifier", None) if server is not None else None
+    )
+    network_port_object_identifier = (
+        getattr(server, "network_port_object_identifier", None) if server is not None else None
+    )
+    ip_address = getattr(server, "ip_address", None) if server is not None else None
+    subnet_mask = getattr(server, "subnet_mask", None) if server is not None else None
+    mac_address = getattr(server, "mac_address", None) if server is not None else None
+    mac_address_raw = (
+        str(mac_address).replace(":", "").replace("-", "").upper() if mac_address else None
+    )
+    interface = getattr(server, "network_interface", None) if server is not None else None
+    udp_port = getattr(server, "udp_port", None) if server is not None else None
+    network_prefix = getattr(server, "network_prefix", None) if server is not None else None
+    network_port_instance = (
+        getattr(server, "network_port_instance", None) if server is not None else None
+    )
+    network_number = getattr(server, "network_number", None) if server is not None else None
+    address = (
+        getattr(server, "address_str", None)
+        if server is not None
+        else merged.get(CONF_ADDRESS)
+    )
+
+    return {
+        "device_object_instance": instance,
+        "object_identifier": object_identifier,
+        "object_name": object_name,
+        "description": description,
+        "model_name": model_name,
+        "vendor_identifier": vendor_identifier,
+        "vendor_name": vendor_name,
+        "system_status": system_status,
+        "system_status_code": system_status_code,
+        "firmware_revision": firmware_revision,
+        "integration_version": integration_version,
+        "firmware": integration_version,
+        "application_software_version": integration_version,
+        "hardware_revision": hardware_revision,
+        "address": address,
+        "ip_address": ip_address,
+        "ip_subnet_mask": subnet_mask,
+        "network_prefix": network_prefix,
+        "subnet_mask": subnet_mask,
+        "mac_address": mac_address,
+        "mac_address_raw": mac_address_raw,
+        "network_interface": interface,
+        "udp_port": udp_port,
+        "network_number": network_number,
+        "network_port_instance": network_port_instance,
+        "network_port_object_identifier": network_port_object_identifier,
+    }
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
     data = hass.data[DOMAIN]
@@ -51,6 +159,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             merged=merged,
         )
     )
+    for key, label in HUB_DIAGNOSTIC_FIELDS:
+        entities.append(
+            BacnetHubDetailSensor(
+                hass=hass,
+                entry_id=entry.entry_id,
+                merged=merged,
+                key=key,
+                label=label,
+            )
+        )
     for m in published:
         if (m or {}).get("object_type") != "analogValue":
             continue
@@ -304,86 +422,40 @@ class BacnetHubInfoSensor(SensorEntity):
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
         server = self._server()
+        return _hub_diagnostics(server, self._merged)
 
-        instance = (
-            getattr(server, "instance", None)
-            if server is not None
-            else self._merged.get(CONF_INSTANCE)
-        )
-        object_name = (
-            getattr(server, "name", None)
-            if server is not None
-            else self._merged.get(CONF_DEVICE_NAME)
-        )
-        description = (
-            getattr(server, "description", None)
-            if server is not None
-            else self._merged.get(CONF_DEVICE_DESCRIPTION, DEFAULT_BACNET_DEVICE_DESCRIPTION)
-        )
-        model_name = getattr(server, "model_name", "BACnet Hub") if server is not None else "BACnet Hub"
-        vendor_name = getattr(server, "vendor_name", "magliaral") if server is not None else "magliaral"
-        vendor_identifier = (
-            getattr(server, "vendor_identifier", None) if server is not None else None
-        )
-        firmware_revision = getattr(server, "firmware_revision", None) if server is not None else None
-        integration_version = (
-            getattr(server, "application_software_version", None) if server is not None else None
-        )
-        hardware_revision = getattr(server, "hardware_revision", "1.0.2") if server is not None else "1.0.2"
-        system_status = getattr(server, "system_status", None) if server is not None else None
-        system_status_code = (
-            getattr(server, "system_status_code", None) if server is not None else None
-        )
-        object_identifier = (
-            getattr(server, "device_object_identifier", None) if server is not None else None
-        )
-        network_port_object_identifier = (
-            getattr(server, "network_port_object_identifier", None) if server is not None else None
-        )
-        ip_address = getattr(server, "ip_address", None) if server is not None else None
-        subnet_mask = getattr(server, "subnet_mask", None) if server is not None else None
-        mac_address = getattr(server, "mac_address", None) if server is not None else None
-        mac_address_raw = (
-            str(mac_address).replace(":", "").replace("-", "").upper() if mac_address else None
-        )
-        interface = getattr(server, "network_interface", None) if server is not None else None
-        udp_port = getattr(server, "udp_port", None) if server is not None else None
-        network_prefix = getattr(server, "network_prefix", None) if server is not None else None
-        network_port_instance = (
-            getattr(server, "network_port_instance", None) if server is not None else None
-        )
-        network_number = getattr(server, "network_number", None) if server is not None else None
-        address = (
-            getattr(server, "address_str", None)
-            if server is not None
-            else self._merged.get(CONF_ADDRESS)
+
+class BacnetHubDetailSensor(SensorEntity):
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:information-outline"
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        merged: Dict[str, Any],
+        key: str,
+        label: str,
+    ) -> None:
+        self.hass = hass
+        self._entry_id = entry_id
+        self._merged = dict(merged or {})
+        self._key = key
+        self._attr_name = label
+        self._attr_unique_id = f"{entry_id}-hub-diagnostic-{key}"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entry_id)},
+            name=str(self._merged.get(CONF_DEVICE_NAME) or DEFAULT_BACNET_OBJECT_NAME),
+            manufacturer="magliaral",
+            model="BACnet Hub",
         )
 
-        return {
-            "device_object_instance": instance,
-            "object_identifier": object_identifier,
-            "object_name": object_name,
-            "description": description,
-            "model_name": model_name,
-            "vendor_identifier": vendor_identifier,
-            "vendor_name": vendor_name,
-            "system_status": system_status,
-            "system_status_code": system_status_code,
-            "firmware_revision": firmware_revision,
-            "integration_version": integration_version,
-            "firmware": integration_version,
-            "application_software_version": integration_version,
-            "hardware_revision": hardware_revision,
-            "address": address,
-            "ip_address": ip_address,
-            "ip_subnet_mask": subnet_mask,
-            "network_prefix": network_prefix,
-            "subnet_mask": subnet_mask,
-            "mac_address": mac_address,
-            "mac_address_raw": mac_address_raw,
-            "network_interface": interface,
-            "udp_port": udp_port,
-            "network_number": network_number,
-            "network_port_instance": network_port_instance,
-            "network_port_object_identifier": network_port_object_identifier,
-        }
+    def _server(self) -> Any:
+        return (self.hass.data.get(DOMAIN, {}).get("servers", {}) or {}).get(self._entry_id)
+
+    @property
+    def native_value(self) -> StateType:
+        diagnostics = _hub_diagnostics(self._server(), self._merged)
+        return _to_state(diagnostics.get(self._key))
