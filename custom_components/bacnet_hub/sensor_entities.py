@@ -12,7 +12,7 @@ from homeassistant.const import EVENT_HOMEASSISTANT_STARTED, STATE_UNAVAILABLE, 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 from homeassistant.helpers.typing import StateType
 
 from .const import (
@@ -381,6 +381,7 @@ class BacnetClientPointSensor(SensorEntity):
         self._unsub_cov_dispatcher: Callable[[], None] | None = None
         self._cov_context: Any | None = None
         self._cov_task: asyncio.Task | None = None
+        self._cov_lease_unsub: Callable[[], None] | None = None
         self._cov_lock = asyncio.Lock()
         self._cov_registered = False
         self._cov_last_target: tuple[str, str] | None = None
@@ -460,6 +461,12 @@ class BacnetClientPointSensor(SensorEntity):
             )
 
     async def _async_stop_cov_runtime(self) -> None:
+        if self._cov_lease_unsub is not None:
+            try:
+                self._cov_lease_unsub()
+            except BaseException:
+                pass
+            self._cov_lease_unsub = None
         if self._cov_task is not None and not self._cov_task.done():
             self._cov_task.cancel()
             try:
@@ -543,6 +550,24 @@ class BacnetClientPointSensor(SensorEntity):
             self._cov_retry_not_before_ts = 0.0
             self._cov_retry_delay_seconds = 10.0
             self._cov_task = self.hass.async_create_task(self._async_cov_receive_loop())
+            self._schedule_cov_lease_reregister()
+
+    def _schedule_cov_lease_reregister(self) -> None:
+        if self._cov_lease_unsub is not None:
+            try:
+                self._cov_lease_unsub()
+            except BaseException:
+                pass
+            self._cov_lease_unsub = None
+
+        delay = max(1.0, float(CLIENT_COV_LEASE_SECONDS))
+
+        @callback
+        def _lease_expired(_now) -> None:
+            self._cov_lease_unsub = None
+            self.hass.async_create_task(self._async_reregister_cov())
+
+        self._cov_lease_unsub = async_call_later(self.hass, delay, _lease_expired)
 
     async def _async_cov_receive_loop(self) -> None:
         while True:

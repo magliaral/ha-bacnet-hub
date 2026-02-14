@@ -350,9 +350,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 )
                 continue
             _, latest_address = client_targets.get(client_id, (client_instance, client_address))
-            changed_address = _update_client_point_addresses(client_id, latest_address)
-            if changed_address:
-                async_dispatcher_send(hass, _client_cov_signal(entry.entry_id, client_id))
+            _update_client_point_addresses(client_id, latest_address)
             cache = _client_cache_get(hass, entry.entry_id, client_id)
             if bool(cache.get("has_network_object")):
                 new_entities.extend(
@@ -406,9 +404,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             else:
                 _client_entities(client_instance, client_address, include_network=False)
                 client_id = _client_id(int(client_instance))
-                changed_address = _update_client_point_addresses(client_id, client_address)
-                if changed_address:
-                    async_dispatcher_send(hass, _client_cov_signal(entry.entry_id, client_id))
+                _update_client_point_addresses(client_id, client_address)
                 cache = _client_cache_get(hass, entry.entry_id, client_id)
                 if bool(cache.get("has_network_object")):
                     new_entities.extend(
