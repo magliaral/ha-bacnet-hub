@@ -701,10 +701,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     hub_address = merged.get(CONF_ADDRESS, "")
     hub_name = str(merged.get(CONF_DEVICE_NAME) or DEFAULT_BACNET_OBJECT_NAME)
 
-    entities: List[SensorEntity] = []
+    hub_entities: List[SensorEntity] = []
 
     for key, label in HUB_DIAGNOSTIC_FIELDS:
-        entities.append(
+        hub_entities.append(
             BacnetHubDetailSensor(
                 hass=hass,
                 entry_id=entry.entry_id,
@@ -713,6 +713,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 label=label,
             )
         )
+    if hub_entities:
+        # Add hub diagnostics immediately so they are created before other entities.
+        async_add_entities(hub_entities)
 
     server = data.get("servers", {}).get(entry.entry_id)
     known_client_instances: set[int] = set()
@@ -769,10 +772,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     for client_instance, client_address in discovered_clients:
         discovered_by_instance[int(client_instance)] = str(client_address)
 
+    client_initial_entities: list[SensorEntity] = []
     for client_instance, client_address in discovered_by_instance.items():
         known_client_instances.add(int(client_instance))
         for client_entity in _client_entities(client_instance, client_address, include_network=False):
-            entities.append(client_entity)
+            client_initial_entities.append(client_entity)
 
     async def _refresh_known_clients() -> None:
         new_entities: list[SensorEntity] = []
@@ -845,8 +849,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     def _schedule_rescan(_now) -> None:
         hass.add_job(_scan_and_add_new_clients())
 
-    if entities:
-        async_add_entities(entities)
+    if client_initial_entities:
+        async_add_entities(client_initial_entities)
 
     published_entities: list[SensorEntity] = []
     for m in published:

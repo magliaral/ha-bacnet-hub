@@ -939,7 +939,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     except Exception:
         _LOGGER.debug("Could not clear hub serial/hardware fields", exc_info=True)
 
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    # Keep deterministic creation order: diagnostics sensors first, then binary sensors.
+    await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
+    await hass.config_entries.async_forward_entry_setups(entry, ["binary_sensor"])
     renamed_entities = _normalize_published_entity_ids(hass, entry, published)
     if renamed_entities:
         _LOGGER.info(

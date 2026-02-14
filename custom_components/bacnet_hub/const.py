@@ -92,7 +92,7 @@ def published_suggested_object_id(
     type_slug = object_type_slug(object_type).replace("-", "_")
     hub_inst = _as_int(hub_instance, 0)
     inst = _as_int(object_instance, 0)
-    return f"bacnet_{hub_inst}_{type_slug}_{inst}"
+    return f"bacnet_doi_{hub_inst}_{type_slug}_{inst}"
 
 
 def published_entity_id(
