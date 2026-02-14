@@ -34,6 +34,7 @@ from .sensor_helpers import (
     _client_points_get,
     _client_points_set,
     _client_points_signal,
+    _client_rescan_signal,
     _cov_process_identifier,
     _doi_entity_id,
     _hub_diag_signal,
@@ -387,6 +388,7 @@ class BacnetClientPointSensor(SensorEntity):
         self._cov_last_target: tuple[str, str] | None = None
         self._cov_retry_delay_seconds: float = 10.0
         self._cov_retry_not_before_ts: float = 0.0
+        self._cov_rescan_not_before_ts: float = 0.0
         self._attr_native_value: StateType = None
         self._attr_native_unit_of_measurement: str | None = None
         self._attr_device_class: SensorDeviceClass | None = None
@@ -608,6 +610,14 @@ class BacnetClientPointSensor(SensorEntity):
                     address,
                     exc_info=exc_info,
                 )
+                now_fail = time.monotonic()
+                if now_fail >= self._cov_rescan_not_before_ts:
+                    self._cov_rescan_not_before_ts = now_fail + 10.0
+                    async_dispatcher_send(
+                        self.hass,
+                        _client_rescan_signal(self._entry_id),
+                        {"instance": self._client_instance},
+                    )
                 self._cov_retry_not_before_ts = time.monotonic() + self._cov_retry_delay_seconds
                 self._cov_retry_delay_seconds = min(self._cov_retry_delay_seconds * 2.0, 300.0)
                 return

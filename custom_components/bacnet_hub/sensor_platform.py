@@ -31,6 +31,7 @@ from .sensor_helpers import (
     _client_points_get,
     _client_points_set,
     _client_points_signal,
+    _client_rescan_signal,
     _hub_diag_signal,
     _safe_text,
     _supported_point_type,
@@ -76,6 +77,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     client_network_port_hints: dict[str, int] = {}
     client_added_field_keys: dict[str, set[tuple[str, str]]] = {}
     client_added_point_keys: dict[str, set[str]] = {}
+    rescan_not_before_ts: float = 0.0
 
     def _is_current_server_ref() -> bool:
         current = hass.data.get(DOMAIN, {}).get("servers", {}).get(entry.entry_id)
@@ -339,6 +341,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     unsub_iam = async_dispatcher_connect(hass, client_iam_signal(entry.entry_id), _on_client_iam)
     entry.async_on_unload(unsub_iam)
 
+    @callback
+    def _on_client_rescan(payload: dict[str, Any] | None = None) -> None:
+        nonlocal rescan_not_before_ts
+        if not _is_current_server_ref():
+            return
+        now = asyncio.get_running_loop().time()
+        if now < rescan_not_before_ts:
+            return
+        rescan_not_before_ts = now + 10.0
+
+        data = payload or {}
+        target_instance = _to_int(data.get("instance"))
+        _start_bg_task(_scan_and_add_new_clients(target_instance))
+
+    unsub_rescan_signal = async_dispatcher_connect(
+        hass,
+        _client_rescan_signal(entry.entry_id),
+        _on_client_rescan,
+    )
+    entry.async_on_unload(unsub_rescan_signal)
+
     try:
         discovered_clients = await asyncio.wait_for(
             _discover_remote_clients(server),
@@ -357,7 +380,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         for client_entity in _client_entities(client_instance, client_address, include_network=False):
             client_initial_entities.append(client_entity)
 
-    async def _scan_and_add_new_clients() -> None:
+    async def _scan_and_add_new_clients(target_instance: int | None = None) -> None:
         if not _is_current_server_ref():
             return
         live_server = hass.data.get(DOMAIN, {}).get("servers", {}).get(entry.entry_id)
@@ -374,6 +397,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             discovered_map[int(client_instance)] = str(client_address)
 
         for client_instance, client_address in discovered_map.items():
+            if target_instance is not None and int(client_instance) != int(target_instance):
+                continue
             try:
                 await _process_client_iam(int(client_instance), str(client_address))
             except asyncio.CancelledError:

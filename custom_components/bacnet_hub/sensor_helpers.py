@@ -211,6 +211,10 @@ def _client_cov_signal(entry_id: str, client_id: str) -> str:
     return f"{DOMAIN}_client_cov_{entry_id}_{client_id}"
 
 
+def _client_rescan_signal(entry_id: str) -> str:
+    return f"{DOMAIN}_client_rescan_{entry_id}"
+
+
 def _diag_field_slug(key: str) -> str:
     text = str(key or "").strip().lower()
     if text == "mac_address_raw":
