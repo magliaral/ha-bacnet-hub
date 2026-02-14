@@ -106,8 +106,17 @@ class BacnetPublishedBinarySensor(BinarySensorEntity):
             object_type="binaryValue",
             object_instance=instance,
         )
-        self._suggested_object_id = published_suggested_object_id("binaryValue", instance)
-        self.entity_id = published_entity_id("binary_sensor", "binaryValue", instance)
+        self._suggested_object_id = published_suggested_object_id(
+            "binaryValue",
+            instance,
+            hub_instance,
+        )
+        self.entity_id = published_entity_id(
+            "binary_sensor",
+            "binaryValue",
+            instance,
+            hub_instance,
+        )
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry_id)},
             name=hub_name or DEFAULT_BACNET_OBJECT_NAME,

@@ -421,7 +421,12 @@ def _normalize_published_entity_ids(
             object_type=object_type,
             object_instance=instance,
         )
-        wanted_entity_id = published_entity_id(entity_domain, object_type, instance)
+        wanted_entity_id = published_entity_id(
+            entity_domain,
+            object_type,
+            instance,
+            hub_instance,
+        )
         current_entity_id = registry.async_get_entity_id(entity_domain, DOMAIN, unique_id)
         if not current_entity_id or current_entity_id == wanted_entity_id:
             continue

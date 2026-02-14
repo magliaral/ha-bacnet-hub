@@ -942,8 +942,17 @@ class BacnetPublishedSensor(SensorEntity):
             object_type="analogValue",
             object_instance=instance,
         )
-        self._suggested_object_id = published_suggested_object_id("analogValue", instance)
-        self.entity_id = published_entity_id("sensor", "analogValue", instance)
+        self._suggested_object_id = published_suggested_object_id(
+            "analogValue",
+            instance,
+            hub_instance,
+        )
+        self.entity_id = published_entity_id(
+            "sensor",
+            "analogValue",
+            instance,
+            hub_instance,
+        )
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry_id)},
             name=hub_name or DEFAULT_BACNET_OBJECT_NAME,

@@ -83,19 +83,28 @@ def published_unique_id(
     return f"{DOMAIN}:hub:{stable_hub_key(hub_instance, hub_address)}:{type_slug}:{inst}"
 
 
-def published_suggested_object_id(object_type: str, object_instance: Any) -> str:
+def published_suggested_object_id(
+    object_type: str,
+    object_instance: Any,
+    hub_instance: Any | None = None,
+) -> str:
     # Entity object IDs must be underscore-safe; HA entity_id does not keep hyphens.
     type_slug = object_type_slug(object_type).replace("-", "_")
+    hub_inst = _as_int(hub_instance, 0)
     inst = _as_int(object_instance, 0)
-    return f"{DOMAIN}_{type_slug}_{inst}"
+    return f"bacnet_{hub_inst}_{type_slug}_{inst}"
 
 
 def published_entity_id(
     entity_domain: str,
     object_type: str,
     object_instance: Any,
+    hub_instance: Any | None = None,
 ) -> str:
-    return f"{entity_domain}.{published_suggested_object_id(object_type, object_instance)}"
+    return (
+        f"{entity_domain}."
+        f"{published_suggested_object_id(object_type, object_instance, hub_instance)}"
+    )
 
 
 def mirrored_state_attributes(attrs: dict[str, Any]) -> dict[str, Any]:
