@@ -70,11 +70,11 @@ CLIENT_COV_RENEW_SECONDS = 240
 CLIENT_DIAGNOSTIC_FIELDS: list[tuple[str, str]] = list(HUB_DIAGNOSTIC_FIELDS)
 NETWORK_DIAGNOSTIC_KEYS = {"ip_address", "ip_subnet_mask", "mac_address_raw"}
 CLIENT_POINT_SUPPORTED_TYPES: dict[str, tuple[str, str]] = {
-    "analoginput": ("ai", "analogInput"),
-    "analogvalue": ("av", "analogValue"),
-    "binaryvalue": ("bv", "binaryValue"),
-    "multistatevalue": ("mv", "multiStateValue"),
-    "characterstringvalue": ("csv", "characterStringValue"),
+    "analoginput": ("ai", "analog-input"),
+    "analogvalue": ("av", "analog-value"),
+    "binaryvalue": ("bv", "binary-value"),
+    "multistatevalue": ("mv", "multi-state-value"),
+    "characterstringvalue": ("csv", "characterstring-value"),
 }
 
 
@@ -452,7 +452,9 @@ async def _read_remote_properties(
                             result[prop] = raw.get(prop)
                     if result:
                         return result
-            except Exception:
+            except asyncio.CancelledError:
+                raise
+            except BaseException:
                 continue
 
     for prop in unique_props:
@@ -464,7 +466,9 @@ async def _read_remote_properties(
                 prop,
                 timeout=CLIENT_READ_TIMEOUT_SECONDS,
             )
-        except Exception:
+        except asyncio.CancelledError:
+            raise
+        except BaseException:
             result[prop] = None
     return result
 
@@ -475,11 +479,13 @@ async def _read_remote_property_any_objid(
     objids: list[str],
     prop: str,
 ) -> Any:
-    last_err: Exception | None = None
+    last_err: BaseException | None = None
     for objid in objids:
         try:
             return await _read_remote_property(app, address, objid, prop)
-        except Exception as err:
+        except asyncio.CancelledError:
+            raise
+        except BaseException as err:
             last_err = err
             continue
     if last_err:
@@ -505,7 +511,9 @@ async def _read_client_object_list(
                 timeout=CLIENT_OBJECTLIST_READ_TIMEOUT_SECONDS,
             )
         )
-    except Exception:
+    except asyncio.CancelledError:
+        raise
+    except BaseException:
         list_len = None
     if not list_len or list_len <= 0:
         return object_list
@@ -520,7 +528,9 @@ async def _read_client_object_list(
                 array_index=idx,
                 timeout=CLIENT_OBJECTLIST_READ_TIMEOUT_SECONDS,
             )
-        except Exception:
+        except asyncio.CancelledError:
+            raise
+        except BaseException:
             continue
         if not (isinstance(item, tuple) and len(item) == 2):
             continue
@@ -959,6 +969,9 @@ async def _refresh_client_cache(
     lock = _client_lock_get(hass, entry_id, client_id)
     async with lock:
         cache = _client_cache_get(hass, entry_id, client_id)
+        previous_device = dict(cache.get("device", {}) or {})
+        previous_network = dict(cache.get("network", {}) or {})
+        previous_name = _safe_text(cache.get("name"))
         now = time.monotonic()
         last_refresh = float(cache.get("_last_refresh_ts") or 0.0)
         if not force and (now - last_refresh) < CLIENT_REFRESH_MIN_SECONDS:
@@ -994,6 +1007,30 @@ async def _refresh_client_cache(
                     exc_info=True,
                 )
                 data = _client_offline_payload(client_instance, resolved_address, hint)
+                if previous_device:
+                    merged_device = dict(data.get("device", {}) or {})
+                    for key, value in previous_device.items():
+                        if value is not None:
+                            merged_device[key] = value
+                    data["device"] = merged_device
+                if previous_network:
+                    merged_network = dict(data.get("network", {}) or {})
+                    for key, value in previous_network.items():
+                        if value is not None:
+                            merged_network[key] = value
+                    data["network"] = merged_network
+                if previous_name:
+                    data["name"] = previous_name
+                data["has_device_object"] = bool(
+                    data.get("has_device_object")
+                    or previous_device.get("object_identifier")
+                )
+                data["has_network_object"] = bool(
+                    data.get("has_network_object")
+                    or previous_network.get("ip_address")
+                    or previous_network.get("ip_subnet_mask")
+                    or previous_network.get("mac_address_raw")
+                )
 
         network_port_hints[client_id] = int(data.get("network_port_instance") or hint or 1)
         if client_targets is not None:
@@ -1114,7 +1151,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         if not address:
             return []
 
-        object_list = await _read_client_object_list(app, address, instance)
+        try:
+            object_list = await _read_client_object_list(app, address, instance)
+        except asyncio.CancelledError:
+            raise
+        except BaseException:
+            _LOGGER.debug(
+                "Client object-list read failed for %s (%s)",
+                instance,
+                address,
+                exc_info=True,
+            )
+            return []
         if not object_list:
             return []
 
@@ -1128,7 +1176,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                     object_type,
                     int(object_instance),
                 )
-            except Exception:
+            except asyncio.CancelledError:
+                raise
+            except BaseException:
                 continue
             point_key = str(point.get("point_key") or "").strip()
             if not point_key:
@@ -1178,7 +1228,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                     obj_type,
                     int(obj_instance),
                 )
-            except Exception:
+            except asyncio.CancelledError:
+                raise
+            except BaseException:
                 continue
             if payload:
                 updates[point_key] = payload
@@ -1216,7 +1268,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         cache = _client_cache_get(hass, entry.entry_id, client_id)
         if bool(cache.get("has_network_object")):
             new_entities.extend(_client_entities(instance, latest_address, include_network=True))
-        new_entities.extend(await _import_client_points(instance, latest_address))
+        try:
+            new_entities.extend(await _import_client_points(instance, latest_address))
+        except asyncio.CancelledError:
+            raise
+        except BaseException:
+            _LOGGER.debug(
+                "Client point import failed for %s (%s)",
+                instance,
+                latest_address,
+                exc_info=True,
+            )
 
         if new_entities:
             async_add_entities(new_entities)
@@ -1254,15 +1316,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     async def _refresh_known_clients() -> None:
         new_entities: list[SensorEntity] = []
         for client_id, (client_instance, client_address) in list(client_targets.items()):
-            await _refresh_client_cache(
-                hass=hass,
-                entry_id=entry.entry_id,
-                client_id=client_id,
-                client_instance=client_instance,
-                client_address=client_address,
-                network_port_hints=client_network_port_hints,
-                client_targets=client_targets,
-            )
+            try:
+                await _refresh_client_cache(
+                    hass=hass,
+                    entry_id=entry.entry_id,
+                    client_id=client_id,
+                    client_instance=client_instance,
+                    client_address=client_address,
+                    network_port_hints=client_network_port_hints,
+                    client_targets=client_targets,
+                )
+            except asyncio.CancelledError:
+                raise
+            except BaseException:
+                _LOGGER.debug(
+                    "Client diagnostic refresh failed for %s (%s)",
+                    client_instance,
+                    client_address,
+                    exc_info=True,
+                )
+                continue
             _, latest_address = client_targets.get(client_id, (client_instance, client_address))
             cache = _client_cache_get(hass, entry.entry_id, client_id)
             if bool(cache.get("has_network_object")):
@@ -1273,7 +1346,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                         include_network=True,
                     )
                 )
-            new_entities.extend(await _refresh_client_points(client_instance, latest_address))
+            try:
+                new_entities.extend(await _refresh_client_points(client_instance, latest_address))
+            except asyncio.CancelledError:
+                raise
+            except BaseException:
+                _LOGGER.debug(
+                    "Client point refresh failed for %s (%s)",
+                    client_instance,
+                    latest_address,
+                    exc_info=True,
+                )
         if new_entities:
             async_add_entities(new_entities)
 
@@ -1298,7 +1381,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 new_entities.extend(
                     _client_entities(client_instance, client_address, include_network=False)
                 )
-                new_entities.extend(await _import_client_points(client_instance, client_address))
+                try:
+                    new_entities.extend(await _import_client_points(client_instance, client_address))
+                except asyncio.CancelledError:
+                    raise
+                except BaseException:
+                    _LOGGER.debug(
+                        "Client point import failed for %s (%s)",
+                        client_instance,
+                        client_address,
+                        exc_info=True,
+                    )
             else:
                 _client_entities(client_instance, client_address, include_network=False)
                 client_id = _client_id(int(client_instance))
@@ -1311,7 +1404,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                             include_network=True,
                         )
                     )
-                new_entities.extend(await _refresh_client_points(client_instance, client_address))
+                try:
+                    new_entities.extend(await _refresh_client_points(client_instance, client_address))
+                except asyncio.CancelledError:
+                    raise
+                except BaseException:
+                    _LOGGER.debug(
+                        "Client point refresh failed for %s (%s)",
+                        client_instance,
+                        client_address,
+                        exc_info=True,
+                    )
         if new_entities:
             async_add_entities(new_entities)
 
@@ -1373,7 +1476,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     async def _initial_client_refresh() -> None:
         await asyncio.sleep(5)
-        await _refresh_all_clients()
+        try:
+            await _refresh_all_clients()
+        except asyncio.CancelledError:
+            raise
+        except BaseException:
+            _LOGGER.debug("Initial client refresh failed", exc_info=True)
 
     hass.async_create_task(_initial_client_refresh())
 
