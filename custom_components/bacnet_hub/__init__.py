@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from typing import Any, Dict, List
 
 from homeassistant.config_entries import ConfigEntry
@@ -89,6 +90,71 @@ def _as_string_list(value: Any) -> list[str]:
     if isinstance(value, (list, tuple, set)):
         return [str(item).strip() for item in value if str(item).strip()]
     return []
+
+
+def _adapter_get(entry: Any, key: str, default: Any = None) -> Any:
+    if isinstance(entry, dict):
+        return entry.get(key, default)
+    return getattr(entry, key, default)
+
+
+def _normalize_mac(value: Any) -> str | None:
+    raw = str(value or "").strip().lower().replace("-", ":")
+    if not raw:
+        return None
+    if not re.fullmatch(r"[0-9a-f]{2}(:[0-9a-f]{2}){5}", raw):
+        return None
+    return raw
+
+
+def _prefix_to_netmask(prefix: int) -> str:
+    if prefix <= 0:
+        return "0.0.0.0"
+    if prefix >= 32:
+        return "255.255.255.255"
+    mask = (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF
+    return ".".join(str((mask >> shift) & 0xFF) for shift in (24, 16, 8, 0))
+
+
+async def _async_network_adapter_for_ip(hass: HomeAssistant, ip_address: str) -> dict[str, Any]:
+    details: dict[str, Any] = {
+        "mac_address": None,
+        "interface": None,
+        "network_prefix": None,
+    }
+    ip_address = str(ip_address or "").strip()
+    if not ip_address:
+        return details
+
+    try:
+        from homeassistant.components.network import async_get_adapters
+    except Exception:
+        return details
+
+    try:
+        adapters = list(await async_get_adapters(hass))
+    except Exception:
+        _LOGGER.debug("Could not read network adapters from Home Assistant", exc_info=True)
+        return details
+
+    for adapter in adapters:
+        ipv4_entries = _adapter_get(adapter, "ipv4", []) or []
+        for ip_entry in ipv4_entries:
+            addr = str(_adapter_get(ip_entry, "address", "")).strip()
+            if addr != ip_address:
+                continue
+            details["interface"] = str(_adapter_get(adapter, "name", "")).strip() or None
+            details["mac_address"] = _normalize_mac(_adapter_get(adapter, "mac_address"))
+            prefix_raw = _adapter_get(ip_entry, "network_prefix", None)
+            try:
+                prefix = int(prefix_raw)
+                if 0 <= prefix <= 32:
+                    details["network_prefix"] = prefix
+            except Exception:
+                pass
+            return details
+
+    return details
 
 
 def _options_fingerprint(options: Dict[str, Any]) -> str:
@@ -768,17 +834,37 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await server.start()
 
     servers[entry.entry_id] = server
+    adapter_details = await _async_network_adapter_for_ip(hass, server.ip_address)
+    if adapter_details.get("mac_address"):
+        server.mac_address = str(adapter_details["mac_address"])
+    if adapter_details.get("interface"):
+        server.network_interface = str(adapter_details["interface"])
+    if isinstance(adapter_details.get("network_prefix"), int):
+        server.network_prefix = int(adapter_details["network_prefix"])
+        server.subnet_mask = _prefix_to_netmask(server.network_prefix)
 
     dev_reg = dr.async_get(hass)
-    dev_reg.async_get_or_create(
-        config_entry_id=entry.entry_id,
-        identifiers={(DOMAIN, entry.entry_id)},
-        manufacturer="magliaral",
-        model=server.model_name or "BACnet Hub",
-        name=server.name or "BACnet Hub",
-        sw_version=server.firmware_revision or "unknown",
-        configuration_url="https://github.com/magliaral/ha-bacnet-hub",
-    )
+    device_kwargs: dict[str, Any] = {
+        "config_entry_id": entry.entry_id,
+        "identifiers": {
+            (DOMAIN, entry.entry_id),
+            (DOMAIN, f"device-instance-{server.instance}"),
+        },
+        "manufacturer": server.vendor_name or "magliaral",
+        "model": server.model_name or "BACnet Hub",
+        "name": server.name or "BACnet Hub",
+        "sw_version": server.firmware_revision or "unknown",
+        "configuration_url": "https://github.com/magliaral/ha-bacnet-hub",
+    }
+    serial_number = str(server.instance).strip()
+    if serial_number:
+        device_kwargs["serial_number"] = serial_number
+    if server.application_software_version:
+        device_kwargs["hw_version"] = server.application_software_version
+    if server.mac_address:
+        device_kwargs["connections"] = {(dr.CONNECTION_NETWORK_MAC, server.mac_address)}
+
+    dev_reg.async_get_or_create(**device_kwargs)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     renamed_entities = _normalize_published_entity_ids(hass, entry, published)

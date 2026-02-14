@@ -11,7 +11,7 @@ from homeassistant.config_entries import ConfigEntry
 # We use STATE_ON for clean on/off detection
 from homeassistant.const import STATE_ON, EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity import DeviceInfo, EntityCategory
+from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.event import async_track_state_change_event
 
 from .const import (
@@ -72,7 +72,6 @@ class BacnetPublishedBinarySensor(BinarySensorEntity):
     - Mirrors state 1:1 from source entity (STATE_ON -> is_on).
     - device_class is mirrored if possible (fallback POWER for switch/input_boolean).
     - Icon is sensibly set for lights if not predefined.
-    - entity_category is ALWAYS 'diagnostic'.
     """
 
     _attr_should_poll = False
@@ -117,7 +116,6 @@ class BacnetPublishedBinarySensor(BinarySensorEntity):
         )
         # Will be filled dynamically
         self._attr_device_class: Optional[BinarySensorDeviceClass] = None
-        self._attr_entity_category: Optional[EntityCategory] = EntityCategory.DIAGNOSTIC
         self._attr_icon: Optional[str] = None
         self._attr_is_on: Optional[bool] = None  # initially unknown
         self._attr_extra_state_attributes: Dict[str, Any] = {}
@@ -172,11 +170,10 @@ class BacnetPublishedBinarySensor(BinarySensorEntity):
     def _pull_from_source(self) -> None:
         st = self.hass.states.get(self._source)
         if not st:
-            # Source (not yet) available: category stays diagnostic,
-            # clear icon/DeviceClass, do NOT reset existing bool state to None.
+            # Source (not yet) available: clear icon/DeviceClass,
+            # do NOT reset existing bool state to None.
             self._attr_device_class = None
             self._attr_icon = None
-            self._attr_entity_category = EntityCategory.DIAGNOSTIC
             self._attr_extra_state_attributes = {}
             self.async_write_ha_state()
             return
@@ -247,8 +244,5 @@ class BacnetPublishedBinarySensor(BinarySensorEntity):
         mirrored_attrs["source_entity_id"] = self._source
         self._attr_extra_state_attributes = mirrored_attrs
         # ---------------------------------------------------------------------
-
-        # Do NOT mirror entity_category anymore – always stays diagnostic
-        self._attr_entity_category = EntityCategory.DIAGNOSTIC
 
         self.async_write_ha_state()

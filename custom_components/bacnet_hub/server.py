@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import re
 import socket
@@ -92,6 +93,25 @@ def _split_ip_port(address_str: str) -> tuple[str, int]:
     ip = m.group("ip")
     port = int(m.group("port") or _DEFAULT_PORT)
     return ip, port
+
+
+def _split_ip_prefix_port(address_str: str) -> tuple[str, int, int]:
+    m = _ADDR_RE.match(address_str)
+    if not m:
+        raise ValueError(f"Invalid address: {address_str!r}")
+    ip = m.group("ip")
+    prefix = int(m.group("prefix") or _DEFAULT_PREFIX)
+    if prefix < 0 or prefix > 32:
+        prefix = _DEFAULT_PREFIX
+    port = int(m.group("port") or _DEFAULT_PORT)
+    return ip, prefix, port
+
+
+def _prefix_to_netmask(prefix: int) -> str:
+    try:
+        return str(ipaddress.ip_network(f"0.0.0.0/{prefix}", strict=False).netmask)
+    except Exception:
+        return "255.255.255.0"
 
 
 def _preflight_bind(address_str: str) -> None:
@@ -265,6 +285,17 @@ class BacnetHubServer:
         )
         self.application_software_version: Optional[str] = None
         self.firmware_revision: Optional[str] = None
+        self.network_port_instance: int = 1
+        try:
+            ip_addr, prefix, udp_port = _split_ip_prefix_port(self.address_str)
+        except Exception:
+            ip_addr, prefix, udp_port = "0.0.0.0", _DEFAULT_PREFIX, _DEFAULT_PORT
+        self.ip_address: str = ip_addr
+        self.network_prefix: int = prefix
+        self.subnet_mask: str = _prefix_to_netmask(prefix)
+        self.udp_port: int = udp_port
+        self.mac_address: Optional[str] = None
+        self.network_interface: Optional[str] = None
 
         # Debug
         self.debug_bacpypes: bool = bool(self.cfg.get("debug_bacpypes", True))
@@ -330,8 +361,8 @@ class BacnetHubServer:
         # Network port object
         network_port_object = network_port_object_class(
             address,
-            objectIdentifier=("network-port", 1),
-            objectName="NetworkPort-1",
+            objectIdentifier=("network-port", int(self.network_port_instance)),
+            objectName=f"NetworkPort-{self.network_port_instance}",
             networkNumber=int(self.network_number),
             networkNumberQuality="configured" if self.network_number else "unknown",
         )

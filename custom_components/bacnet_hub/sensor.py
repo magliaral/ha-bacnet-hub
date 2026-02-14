@@ -22,8 +22,10 @@ from homeassistant.helpers.event import async_track_state_change_event
 
 from .const import (
     CONF_ADDRESS,
+    CONF_DEVICE_DESCRIPTION,
     CONF_DEVICE_NAME,
     CONF_INSTANCE,
+    DEFAULT_BACNET_DEVICE_DESCRIPTION,
     DEFAULT_BACNET_OBJECT_NAME,
     DOMAIN,
     mirrored_state_attributes,
@@ -41,7 +43,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     hub_address = merged.get(CONF_ADDRESS, "")
     hub_name = str(merged.get(CONF_DEVICE_NAME) or DEFAULT_BACNET_OBJECT_NAME)
 
-    entities: List[BacnetPublishedSensor] = []
+    entities: List[SensorEntity] = []
+    entities.append(
+        BacnetHubInfoSensor(
+            hass=hass,
+            entry_id=entry.entry_id,
+            merged=merged,
+        )
+    )
     for m in published:
         if (m or {}).get("object_type") != "analogValue":
             continue
@@ -69,8 +78,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 configured_unit=units,
             )
         )
-    if entities:
-        async_add_entities(entities)
+    async_add_entities(entities)
 
 
 class BacnetPublishedSensor(SensorEntity):
@@ -79,7 +87,6 @@ class BacnetPublishedSensor(SensorEntity):
     - State/Value is taken from the source.
     - device_class/state_class are mirrored if valid.
     - Icon is mirrored if set.
-    - entity_category is ALWAYS 'diagnostic'.
     """
 
     _attr_should_poll = False
@@ -128,7 +135,6 @@ class BacnetPublishedSensor(SensorEntity):
         self._attr_device_class: Optional[SensorDeviceClass] = None
         self._attr_state_class: Optional[SensorStateClass] = None
         self._attr_icon: Optional[str] = None
-        self._attr_entity_category: Optional[EntityCategory] = EntityCategory.DIAGNOSTIC
         self._attr_native_value: Optional[StateType] = None
         self._attr_extra_state_attributes: Dict[str, Any] = {}
 
@@ -183,13 +189,12 @@ class BacnetPublishedSensor(SensorEntity):
         st = self.hass.states.get(self._source)
         if not st:
             # Source temporarily gone:
-            # - Category stays diagnostic
+            # - Keep metadata consistent while source is unavailable
             # - Clear metadata
             # - Do NOT forcibly set last value to None (more stable tile)
             self._attr_device_class = None
             self._attr_state_class = None
             self._attr_icon = None
-            self._attr_entity_category = EntityCategory.DIAGNOSTIC
             self._attr_extra_state_attributes = {}
             self.async_write_ha_state()
             return
@@ -234,9 +239,6 @@ class BacnetPublishedSensor(SensorEntity):
         mirrored_attrs["source_entity_id"] = self._source
         self._attr_extra_state_attributes = mirrored_attrs
 
-        # Do NOT mirror entity_category anymore – always stays diagnostic
-        self._attr_entity_category = EntityCategory.DIAGNOSTIC
-
         # Take value:
         # - unknown/unavailable → None
         # - If unit present or numeric device_class → try float
@@ -265,3 +267,96 @@ class BacnetPublishedSensor(SensorEntity):
 
         self._attr_native_value = native_value
         self.async_write_ha_state()
+
+
+class BacnetHubInfoSensor(SensorEntity):
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_name = "Hub information"
+    _attr_icon = "mdi:server-network"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        merged: Dict[str, Any],
+    ) -> None:
+        self.hass = hass
+        self._entry_id = entry_id
+        self._merged = dict(merged or {})
+        self._attr_unique_id = f"{entry_id}-hub-information"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entry_id)},
+            name=str(self._merged.get(CONF_DEVICE_NAME) or DEFAULT_BACNET_OBJECT_NAME),
+            manufacturer="magliaral",
+            model="BACnet Hub",
+        )
+
+    def _server(self) -> Any:
+        return (self.hass.data.get(DOMAIN, {}).get("servers", {}) or {}).get(self._entry_id)
+
+    @property
+    def native_value(self) -> StateType:
+        server = self._server()
+        return "running" if server and getattr(server, "app", None) else "stopped"
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        server = self._server()
+
+        instance = (
+            getattr(server, "instance", None)
+            if server is not None
+            else self._merged.get(CONF_INSTANCE)
+        )
+        object_name = (
+            getattr(server, "name", None)
+            if server is not None
+            else self._merged.get(CONF_DEVICE_NAME)
+        )
+        description = (
+            getattr(server, "description", None)
+            if server is not None
+            else self._merged.get(CONF_DEVICE_DESCRIPTION, DEFAULT_BACNET_DEVICE_DESCRIPTION)
+        )
+        model_name = getattr(server, "model_name", "BACnet Hub") if server is not None else "BACnet Hub"
+        vendor_name = getattr(server, "vendor_name", "magliaral") if server is not None else "magliaral"
+        firmware = getattr(server, "firmware_revision", None) if server is not None else None
+        app_version = (
+            getattr(server, "application_software_version", None) if server is not None else None
+        )
+        ip_address = getattr(server, "ip_address", None) if server is not None else None
+        subnet_mask = getattr(server, "subnet_mask", None) if server is not None else None
+        mac_address = getattr(server, "mac_address", None) if server is not None else None
+        interface = getattr(server, "network_interface", None) if server is not None else None
+        udp_port = getattr(server, "udp_port", None) if server is not None else None
+        network_prefix = getattr(server, "network_prefix", None) if server is not None else None
+        network_port_instance = (
+            getattr(server, "network_port_instance", None) if server is not None else None
+        )
+        network_number = getattr(server, "network_number", None) if server is not None else None
+        address = (
+            getattr(server, "address_str", None)
+            if server is not None
+            else self._merged.get(CONF_ADDRESS)
+        )
+
+        return {
+            "device_object_instance": instance,
+            "object_name": object_name,
+            "description": description,
+            "model_name": model_name,
+            "vendor_name": vendor_name,
+            "firmware": firmware,
+            "application_software_version": app_version,
+            "address": address,
+            "ip_address": ip_address,
+            "network_prefix": network_prefix,
+            "subnet_mask": subnet_mask,
+            "mac_address": mac_address,
+            "network_interface": interface,
+            "udp_port": udp_port,
+            "network_number": network_number,
+            "network_port_instance": network_port_instance,
+        }

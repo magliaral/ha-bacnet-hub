@@ -106,7 +106,7 @@ Where object type is kebab-case (`analog-value`, `binary-value`, `multi-state-va
 
 ## Mirrored Entity Behavior
 
-Published HA entities are diagnostic entities under one BACnet Hub device:
+Published HA entities are regular (non-diagnostic) entities under one BACnet Hub device:
 
 - `analogValue` -> `sensor`
 - `binaryValue` -> `binary_sensor`
@@ -118,7 +118,10 @@ Mirroring details:
 - friendly names are refreshed from HA and written into BACnet descriptions
 - extra state attributes are mirrored, excluding core presentation keys (`friendly_name`, `icon`, `unit_of_measurement`, `device_class`, `state_class`, `entity_category`)
 - `source_entity_id` is added to mirrored attributes
-- entity category remains `diagnostic`
+
+Additional diagnostic sensor:
+
+- `Hub information` with BACnet device/network attributes (`device_object_instance`, `object_name`, `description`, `model_name`, `vendor_name`, `firmware`, `ip_address`, `subnet_mask`, `mac_address`, etc.)
 
 ## BACnet Writeback (BACnet -> Home Assistant)
 
