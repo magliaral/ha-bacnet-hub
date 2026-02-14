@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import time
 from datetime import timedelta
@@ -40,6 +41,8 @@ from .const import (
     published_unique_id,
 )
 
+_LOGGER = logging.getLogger(__name__)
+
 HUB_DIAGNOSTIC_FIELDS: list[tuple[str, str]] = [
     ("description", "Description"),
     ("firmware_revision", "Firmware revision"),
@@ -59,7 +62,7 @@ CLIENT_DISCOVERY_TIMEOUT_SECONDS = 3.0
 CLIENT_READ_TIMEOUT_SECONDS = 2.5
 CLIENT_OBJECTLIST_SCAN_LIMIT = 16
 CLIENT_OBJECTLIST_READ_TIMEOUT_SECONDS = 0.6
-CLIENT_REDISCOVERY_INTERVAL = timedelta(minutes=5)
+CLIENT_REDISCOVERY_INTERVAL = timedelta(seconds=30)
 CLIENT_SCAN_INTERVAL = timedelta(seconds=15)
 CLIENT_REFRESH_MIN_SECONDS = 5.0
 
@@ -329,6 +332,8 @@ async def _discover_remote_clients(server: Any) -> list[tuple[int, str]]:
         key = (instance, source)
         clients[key] = key
 
+    if clients:
+        _LOGGER.debug("Discovered BACnet clients: %s", sorted(clients.values()))
     return sorted(clients.values(), key=lambda item: (item[0], item[1]))
 
 
@@ -599,6 +604,12 @@ async def _refresh_client_cache(
                     network_port_instance_hint=hint,
                 )
             except Exception:
+                _LOGGER.debug(
+                    "Client runtime read failed for %s (%s)",
+                    client_instance,
+                    client_address,
+                    exc_info=True,
+                )
                 data = _client_offline_payload(client_instance, client_address, hint)
 
         network_port_hints[client_id] = int(data.get("network_port_instance") or hint or 1)
@@ -711,7 +722,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         _remove_unique_id(f"{entry.entry_id}-{client_id}-device-system_status_code")
         _remove_unique_id(f"{entry.entry_id}-{client_id}-network-system_status_code")
 
-    async def _refresh_all_clients() -> None:
+    async def _refresh_known_clients() -> None:
         for client_id, (client_instance, client_address) in list(client_targets.items()):
             await _refresh_client_cache(
                 hass=hass,
@@ -741,13 +752,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             new_entities.extend(_client_entities(client_instance, client_address))
         if new_entities:
             async_add_entities(new_entities)
-        await _refresh_all_clients()
+
+    async def _refresh_all_clients() -> None:
+        if not client_targets:
+            await _scan_and_add_new_clients()
+        await _refresh_known_clients()
 
     def _schedule_client_refresh(_now) -> None:
-        hass.async_create_task(_refresh_all_clients())
+        hass.add_job(_refresh_all_clients())
 
     def _schedule_rescan(_now) -> None:
-        hass.async_create_task(_scan_and_add_new_clients())
+        hass.add_job(_scan_and_add_new_clients())
 
     for m in published:
         if (m or {}).get("object_type") != "analogValue":
@@ -777,7 +792,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             )
         )
     async_add_entities(entities)
-    hass.async_create_task(_refresh_all_clients())
+    async def _initial_client_refresh() -> None:
+        await asyncio.sleep(5)
+        await _refresh_all_clients()
+
+    hass.async_create_task(_initial_client_refresh())
 
     unsub_refresh = async_track_time_interval(hass, _schedule_client_refresh, CLIENT_SCAN_INTERVAL)
     unsub_rescan = async_track_time_interval(hass, _schedule_rescan, CLIENT_REDISCOVERY_INTERVAL)
