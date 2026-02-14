@@ -494,10 +494,35 @@ class BacnetClientPointSensor(SensorEntity):
 
         embedded_tasks: list[asyncio.Task] = []
         embedded_handles: list[Any] = []
+        values: list[Any] = []
+        seen_ids: set[int] = set()
+
         try:
-            values = list(vars(context_obj).values())
+            for value in vars(context_obj).values():
+                vid = id(value)
+                if vid in seen_ids:
+                    continue
+                seen_ids.add(vid)
+                values.append(value)
         except BaseException:
-            values = []
+            pass
+
+        # Some bacpypes context objects use __slots__; inspect common runtime attrs as fallback.
+        for attr_name in dir(context_obj):
+            if attr_name.startswith("__"):
+                continue
+            low = attr_name.lower()
+            if "task" not in low and "handle" not in low and "timer" not in low:
+                continue
+            try:
+                value = getattr(context_obj, attr_name)
+            except BaseException:
+                continue
+            vid = id(value)
+            if vid in seen_ids:
+                continue
+            seen_ids.add(vid)
+            values.append(value)
 
         for value in values:
             if isinstance(value, asyncio.Task):

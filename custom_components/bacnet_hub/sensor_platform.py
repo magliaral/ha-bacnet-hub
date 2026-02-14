@@ -69,11 +69,41 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         async_add_entities(hub_entities)
 
     server = data.get("servers", {}).get(entry.entry_id)
+    platform_server_ref = server
+    bg_tasks: set[asyncio.Task] = set()
     known_client_instances: set[int] = set()
     client_targets: dict[str, tuple[int, str]] = {}
     client_network_port_hints: dict[str, int] = {}
     client_added_field_keys: dict[str, set[tuple[str, str]]] = {}
     client_added_point_keys: dict[str, set[str]] = {}
+
+    def _is_current_server_ref() -> bool:
+        current = hass.data.get(DOMAIN, {}).get("servers", {}).get(entry.entry_id)
+        return current is platform_server_ref
+
+    def _start_bg_task(coro: Any) -> None:
+        task = hass.async_create_task(coro)
+        bg_tasks.add(task)
+
+        def _done(done_task: asyncio.Task) -> None:
+            bg_tasks.discard(done_task)
+            try:
+                _ = done_task.exception()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                _LOGGER.debug("Background task failed", exc_info=True)
+
+        task.add_done_callback(_done)
+
+    @callback
+    def _cancel_bg_tasks() -> None:
+        for task in list(bg_tasks):
+            if not task.done():
+                task.cancel()
+        bg_tasks.clear()
+
+    entry.async_on_unload(_cancel_bg_tasks)
 
     def _client_entities(
         client_instance: int,
@@ -243,6 +273,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         return True
 
     async def _process_client_iam(client_instance: int, client_address: str) -> None:
+        if not _is_current_server_ref():
+            return
         instance = int(client_instance)
         address = str(client_address or "").strip()
         if not address:
@@ -302,7 +334,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         address = _safe_text(data.get("address"))
         if instance is None or not address:
             return
-        hass.add_job(_process_client_iam(int(instance), str(address)))
+        _start_bg_task(_process_client_iam(int(instance), str(address)))
 
     unsub_iam = async_dispatcher_connect(hass, client_iam_signal(entry.entry_id), _on_client_iam)
     entry.async_on_unload(unsub_iam)
@@ -326,6 +358,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             client_initial_entities.append(client_entity)
 
     async def _scan_and_add_new_clients() -> None:
+        if not _is_current_server_ref():
+            return
         live_server = hass.data.get(DOMAIN, {}).get("servers", {}).get(entry.entry_id)
         try:
             scan_clients = await asyncio.wait_for(
@@ -353,7 +387,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 )
 
     def _schedule_rescan(_now) -> None:
-        hass.add_job(_scan_and_add_new_clients())
+        _start_bg_task(_scan_and_add_new_clients())
 
     if client_initial_entities:
         async_add_entities(client_initial_entities)
@@ -409,7 +443,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         except BaseException:
             _LOGGER.debug("Initial client refresh failed", exc_info=True)
 
-    hass.async_create_task(_initial_client_refresh())
+    _start_bg_task(_initial_client_refresh())
 
     unsub_rescan = async_track_time_interval(hass, _schedule_rescan, CLIENT_REDISCOVERY_INTERVAL)
     entry.async_on_unload(unsub_rescan)
