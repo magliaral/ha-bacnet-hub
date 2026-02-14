@@ -477,12 +477,52 @@ class BacnetClientPointSensor(SensorEntity):
                 pass
         self._cov_task = None
         if self._cov_context is not None:
-            try:
-                await self._cov_context.__aexit__(None, None, None)
-            except BaseException:
-                pass
+            await self._async_cleanup_cov_context(self._cov_context, call_aexit=True)
         self._cov_context = None
         self._cov_registered = False
+
+    async def _async_cleanup_cov_context(self, context_obj: Any, *, call_aexit: bool) -> None:
+        if context_obj is None:
+            return
+
+        if call_aexit:
+            try:
+                await context_obj.__aexit__(None, None, None)
+            except BaseException:
+                # Some devices fail unsubscribe when they already changed endpoint/state.
+                pass
+
+        embedded_tasks: list[asyncio.Task] = []
+        embedded_handles: list[Any] = []
+        try:
+            values = list(vars(context_obj).values())
+        except BaseException:
+            values = []
+
+        for value in values:
+            if isinstance(value, asyncio.Task):
+                embedded_tasks.append(value)
+                continue
+            cancel_fn = getattr(value, "cancel", None)
+            if callable(cancel_fn):
+                embedded_handles.append(value)
+
+        for handle in embedded_handles:
+            try:
+                handle.cancel()
+            except BaseException:
+                pass
+
+        for task in embedded_tasks:
+            if task.done():
+                continue
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except BaseException:
+                pass
 
     async def _async_register_cov(self) -> None:
         point = _client_points_get(self.hass, self._entry_id, self._client_id).get(self._point_key, {})
@@ -530,6 +570,7 @@ class BacnetClientPointSensor(SensorEntity):
                     self._cov_context = None
                     self._cov_registered = False
                     last_err = err
+                    await self._async_cleanup_cov_context(context, call_aexit=False)
                     # Can happen during reload overlap when old context still exists.
                     if isinstance(err, ValueError) and "existing context" in str(err).lower():
                         continue
