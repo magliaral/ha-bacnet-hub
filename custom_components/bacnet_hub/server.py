@@ -344,6 +344,8 @@ class BacnetHubServer:
         # Runtime
         self.publisher: Optional[BacnetPublisher] = None
         self.app: Optional[HubApp] = None
+        self.device_object: Any | None = None
+        self.network_port_object: Any | None = None
 
     async def start(self) -> None:
         if self.debug_bacpypes:
@@ -394,6 +396,7 @@ class BacnetHubServer:
             firmwareRevision=str(self.firmware_revision) if self.firmware_revision else None,
             applicationSoftwareVersion=str(self.application_software_version) if self.application_software_version else None,
         )
+        self.device_object = device_object
         self.device_object_identifier = f"OBJECT_DEVICE:{self.instance}"
         status_value = getattr(device_object, "systemStatus", self.system_status)
         self.system_status_code, self.system_status = _normalize_system_status(status_value)
@@ -406,6 +409,7 @@ class BacnetHubServer:
             networkNumber=int(self.network_number),
             networkNumberQuality="configured" if self.network_number else "unknown",
         )
+        self.network_port_object = network_port_object
         self.network_port_object_identifier = (
             f"OBJECT_NETWORK_PORT:{self.network_port_instance}"
         )
@@ -471,6 +475,8 @@ class BacnetHubServer:
             except Exception:
                 pass
             self.app = None
+        self.device_object = None
+        self.network_port_object = None
 
         _LOGGER.info("BACnet Hub stopped")
         try:

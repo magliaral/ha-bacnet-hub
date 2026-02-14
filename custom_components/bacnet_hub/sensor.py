@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any, Dict, List, Optional, Callable
 
 from homeassistant.components.sensor import (
@@ -60,55 +61,158 @@ def _to_state(value: Any) -> StateType:
     return str(value)
 
 
+def _to_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+def _object_identifier_text(value: Any) -> str | None:
+    if isinstance(value, tuple) and len(value) == 2:
+        obj_type, inst = value
+        type_txt = str(obj_type or "").strip().replace("-", "_").upper()
+        if type_txt and _to_int(inst) is not None:
+            return f"OBJECT_{type_txt}:{int(inst)}"
+    text = str(value or "").strip()
+    return text or None
+
+
+def _normalize_system_status(value: Any) -> tuple[int | None, str | None]:
+    labels = {
+        0: "operational",
+        1: "operational_read_only",
+        2: "download_required",
+        3: "download_in_progress",
+        4: "non_operational",
+        5: "backup_in_progress",
+    }
+    text = str(value or "").strip()
+    if not text:
+        return None, None
+
+    m = re.search(r"\b([0-5])\b", text)
+    if m:
+        code = int(m.group(1))
+        return code, labels.get(code)
+
+    token = text.split(".")[-1].strip().lower()
+    token = re.sub(r"[^a-z0-9]+", "_", token).strip("_")
+    if token.isdigit():
+        code = int(token)
+        return code, labels.get(code)
+
+    for code, label in labels.items():
+        if token == label:
+            return code, label
+    return None, token or None
+
+
+def _mac_hex(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value).hex().upper()
+    text = str(value).strip()
+    if not text:
+        return None
+    hex_only = re.sub(r"[^0-9A-Fa-f]", "", text)
+    if len(hex_only) >= 12 and len(hex_only) % 2 == 0:
+        return hex_only.upper()
+    return None
+
+
+def _bacnet_mac_from_ip_port(ip_address: Any, udp_port: Any) -> str | None:
+    ip = str(ip_address or "").strip()
+    port = _to_int(udp_port)
+    parts = ip.split(".")
+    if len(parts) != 4 or port is None or port < 0 or port > 65535:
+        return None
+    try:
+        octets = [int(part) for part in parts]
+    except Exception:
+        return None
+    if any(octet < 0 or octet > 255 for octet in octets):
+        return None
+    return "".join(f"{octet:02X}" for octet in octets) + f"{port:04X}"
+
+
 def _hub_diagnostics(server: Any, merged: Dict[str, Any]) -> Dict[str, Any]:
-    instance = (
-        getattr(server, "instance", None)
-        if server is not None
-        else merged.get(CONF_INSTANCE)
+    device_obj = getattr(server, "device_object", None) if server is not None else None
+    network_obj = getattr(server, "network_port_object", None) if server is not None else None
+
+    instance = _to_int(getattr(server, "instance", None)) if server is not None else None
+    if instance is None:
+        instance = _to_int(merged.get(CONF_INSTANCE))
+
+    object_name = getattr(device_obj, "objectName", None) or (
+        getattr(server, "name", None) if server is not None else merged.get(CONF_DEVICE_NAME)
     )
-    object_name = (
-        getattr(server, "name", None)
-        if server is not None
-        else merged.get(CONF_DEVICE_NAME)
-    )
-    description = (
+    description = getattr(device_obj, "description", None) or (
         getattr(server, "description", None)
         if server is not None
         else merged.get(CONF_DEVICE_DESCRIPTION, DEFAULT_BACNET_DEVICE_DESCRIPTION)
     )
-    model_name = getattr(server, "model_name", "BACnet Hub") if server is not None else "BACnet Hub"
-    vendor_name = getattr(server, "vendor_name", "magliaral") if server is not None else "magliaral"
-    vendor_identifier = (
-        getattr(server, "vendor_identifier", None) if server is not None else None
+    model_name = getattr(device_obj, "modelName", None) or (
+        getattr(server, "model_name", None) if server is not None else None
     )
-    firmware_revision = getattr(server, "firmware_revision", None) if server is not None else None
+    vendor_name = getattr(device_obj, "vendorName", None) or (
+        getattr(server, "vendor_name", None) if server is not None else None
+    )
+    vendor_identifier = _to_int(getattr(device_obj, "vendorIdentifier", None))
+    if vendor_identifier is None and server is not None:
+        vendor_identifier = _to_int(getattr(server, "vendor_identifier", None))
+
+    firmware_revision = getattr(device_obj, "firmwareRevision", None) or (
+        getattr(server, "firmware_revision", None) if server is not None else None
+    )
     integration_version = (
         getattr(server, "application_software_version", None) if server is not None else None
     )
-    hardware_revision = getattr(server, "hardware_revision", "1.0.2") if server is not None else "1.0.2"
-    system_status = (
-        getattr(server, "system_status", "operational") if server is not None else "operational"
+    hardware_revision = getattr(server, "hardware_revision", None) if server is not None else None
+
+    status_code, status_label = _normalize_system_status(getattr(device_obj, "systemStatus", None))
+    if status_code is None and server is not None:
+        status_code = _to_int(getattr(server, "system_status_code", None))
+    if status_label is None and server is not None:
+        status_label = str(getattr(server, "system_status", "")).strip() or None
+    system_status = status_label
+    system_status_code = status_code
+
+    object_identifier = _object_identifier_text(getattr(device_obj, "objectIdentifier", None))
+    if not object_identifier and server is not None:
+        object_identifier = str(getattr(server, "device_object_identifier", "")).strip() or None
+
+    network_port_object_identifier = _object_identifier_text(
+        getattr(network_obj, "objectIdentifier", None)
     )
-    system_status_code = (
-        getattr(server, "system_status_code", 0) if server is not None else 0
+    if not network_port_object_identifier and server is not None:
+        network_port_object_identifier = (
+            str(getattr(server, "network_port_object_identifier", "")).strip() or None
+        )
+
+    ip_address = getattr(network_obj, "ipAddress", None) or (
+        getattr(server, "ip_address", None) if server is not None else None
     )
-    object_identifier = (
-        getattr(server, "device_object_identifier", None) if server is not None else None
+    subnet_mask = getattr(network_obj, "ipSubnetMask", None) or (
+        getattr(server, "subnet_mask", None) if server is not None else None
     )
-    network_port_object_identifier = (
-        getattr(server, "network_port_object_identifier", None) if server is not None else None
-    )
-    ip_address = getattr(server, "ip_address", None) if server is not None else None
-    subnet_mask = getattr(server, "subnet_mask", None) if server is not None else None
-    mac_address = getattr(server, "mac_address", None) if server is not None else None
-    mac_address_raw = str(mac_address).replace(":", "").replace("-", "").upper() if mac_address else None
-    interface = getattr(server, "network_interface", None) if server is not None else None
-    udp_port = getattr(server, "udp_port", None) if server is not None else None
+    udp_port = _to_int(getattr(network_obj, "bacnetIPUDPPort", None))
+    if udp_port is None and server is not None:
+        udp_port = _to_int(getattr(server, "udp_port", None))
     network_prefix = getattr(server, "network_prefix", None) if server is not None else None
-    network_port_instance = (
-        getattr(server, "network_port_instance", None) if server is not None else None
-    )
-    network_number = getattr(server, "network_number", None) if server is not None else None
+    network_port_instance = _to_int(getattr(server, "network_port_instance", None)) if server else None
+    network_number = _to_int(getattr(network_obj, "networkNumber", None))
+    if network_number is None and server is not None:
+        network_number = _to_int(getattr(server, "network_number", None))
+
+    mac_address_raw = _mac_hex(getattr(network_obj, "macAddress", None))
+    if not mac_address_raw:
+        mac_address_raw = _mac_hex(getattr(server, "mac_address", None)) if server else None
+    if not mac_address_raw:
+        mac_address_raw = _bacnet_mac_from_ip_port(ip_address, udp_port)
+
+    interface = getattr(server, "network_interface", None) if server is not None else None
     address = (
         getattr(server, "address_str", None)
         if server is not None
@@ -135,7 +239,7 @@ def _hub_diagnostics(server: Any, merged: Dict[str, Any]) -> Dict[str, Any]:
         "ip_subnet_mask": subnet_mask,
         "network_prefix": network_prefix,
         "subnet_mask": subnet_mask,
-        "mac_address": mac_address,
+        "mac_address": mac_address_raw,
         "mac_address_raw": mac_address_raw,
         "network_interface": interface,
         "udp_port": udp_port,
