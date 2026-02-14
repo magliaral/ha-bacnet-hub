@@ -344,6 +344,51 @@ def _cleanup_orphan_published_entities(
     return removed
 
 
+def _remove_entry_registry_entities(hass: HomeAssistant, entry_id: str) -> int:
+    """Remove all entity-registry entries bound to a config entry."""
+    registry = er.async_get(hass)
+    entries = list(er.async_entries_for_config_entry(registry, entry_id))
+    removed = 0
+    for reg_entry in entries:
+        entity_id = getattr(reg_entry, "entity_id", None)
+        if not entity_id:
+            continue
+        try:
+            registry.async_remove(entity_id)
+            removed += 1
+        except Exception:
+            _LOGGER.debug("Could not remove entity registry entry %s", entity_id, exc_info=True)
+        try:
+            hass.states.async_remove(entity_id)
+        except Exception:
+            pass
+    return removed
+
+
+def _remove_entry_registry_devices(hass: HomeAssistant, entry_id: str) -> int:
+    """Remove all device-registry entries bound to a config entry."""
+    registry = dr.async_get(hass)
+    entries = list(dr.async_entries_for_config_entry(registry, entry_id))
+    removed = 0
+    for dev_entry in entries:
+        device_id = getattr(dev_entry, "id", None)
+        if not device_id:
+            continue
+        try:
+            if registry.async_remove_device(device_id):
+                removed += 1
+        except Exception:
+            _LOGGER.debug("Could not remove device registry entry %s", device_id, exc_info=True)
+    return removed
+
+
+def _hard_cleanup_entry_registries(hass: HomeAssistant, entry_id: str) -> tuple[int, int]:
+    """Best-effort cleanup for stale registry artifacts of a config entry."""
+    removed_entities = _remove_entry_registry_entities(hass, entry_id)
+    removed_devices = _remove_entry_registry_devices(hass, entry_id)
+    return removed_entities, removed_devices
+
+
 def _normalize_published_entity_ids(
     hass: HomeAssistant, entry: ConfigEntry, published: List[Dict[str, Any]]
 ) -> int:
@@ -924,6 +969,14 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             pass
 
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if not unload_ok:
+        removed_entities, removed_devices = _hard_cleanup_entry_registries(hass, entry.entry_id)
+        _LOGGER.warning(
+            "Platform unload returned False for entry %s. Fallback cleanup removed %d entities and %d devices.",
+            entry.entry_id,
+            removed_entities,
+            removed_devices,
+        )
 
     server = servers.pop(entry.entry_id, None)
     lock = locks.setdefault(entry.entry_id, asyncio.Lock())
@@ -948,6 +1001,22 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     _LOGGER.info("%s stopped (Entry %s)", DOMAIN, entry.entry_id)
     return unload_ok
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Cleanup registry artifacts when a config entry is deleted."""
+    data = _ensure_domain(hass)
+    data[KEY_PUBLISHED_CACHE].pop(entry.entry_id, None)
+    data.setdefault("client_diag_cache", {}).pop(entry.entry_id, None)
+
+    removed_entities, removed_devices = _hard_cleanup_entry_registries(hass, entry.entry_id)
+    if removed_entities or removed_devices:
+        _LOGGER.info(
+            "Removed registry leftovers for deleted entry %s (entities=%d, devices=%d).",
+            entry.entry_id,
+            removed_entities,
+            removed_devices,
+        )
 
 
 @callback
