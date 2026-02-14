@@ -221,13 +221,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         async_dispatcher_send(hass, _client_points_signal(entry.entry_id, client_id))
         return _client_point_entities(instance, client_id, _client_points_get(hass, entry.entry_id, client_id))
 
-    def _update_client_point_addresses(client_id: str, client_address: str) -> None:
+    def _update_client_point_addresses(client_id: str, client_address: str) -> bool:
         address = str(client_address or "").strip()
         if not address:
-            return
+            return False
         point_cache = _client_points_get(hass, entry.entry_id, client_id)
         if not point_cache:
-            return
+            return False
 
         updated_payload: dict[str, dict[str, Any]] = {}
         for point_key, raw_point in point_cache.items():
@@ -238,9 +238,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             updated_payload[str(point_key)] = point
 
         if not updated_payload:
-            return
+            return False
         _client_points_set(hass, entry.entry_id, client_id, updated_payload)
         async_dispatcher_send(hass, _client_points_signal(entry.entry_id, client_id))
+        return True
 
     async def _process_client_iam(client_instance: int, client_address: str) -> None:
         instance = int(client_instance)
@@ -347,6 +348,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 )
                 continue
             _, latest_address = client_targets.get(client_id, (client_instance, client_address))
+            changed_address = _update_client_point_addresses(client_id, latest_address)
+            if changed_address:
+                async_dispatcher_send(hass, _client_cov_signal(entry.entry_id, client_id))
             cache = _client_cache_get(hass, entry.entry_id, client_id)
             if bool(cache.get("has_network_object")):
                 new_entities.extend(
@@ -400,6 +404,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             else:
                 _client_entities(client_instance, client_address, include_network=False)
                 client_id = _client_id(int(client_instance))
+                changed_address = _update_client_point_addresses(client_id, client_address)
+                if changed_address:
+                    async_dispatcher_send(hass, _client_cov_signal(entry.entry_id, client_id))
                 cache = _client_cache_get(hass, entry.entry_id, client_id)
                 if bool(cache.get("has_network_object")):
                     new_entities.extend(
@@ -475,7 +482,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         async_add_entities(published_entities)
 
     def _schedule_hub_diag_refresh(_now) -> None:
-        async_dispatcher_send(hass, _hub_diag_signal(entry.entry_id))
+        hass.add_job(async_dispatcher_send, hass, _hub_diag_signal(entry.entry_id))
 
     unsub_hub_diag = async_track_time_interval(
         hass,

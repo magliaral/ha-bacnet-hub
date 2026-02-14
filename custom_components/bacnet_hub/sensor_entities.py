@@ -516,11 +516,12 @@ class BacnetClientPointSensor(SensorEntity):
                         continue
                     break
             if last_err is not None:
+                exc_info = (type(last_err), last_err, last_err.__traceback__)
                 _LOGGER.debug(
                     "COV subscribe failed for %s (%s)",
                     object_identifier,
                     address,
-                    exc_info=True,
+                    exc_info=exc_info,
                 )
                 return
 
