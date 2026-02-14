@@ -57,14 +57,14 @@ HUB_DIAGNOSTIC_FIELDS: list[tuple[str, str]] = [
     ("mac_address_raw", "MAC address"),
 ]
 DIAGNOSTIC_REFRESH_DELAY_SECONDS = 2.0
-HUB_DIAGNOSTIC_SCAN_INTERVAL = timedelta(seconds=2)
+HUB_DIAGNOSTIC_SCAN_INTERVAL = timedelta(seconds=60)
 CLIENT_DISCOVERY_TIMEOUT_SECONDS = 3.0
 CLIENT_READ_TIMEOUT_SECONDS = 2.5
 CLIENT_OBJECTLIST_SCAN_LIMIT = 16
 CLIENT_OBJECTLIST_READ_TIMEOUT_SECONDS = 0.6
-CLIENT_REDISCOVERY_INTERVAL = timedelta(seconds=20)
-CLIENT_SCAN_INTERVAL = timedelta(seconds=5)
-CLIENT_REFRESH_MIN_SECONDS = 2.0
+CLIENT_REDISCOVERY_INTERVAL = timedelta(seconds=60)
+CLIENT_SCAN_INTERVAL = timedelta(seconds=60)
+CLIENT_REFRESH_MIN_SECONDS = 55.0
 
 CLIENT_DIAGNOSTIC_FIELDS: list[tuple[str, str]] = list(HUB_DIAGNOSTIC_FIELDS)
 NETWORK_DIAGNOSTIC_KEYS = {"ip_address", "ip_subnet_mask", "mac_address_raw"}
@@ -416,6 +416,8 @@ async def _read_client_runtime(
         if probe_object_identifier is None:
             return {
                 "online": False,
+                "has_device_object": False,
+                "has_network_object": False,
                 "device": {
                     "client_instance": instance,
                     "client_address": address,
@@ -479,6 +481,7 @@ async def _read_client_runtime(
         except BaseException:
             pass
         net_object_identifier = await read_network("objectIdentifier", network_port_instance)
+    has_network_object = net_object_identifier is not None
 
     ip_address_raw = await read_network("ipAddress", network_port_instance)
     ip_subnet_mask_raw = await read_network("ipSubnetMask", network_port_instance)
@@ -526,6 +529,8 @@ async def _read_client_runtime(
     )
     return {
         "online": online,
+        "has_device_object": True,
+        "has_network_object": has_network_object,
         "device": device_data,
         "network": network_data,
         "network_port_instance": network_port_instance,
@@ -600,6 +605,8 @@ def _client_offline_payload(
     address = str(client_address)
     return {
         "online": False,
+        "has_device_object": True,
+        "has_network_object": False,
         "device": {
             "client_instance": instance,
             "client_address": address,
@@ -731,8 +738,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     known_client_instances: set[int] = set()
     client_targets: dict[str, tuple[int, str]] = {}
     client_network_port_hints: dict[str, int] = {}
+    client_added_field_keys: dict[str, set[tuple[str, str]]] = {}
 
-    def _client_entities(client_instance: int, client_address: str) -> list[SensorEntity]:
+    def _client_entities(
+        client_instance: int,
+        client_address: str,
+        include_network: bool = False,
+    ) -> list[SensorEntity]:
         client_id = _client_id(int(client_instance))
         prev_instance, prev_address = client_targets.get(
             client_id,
@@ -741,6 +753,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         merged_address = str(client_address or "").strip() or str(prev_address or "").strip()
         client_targets[client_id] = (int(prev_instance), merged_address)
         client_network_port_hints.setdefault(client_id, 1)
+        added_keys = client_added_field_keys.setdefault(client_id, set())
 
         # Remove legacy client entities no longer used.
         for legacy_unique_id in (
@@ -758,6 +771,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         client_entities: list[SensorEntity] = []
         for key, label in CLIENT_DIAGNOSTIC_FIELDS:
             source = "network" if key in NETWORK_DIAGNOSTIC_KEYS else "device"
+            if source == "network" and not include_network:
+                continue
+            field_key = (source, key)
+            if field_key in added_keys:
+                continue
             client_entities.append(
                 BacnetClientDetailSensor(
                     hass=hass,
@@ -768,6 +786,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                     source=source,
                 )
             )
+            added_keys.add(field_key)
         return client_entities
 
     # Remove old address-based client unique_ids and stale legacy keys.
@@ -778,6 +797,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             continue
         if re.match(
             rf"^{re.escape(entry.entry_id)}-client_\d+_[^-]+-",
+            unique_id,
+        ):
+            entity_registry.async_remove(entity_id)
+            continue
+        if re.match(
+            rf"^{re.escape(entry.entry_id)}-client_\d+-network-",
             unique_id,
         ):
             entity_registry.async_remove(entity_id)
@@ -796,7 +821,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     for client_instance, client_address in discovered_by_instance.items():
         known_client_instances.add(int(client_instance))
-        for client_entity in _client_entities(client_instance, client_address):
+        for client_entity in _client_entities(client_instance, client_address, include_network=False):
             entities.append(client_entity)
 
     # Remove legacy system_status_code entities that might remain in registry.
@@ -805,6 +830,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         _remove_unique_id(f"{entry.entry_id}-{client_id}-network-system_status_code")
 
     async def _refresh_known_clients() -> None:
+        new_entities: list[SensorEntity] = []
         for client_id, (client_instance, client_address) in list(client_targets.items()):
             await _refresh_client_cache(
                 hass=hass,
@@ -815,6 +841,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 network_port_hints=client_network_port_hints,
                 client_targets=client_targets,
             )
+            cache = _client_cache_get(hass, entry.entry_id, client_id)
+            if bool(cache.get("has_network_object")):
+                new_entities.extend(
+                    _client_entities(
+                        client_instance,
+                        client_address,
+                        include_network=True,
+                    )
+                )
+        if new_entities:
+            async_add_entities(new_entities)
 
     async def _scan_and_add_new_clients() -> None:
         live_server = hass.data.get(DOMAIN, {}).get("servers", {}).get(entry.entry_id)
@@ -834,9 +871,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         for client_instance, client_address in discovered_map.items():
             if int(client_instance) not in known_client_instances:
                 known_client_instances.add(int(client_instance))
-                new_entities.extend(_client_entities(client_instance, client_address))
+                new_entities.extend(
+                    _client_entities(client_instance, client_address, include_network=False)
+                )
             else:
-                _client_entities(client_instance, client_address)
+                _client_entities(client_instance, client_address, include_network=False)
+                client_id = _client_id(int(client_instance))
+                cache = _client_cache_get(hass, entry.entry_id, client_id)
+                if bool(cache.get("has_network_object")):
+                    new_entities.extend(
+                        _client_entities(
+                            client_instance,
+                            client_address,
+                            include_network=True,
+                        )
+                    )
         if new_entities:
             async_add_entities(new_entities)
 
