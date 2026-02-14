@@ -27,14 +27,12 @@ from homeassistant.helpers.event import async_track_state_change_event, async_tr
 from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
 
 from .const import (
+    client_display_name,
     client_iam_signal,
     CONF_ADDRESS,
-    CONF_DEVICE_DESCRIPTION,
-    CONF_DEVICE_NAME,
     CONF_INSTANCE,
-    DEFAULT_BACNET_DEVICE_DESCRIPTION,
-    DEFAULT_BACNET_OBJECT_NAME,
     DOMAIN,
+    hub_display_name,
     mirrored_state_attributes,
     published_entity_id,
     published_suggested_object_id,
@@ -542,7 +540,7 @@ async def _read_client_runtime(
         "device": device_data,
         "network": network_data,
         "network_port_instance": network_port_instance,
-        "name": object_name or f"BACnet Client {instance}",
+        "name": client_display_name(instance, object_name),
     }
 
 
@@ -625,7 +623,7 @@ def _client_offline_payload(
             "client_address": address,
         },
         "network_port_instance": int(network_port_instance_hint or 1),
-        "name": f"BACnet Client {instance}",
+        "name": client_display_name(instance, None),
     }
 
 
@@ -701,7 +699,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     merged = {**(entry.data or {}), **(entry.options or {})}
     hub_instance = merged.get(CONF_INSTANCE, 0)
     hub_address = merged.get(CONF_ADDRESS, "")
-    hub_name = str(merged.get(CONF_DEVICE_NAME) or DEFAULT_BACNET_OBJECT_NAME)
+    hub_name = hub_display_name(hub_instance)
 
     hub_entities: List[SensorEntity] = []
 
@@ -1004,7 +1002,7 @@ class BacnetPublishedSensor(SensorEntity):
         )
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry_id)},
-            name=hub_name or DEFAULT_BACNET_OBJECT_NAME,
+            name=hub_name,
             manufacturer="magliaral",
             model="BACnet Hub",
         )
@@ -1175,7 +1173,7 @@ class BacnetHubDetailSensor(SensorEntity):
         )
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry_id)},
-            name=str(self._merged.get(CONF_DEVICE_NAME) or DEFAULT_BACNET_OBJECT_NAME),
+            name=hub_display_name(self._merged.get(CONF_INSTANCE)),
             manufacturer="magliaral",
             model="BACnet Hub",
         )
@@ -1242,7 +1240,7 @@ class BacnetClientDetailSensor(SensorEntity):
         self._device_info_cache = DeviceInfo(
             identifiers={(DOMAIN, client_id)},
             via_device=(DOMAIN, entry_id),
-            name=f"BACnet Client",
+            name=client_display_name(self._client_instance),
         )
 
     @property
@@ -1267,16 +1265,17 @@ class BacnetClientDetailSensor(SensorEntity):
     def _handle_client_update(self) -> None:
         cache = _client_cache_get(self.hass, self._entry_id, self._client_id)
         data = dict(cache.get(self._source, {}) or {})
+        device_data = dict(cache.get("device", {}) or {})
         self._attr_native_value = _to_state(data.get(self._key))
 
         self._device_info_cache = DeviceInfo(
             identifiers={(DOMAIN, self._client_id)},
             via_device=(DOMAIN, self._entry_id),
-            name=str(cache.get("name") or "BACnet Client"),
-            manufacturer=_safe_text(data.get("vendor_name")),
-            model=_safe_text(data.get("model_name")),
-            sw_version=_safe_text(data.get("firmware_revision")),
-            hw_version=_safe_text(data.get("hardware_revision")),
-            serial_number=_safe_text(data.get("serial_number")),
+            name=str(cache.get("name") or client_display_name(self._client_instance)),
+            manufacturer=_safe_text(device_data.get("vendor_name")),
+            model=_safe_text(device_data.get("model_name")),
+            sw_version=_safe_text(device_data.get("firmware_revision")),
+            hw_version=_safe_text(device_data.get("hardware_revision")),
+            serial_number=_safe_text(device_data.get("serial_number")),
         )
         self.async_write_ha_state()

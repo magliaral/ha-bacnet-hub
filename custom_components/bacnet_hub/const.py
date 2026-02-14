@@ -89,10 +89,16 @@ def published_suggested_object_id(
     hub_instance: Any | None = None,
 ) -> str:
     # Entity object IDs must be underscore-safe; HA entity_id does not keep hyphens.
-    type_slug = object_type_slug(object_type).replace("-", "_")
+    object_type_key = str(object_type or "").strip()
+    if object_type_key == "analogValue":
+        point_slug = "av"
+    elif object_type_key == "binaryValue":
+        point_slug = "bv"
+    else:
+        point_slug = object_type_slug(object_type_key).replace("-", "_")
     hub_inst = _as_int(hub_instance, 0)
     inst = _as_int(object_instance, 0)
-    return f"bacnet_doi_{hub_inst}_{type_slug}_{inst}"
+    return f"bacnet_doi_{hub_inst}_{point_slug}_{inst}"
 
 
 def published_entity_id(
@@ -113,6 +119,18 @@ def mirrored_state_attributes(attrs: dict[str, Any]) -> dict[str, Any]:
         for key, value in (attrs or {}).items()
         if key not in MIRRORED_STATE_ATTRIBUTE_EXCLUDE
     }
+
+
+def hub_display_name(instance: Any) -> str:
+    return f"BACnet Hub {_as_int(instance, 0)}"
+
+
+def client_display_name(instance: Any, object_name: Any | None = None) -> str:
+    inst = _as_int(instance, 0)
+    name = str(object_name or "").strip()
+    if name:
+        return f"{name} ({inst})"
+    return f"BACnet Client {inst}"
 
 
 def client_iam_signal(entry_id: str) -> str:
