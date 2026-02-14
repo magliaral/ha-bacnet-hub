@@ -28,6 +28,7 @@ from .sensor_helpers import (
     CLIENT_COV_LEASE_SECONDS,
     NETWORK_DIAGNOSTIC_KEYS,
     _client_cache_get,
+    _client_cov_signal,
     _client_diag_signal,
     _client_points_get,
     _client_points_set,
@@ -375,7 +376,8 @@ class BacnetClientPointSensor(SensorEntity):
         self._client_id = client_id
         self._client_instance = int(client_instance)
         self._point_key = str(point_key)
-        self._unsub_dispatcher: Callable[[], None] | None = None
+        self._unsub_points_dispatcher: Callable[[], None] | None = None
+        self._unsub_cov_dispatcher: Callable[[], None] | None = None
         self._cov_context: Any | None = None
         self._cov_task: asyncio.Task | None = None
         self._cov_registered = False
@@ -411,19 +413,28 @@ class BacnetClientPointSensor(SensorEntity):
 
     async def async_added_to_hass(self) -> None:
         signal = _client_points_signal(self._entry_id, self._client_id)
-        self._unsub_dispatcher = async_dispatcher_connect(
+        self._unsub_points_dispatcher = async_dispatcher_connect(
             self.hass,
             signal,
             self._handle_points_update,
+        )
+        cov_signal = _client_cov_signal(self._entry_id, self._client_id)
+        self._unsub_cov_dispatcher = async_dispatcher_connect(
+            self.hass,
+            cov_signal,
+            self._handle_cov_reregister,
         )
         self._handle_points_update()
         await self._async_register_cov()
         self._handle_points_update()
 
     async def async_will_remove_from_hass(self) -> None:
-        if self._unsub_dispatcher is not None:
-            self._unsub_dispatcher()
-            self._unsub_dispatcher = None
+        if self._unsub_points_dispatcher is not None:
+            self._unsub_points_dispatcher()
+            self._unsub_points_dispatcher = None
+        if self._unsub_cov_dispatcher is not None:
+            self._unsub_cov_dispatcher()
+            self._unsub_cov_dispatcher = None
         if self._cov_task is not None and not self._cov_task.done():
             self._cov_task.cancel()
             try:
@@ -440,6 +451,10 @@ class BacnetClientPointSensor(SensorEntity):
                 pass
         self._cov_context = None
         self._cov_registered = False
+
+    @callback
+    def _handle_cov_reregister(self) -> None:
+        self.hass.async_create_task(self._async_register_cov())
 
     async def _async_register_cov(self) -> None:
         point = _client_points_get(self.hass, self._entry_id, self._client_id).get(self._point_key, {})

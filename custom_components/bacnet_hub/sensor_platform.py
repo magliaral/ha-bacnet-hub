@@ -26,6 +26,7 @@ from .sensor_helpers import (
     HUB_DIAGNOSTIC_SCAN_INTERVAL,
     NETWORK_DIAGNOSTIC_KEYS,
     _client_cache_get,
+    _client_cov_signal,
     _client_diag_signal,
     _client_id,
     _client_points_get,
@@ -220,6 +221,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         async_dispatcher_send(hass, _client_points_signal(entry.entry_id, client_id))
         return _client_point_entities(instance, client_id, _client_points_get(hass, entry.entry_id, client_id))
 
+    def _update_client_point_addresses(client_id: str, client_address: str) -> None:
+        address = str(client_address or "").strip()
+        if not address:
+            return
+        point_cache = _client_points_get(hass, entry.entry_id, client_id)
+        if not point_cache:
+            return
+
+        updated_payload: dict[str, dict[str, Any]] = {}
+        for point_key, raw_point in point_cache.items():
+            point = dict(raw_point or {})
+            if str(point.get("client_address") or "").strip() == address:
+                continue
+            point["client_address"] = address
+            updated_payload[str(point_key)] = point
+
+        if not updated_payload:
+            return
+        _client_points_set(hass, entry.entry_id, client_id, updated_payload)
+        async_dispatcher_send(hass, _client_points_signal(entry.entry_id, client_id))
+
     async def _process_client_iam(client_instance: int, client_address: str) -> None:
         instance = int(client_instance)
         address = str(client_address or "").strip()
@@ -266,8 +288,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 exc_info=True,
             )
 
+        _update_client_point_addresses(client_id, latest_address)
         if new_entities:
             async_add_entities(new_entities)
+        async_dispatcher_send(hass, _client_cov_signal(entry.entry_id, client_id))
 
     @callback
     def _on_client_iam(payload: dict[str, Any] | None = None) -> None:

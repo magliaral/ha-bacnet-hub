@@ -208,6 +208,10 @@ def _client_points_signal(entry_id: str, client_id: str) -> str:
     return f"{DOMAIN}_client_points_{entry_id}_{client_id}"
 
 
+def _client_cov_signal(entry_id: str, client_id: str) -> str:
+    return f"{DOMAIN}_client_cov_{entry_id}_{client_id}"
+
+
 def _diag_field_slug(key: str) -> str:
     text = str(key or "").strip().lower()
     if text == "mac_address_raw":
@@ -483,5 +487,4 @@ def _property_slug(value: Any) -> str:
     if "." in text:
         text = text.split(".")[-1]
     return re.sub(r"[^a-z0-9]+", "", text)
-
 
