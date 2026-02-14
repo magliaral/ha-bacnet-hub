@@ -230,6 +230,10 @@ def _client_diag_signal(entry_id: str, client_id: str) -> str:
     return f"{DOMAIN}_client_diag_{entry_id}_{client_id}"
 
 
+def _hub_diag_signal(entry_id: str) -> str:
+    return f"{DOMAIN}_hub_diag_{entry_id}"
+
+
 def _client_cache_root(hass: HomeAssistant) -> dict[str, dict[str, dict[str, Any]]]:
     root = hass.data.setdefault(DOMAIN, {})
     return root.setdefault("client_diag_cache", {})
@@ -386,7 +390,9 @@ async def _read_client_runtime(
     async def read_device(prop: str) -> Any:
         try:
             return await _read_remote_property(app, address, device_obj, prop)
-        except Exception:
+        except asyncio.CancelledError:
+            raise
+        except BaseException:
             return None
 
     async def read_network(prop: str, inst: int) -> Any:
@@ -397,7 +403,9 @@ async def _read_client_runtime(
                 [f"network-port,{inst}", f"networkPort,{inst}"],
                 prop,
             )
-        except Exception:
+        except asyncio.CancelledError:
+            raise
+        except BaseException:
             return None
 
     # Fast probe: if device cannot even answer a basic property,
@@ -466,7 +474,9 @@ async def _read_client_runtime(
                     if inst is not None:
                         network_port_instance = int(inst)
                         break
-        except Exception:
+        except asyncio.CancelledError:
+            raise
+        except BaseException:
             pass
         net_object_identifier = await read_network("objectIdentifier", network_port_instance)
 
@@ -647,7 +657,9 @@ async def _refresh_client_cache(
                     resolved_address,
                     network_port_instance_hint=hint,
                 )
-            except Exception:
+            except asyncio.CancelledError:
+                raise
+            except BaseException:
                 _LOGGER.debug(
                     "Client runtime read failed for %s (%s)",
                     client_instance,
@@ -867,6 +879,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             )
         )
     async_add_entities(entities)
+
+    def _schedule_hub_diag_refresh(_now) -> None:
+        async_dispatcher_send(hass, _hub_diag_signal(entry.entry_id))
+
+    unsub_hub_diag = async_track_time_interval(
+        hass,
+        _schedule_hub_diag_refresh,
+        HUB_DIAGNOSTIC_SCAN_INTERVAL,
+    )
+    entry.async_on_unload(unsub_hub_diag)
+    async_dispatcher_send(hass, _hub_diag_signal(entry.entry_id))
+
     async def _initial_client_refresh() -> None:
         await asyncio.sleep(5)
         await _refresh_all_clients()
@@ -1116,11 +1140,10 @@ class BacnetHubInfoSensor(SensorEntity):
 
 
 class BacnetHubDetailSensor(SensorEntity):
-    _attr_should_poll = True
+    _attr_should_poll = False
     _attr_has_entity_name = True
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_icon = "mdi:information-outline"
-    SCAN_INTERVAL = HUB_DIAGNOSTIC_SCAN_INTERVAL
 
     def __init__(
         self,
@@ -1142,9 +1165,28 @@ class BacnetHubDetailSensor(SensorEntity):
             manufacturer="magliaral",
             model="BACnet Hub",
         )
+        self._unsub_dispatcher: Callable[[], None] | None = None
 
     def _server(self) -> Any:
         return (self.hass.data.get(DOMAIN, {}).get("servers", {}) or {}).get(self._entry_id)
+
+    async def async_added_to_hass(self) -> None:
+        signal = _hub_diag_signal(self._entry_id)
+        self._unsub_dispatcher = async_dispatcher_connect(
+            self.hass,
+            signal,
+            self._handle_hub_update,
+        )
+        self._handle_hub_update()
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._unsub_dispatcher is not None:
+            self._unsub_dispatcher()
+            self._unsub_dispatcher = None
+
+    @callback
+    def _handle_hub_update(self) -> None:
+        self.async_write_ha_state()
 
     @property
     def native_value(self) -> StateType:
