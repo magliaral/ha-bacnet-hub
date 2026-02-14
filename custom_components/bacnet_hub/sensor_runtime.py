@@ -162,7 +162,6 @@ async def _read_client_object_list(
     if not list_len or list_len <= 0:
         return object_list
 
-    unknown_type_logged: set[str] = set()
     for idx in range(1, min(list_len, CLIENT_POINT_SCAN_LIMIT) + 1):
         try:
             item = await _read_remote_property(
@@ -183,10 +182,6 @@ async def _read_client_object_list(
         item_type, inst = parsed
         type_info = _supported_point_type(item_type)
         if not type_info or inst is None:
-            raw_type = str(item_type or "").strip()
-            if raw_type and raw_type not in unknown_type_logged:
-                unknown_type_logged.add(raw_type)
-                _LOGGER.debug("Unsupported client object type in objectList: %s", raw_type)
             continue
         canonical_type = type_info[1]
         object_list.append((canonical_type, int(inst)))
