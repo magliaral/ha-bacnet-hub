@@ -25,7 +25,6 @@ from homeassistant.const import (
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.event import async_track_state_change_event, async_track_time_interval
 from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
-from homeassistant.helpers import entity_registry as er
 
 from .const import (
     CONF_ADDRESS,
@@ -56,7 +55,6 @@ HUB_DIAGNOSTIC_FIELDS: list[tuple[str, str]] = [
     ("ip_subnet_mask", "IP subnet mask"),
     ("mac_address_raw", "MAC address"),
 ]
-DIAGNOSTIC_REFRESH_DELAY_SECONDS = 2.0
 HUB_DIAGNOSTIC_SCAN_INTERVAL = timedelta(seconds=60)
 CLIENT_DISCOVERY_TIMEOUT_SECONDS = 3.0
 CLIENT_READ_TIMEOUT_SECONDS = 2.5
@@ -216,12 +214,6 @@ def _to_ipv4_text(value: Any) -> str | None:
     return None
 
 
-def _addr_slug(value: Any) -> str:
-    text = str(value or "").strip().lower()
-    text = re.sub(r"[^a-z0-9]+", "_", text).strip("_")
-    return text or "unknown"
-
-
 def _client_id(instance: int) -> str:
     return f"client_{int(instance)}"
 
@@ -232,6 +224,21 @@ def _client_diag_signal(entry_id: str, client_id: str) -> str:
 
 def _hub_diag_signal(entry_id: str) -> str:
     return f"{DOMAIN}_hub_diag_{entry_id}"
+
+
+def _diag_field_slug(key: str) -> str:
+    text = str(key or "").strip().lower()
+    if text == "mac_address_raw":
+        return "mac_address"
+    return re.sub(r"[^a-z0-9_]+", "_", text).strip("_") or "value"
+
+
+def _doi_entity_id(instance: int | str | None, field_key: str, *, network: bool) -> str:
+    inst = _to_int(instance)
+    if inst is None:
+        inst = 0
+    prefix = "net_" if network else ""
+    return f"sensor.bacnet_doi_{int(inst)}_{prefix}{_diag_field_slug(field_key)}"
 
 
 def _client_cache_root(hass: HomeAssistant) -> dict[str, dict[str, dict[str, Any]]]:
@@ -695,33 +702,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     hub_name = str(merged.get(CONF_DEVICE_NAME) or DEFAULT_BACNET_OBJECT_NAME)
 
     entities: List[SensorEntity] = []
-    entity_registry = er.async_get(hass)
-
-    def _remove_unique_id(unique_id: str) -> None:
-        entity_id = entity_registry.async_get_entity_id("sensor", DOMAIN, unique_id)
-        if entity_id:
-            entity_registry.async_remove(entity_id)
-
-    # Remove legacy diagnostic entities no longer used.
-    _remove_unique_id(f"{entry.entry_id}-hub-information")
-    _remove_unique_id(f"{entry.entry_id}-hub-diagnostic-system_status_code")
-    for reg_entry in er.async_entries_for_config_entry(entity_registry, entry.entry_id):
-        unique_id = str(getattr(reg_entry, "unique_id", "") or "")
-        entity_id = getattr(reg_entry, "entity_id", None)
-        if not entity_id:
-            continue
-        if unique_id.endswith("-device-object") or unique_id.endswith("-network-object"):
-            entity_registry.async_remove(entity_id)
-            continue
-        if (
-            "-device-system_status_code" in unique_id
-            or "-network-system_status_code" in unique_id
-            or "-network-network_number" in unique_id
-            or "-network-network_port_instance" in unique_id
-            or "-network-network_port_object_identifier" in unique_id
-            or "-network-udp_port" in unique_id
-        ):
-            entity_registry.async_remove(entity_id)
 
     for key, label in HUB_DIAGNOSTIC_FIELDS:
         entities.append(
@@ -755,19 +735,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         client_network_port_hints.setdefault(client_id, 1)
         added_keys = client_added_field_keys.setdefault(client_id, set())
 
-        # Remove legacy client entities no longer used.
-        for legacy_unique_id in (
-            f"{entry.entry_id}-{client_id}-device-object",
-            f"{entry.entry_id}-{client_id}-network-object",
-            f"{entry.entry_id}-{client_id}-device-system_status_code",
-            f"{entry.entry_id}-{client_id}-network-network_number",
-            f"{entry.entry_id}-{client_id}-network-network_port_instance",
-            f"{entry.entry_id}-{client_id}-network-network_port_object_identifier",
-            f"{entry.entry_id}-{client_id}-network-udp_port",
-            f"{entry.entry_id}-{client_id}-diagnostics",
-        ):
-            _remove_unique_id(legacy_unique_id)
-
         client_entities: list[SensorEntity] = []
         for key, label in CLIENT_DIAGNOSTIC_FIELDS:
             source = "network" if key in NETWORK_DIAGNOSTIC_KEYS else "device"
@@ -781,6 +748,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                     hass=hass,
                     entry_id=entry.entry_id,
                     client_id=client_id,
+                    client_instance=client_instance,
                     key=key,
                     label=label,
                     source=source,
@@ -788,24 +756,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             )
             added_keys.add(field_key)
         return client_entities
-
-    # Remove old address-based client unique_ids and stale legacy keys.
-    for reg_entry in er.async_entries_for_config_entry(entity_registry, entry.entry_id):
-        unique_id = str(getattr(reg_entry, "unique_id", "") or "")
-        entity_id = getattr(reg_entry, "entity_id", None)
-        if not entity_id:
-            continue
-        if re.match(
-            rf"^{re.escape(entry.entry_id)}-client_\d+_[^-]+-",
-            unique_id,
-        ):
-            entity_registry.async_remove(entity_id)
-            continue
-        if re.match(
-            rf"^{re.escape(entry.entry_id)}-client_\d+-network-",
-            unique_id,
-        ):
-            entity_registry.async_remove(entity_id)
 
     try:
         discovered_clients = await asyncio.wait_for(
@@ -823,11 +773,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         known_client_instances.add(int(client_instance))
         for client_entity in _client_entities(client_instance, client_address, include_network=False):
             entities.append(client_entity)
-
-    # Remove legacy system_status_code entities that might remain in registry.
-    for client_id in list(client_targets.keys()):
-        _remove_unique_id(f"{entry.entry_id}-{client_id}-device-system_status_code")
-        _remove_unique_id(f"{entry.entry_id}-{client_id}-network-system_status_code")
 
     async def _refresh_known_clients() -> None:
         new_entities: list[SensorEntity] = []
@@ -900,6 +845,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     def _schedule_rescan(_now) -> None:
         hass.add_job(_scan_and_add_new_clients())
 
+    if entities:
+        async_add_entities(entities)
+
+    published_entities: list[SensorEntity] = []
     for m in published:
         if (m or {}).get("object_type") != "analogValue":
             continue
@@ -912,7 +861,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         units = m.get("units")
         friendly = m.get("friendly_name")
         name = f"(AV-{instance}) {friendly}"
-        entities.append(
+        published_entities.append(
             BacnetPublishedSensor(
                 hass=hass,
                 entry_id=entry.entry_id,
@@ -927,7 +876,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 configured_unit=units,
             )
         )
-    async_add_entities(entities)
+    if published_entities:
+        async_add_entities(published_entities)
 
     def _schedule_hub_diag_refresh(_now) -> None:
         async_dispatcher_send(hass, _hub_diag_signal(entry.entry_id))
@@ -1140,54 +1090,6 @@ class BacnetPublishedSensor(SensorEntity):
         self.async_write_ha_state()
 
 
-class BacnetHubInfoSensor(SensorEntity):
-    _attr_should_poll = False
-    _attr_has_entity_name = True
-    _attr_name = "Hub information"
-    _attr_icon = "mdi:server-network"
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-
-    def __init__(
-        self,
-        hass: HomeAssistant,
-        entry_id: str,
-        merged: Dict[str, Any],
-    ) -> None:
-        self.hass = hass
-        self._entry_id = entry_id
-        self._merged = dict(merged or {})
-        self._attr_unique_id = f"{entry_id}-hub-information"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry_id)},
-            name=str(self._merged.get(CONF_DEVICE_NAME) or DEFAULT_BACNET_OBJECT_NAME),
-            manufacturer="magliaral",
-            model="BACnet Hub",
-        )
-
-    def _server(self) -> Any:
-        return (self.hass.data.get(DOMAIN, {}).get("servers", {}) or {}).get(self._entry_id)
-
-    async def async_added_to_hass(self) -> None:
-        # Ensure diagnostics are refreshed once after startup/reload.
-        self.async_write_ha_state()
-
-        async def _late_refresh() -> None:
-            await asyncio.sleep(DIAGNOSTIC_REFRESH_DELAY_SECONDS)
-            self.async_write_ha_state()
-
-        self.hass.async_create_task(_late_refresh())
-
-    @property
-    def native_value(self) -> StateType:
-        server = self._server()
-        return "running" if server and getattr(server, "app", None) else "stopped"
-
-    @property
-    def extra_state_attributes(self) -> Dict[str, Any]:
-        server = self._server()
-        return _hub_diagnostics(server, self._merged)
-
-
 class BacnetHubDetailSensor(SensorEntity):
     _attr_should_poll = False
     _attr_has_entity_name = True
@@ -1208,6 +1110,11 @@ class BacnetHubDetailSensor(SensorEntity):
         self._key = key
         self._attr_name = label
         self._attr_unique_id = f"{entry_id}-hub-diagnostic-{key}"
+        self.entity_id = _doi_entity_id(
+            _to_int(self._merged.get(CONF_INSTANCE)),
+            key,
+            network=(key in NETWORK_DIAGNOSTIC_KEYS),
+        )
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry_id)},
             name=str(self._merged.get(CONF_DEVICE_NAME) or DEFAULT_BACNET_OBJECT_NAME),
@@ -1243,120 +1150,6 @@ class BacnetHubDetailSensor(SensorEntity):
         return _to_state(diagnostics.get(self._key))
 
 
-class BacnetClientObjectSensor(SensorEntity):
-    _attr_should_poll = True
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_has_entity_name = True
-    SCAN_INTERVAL = CLIENT_SCAN_INTERVAL
-
-    def __init__(
-        self,
-        hass: HomeAssistant,
-        entry_id: str,
-        client_instance: int,
-        client_address: str,
-        object_kind: str,
-    ) -> None:
-        self.hass = hass
-        self._entry_id = entry_id
-        self._instance = int(client_instance)
-        self._address = str(client_address)
-        self._client_id = f"client_{self._instance}_{_addr_slug(self._address)}"
-        self._object_kind = "network" if object_kind == "network" else "device"
-        self._network_port_instance_hint = 1
-        self._attr_unique_id = f"{entry_id}-{self._client_id}-{self._object_kind}-object"
-        if self._object_kind == "device":
-            self._attr_name = "Device object"
-            self._attr_icon = "mdi:chip"
-        else:
-            self._attr_name = "Network object"
-            self._attr_icon = "mdi:network-pos"
-        self._attr_native_value: StateType = "offline"
-        self._attr_extra_state_attributes: Dict[str, Any] = {}
-        self._attr_available = True
-        self._device_info_cache = DeviceInfo(
-            identifiers={(DOMAIN, self._client_id)},
-            via_device=(DOMAIN, entry_id),
-            name=f"BACnet Client {self._instance}",
-            manufacturer=None,
-            model=None,
-        )
-
-    def _server(self) -> Any:
-        return (self.hass.data.get(DOMAIN, {}).get("servers", {}) or {}).get(self._entry_id)
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        return self._device_info_cache
-
-    async def async_added_to_hass(self) -> None:
-        self.async_write_ha_state()
-
-        async def _initial_refresh() -> None:
-            try:
-                await self.async_update()
-            except Exception:
-                self._attr_native_value = "offline"
-                self._attr_available = True
-            self.async_write_ha_state()
-
-        self.hass.async_create_task(_initial_refresh())
-
-    async def async_update(self) -> None:
-        server = self._server()
-        app = getattr(server, "app", None) if server is not None else None
-        if app is None:
-            self._attr_native_value = "offline"
-            self._attr_available = True
-            return
-
-        try:
-            data = await _read_client_runtime(
-                app,
-                self._instance,
-                self._address,
-                network_port_instance_hint=self._network_port_instance_hint,
-            )
-        except Exception:
-            data = {
-                "online": False,
-                "device": {
-                    "client_instance": self._instance,
-                    "client_address": self._address,
-                    "object_identifier": str(self._instance),
-                },
-                "network": {
-                    "client_instance": self._instance,
-                    "client_address": self._address,
-                    "network_port_instance": self._network_port_instance_hint,
-                },
-                "network_port_instance": self._network_port_instance_hint,
-                "name": f"BACnet Client {self._instance}",
-            }
-        self._network_port_instance_hint = int(data.get("network_port_instance") or 1)
-        _client_cache_set(self.hass, self._entry_id, self._client_id, data)
-        async_dispatcher_send(self.hass, _client_diag_signal(self._entry_id, self._client_id))
-
-        online = bool(data.get("online"))
-        self._attr_native_value = "online" if online else "offline"
-        self._attr_available = True
-        source_data = dict(data.get(self._object_kind, {}) or {})
-        source_data["client_instance"] = self._instance
-        source_data["client_address"] = self._address
-        self._attr_extra_state_attributes = source_data
-
-        self._device_info_cache = DeviceInfo(
-            identifiers={(DOMAIN, self._client_id)},
-            via_device=(DOMAIN, self._entry_id),
-            name=str(data.get("name") or f"BACnet Client {self._instance}"),
-            manufacturer=_safe_text(source_data.get("vendor_name")),
-            model=_safe_text(source_data.get("model_name")),
-            sw_version=_safe_text(source_data.get("firmware_revision")),
-            hw_version=_safe_text(source_data.get("hardware_revision")),
-            serial_number=_safe_text(source_data.get("serial_number")),
-        )
-
-
 class BacnetClientDetailSensor(SensorEntity):
     _attr_should_poll = False
     _attr_entity_category = EntityCategory.DIAGNOSTIC
@@ -1368,6 +1161,7 @@ class BacnetClientDetailSensor(SensorEntity):
         hass: HomeAssistant,
         entry_id: str,
         client_id: str,
+        client_instance: int,
         key: str,
         label: str,
         source: str,
@@ -1375,10 +1169,16 @@ class BacnetClientDetailSensor(SensorEntity):
         self.hass = hass
         self._entry_id = entry_id
         self._client_id = client_id
+        self._client_instance = int(client_instance)
         self._key = key
         self._source = "network" if source == "network" else "device"
         self._attr_name = label
         self._attr_unique_id = f"{entry_id}-{client_id}-{self._source}-{key}"
+        self.entity_id = _doi_entity_id(
+            self._client_instance,
+            key,
+            network=(self._source == "network"),
+        )
         self._attr_native_value: StateType = None
         self._unsub_dispatcher: Callable[[], None] | None = None
         self._device_info_cache = DeviceInfo(
