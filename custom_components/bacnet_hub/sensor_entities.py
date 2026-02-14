@@ -37,6 +37,7 @@ from .sensor_helpers import (
     _hub_diag_signal,
     _point_entity_id,
     _point_native_value_from_payload,
+    _normalize_bacnet_unit,
     _point_unique_id,
     _property_slug,
     _safe_text,
@@ -578,7 +579,7 @@ class BacnetClientPointSensor(SensorEntity):
             self._attr_name = description
         elif object_name:
             self._attr_name = object_name
-        self._attr_native_unit_of_measurement = _safe_text(point.get("unit"))
+        self._attr_native_unit_of_measurement = _normalize_bacnet_unit(point.get("unit"))
         self._attr_device_class = _sensor_device_class_from_unit(self._attr_native_unit_of_measurement)
         native_value = _point_native_value_from_payload(point)
         self._attr_state_class = None

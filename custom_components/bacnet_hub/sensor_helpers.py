@@ -389,14 +389,16 @@ def _object_identifier_compact(value: Any, fallback_type: str, fallback_instance
 
 
 def _normalize_bacnet_unit(value: Any) -> str | None:
-    raw = str(value or "").strip()
-    if not raw:
+    raw_text = str(value or "").strip()
+    if not raw_text:
         return None
-    norm = re.sub(r"[^a-z0-9]+", "", raw.lower())
+
+    norm = re.sub(r"[^a-z0-9]+", "", raw_text.lower())
     mapping = {
-        "degreescelsius": "Â°C",
-        "degreescelsius": "Â°C",
-        "degreesfahrenheit": "Â°F",
+        "degreescelsius": "\u00b0C",
+        "degreecelsius": "\u00b0C",
+        "degreesfahrenheit": "\u00b0F",
+        "degreefahrenheit": "\u00b0F",
         "percent": "%",
         "partspermillion": "ppm",
         "pascals": "Pa",
@@ -410,12 +412,19 @@ def _normalize_bacnet_unit(value: Any) -> str | None:
         "amperes": "A",
         "hertz": "Hz",
     }
-    return mapping.get(norm, raw)
+    if norm in mapping:
+        return mapping[norm]
+    if norm in {"c", "degc"}:
+        return "\u00b0C"
+    if norm in {"f", "degf"}:
+        return "\u00b0F"
+    return raw_text
 
 
 def _sensor_device_class_from_unit(unit: str | None) -> SensorDeviceClass | None:
-    u = str(unit or "").strip().lower()
-    if u in {"Â°c", "Â°f"}:
+    normalized = _normalize_bacnet_unit(unit)
+    u = str(normalized or "").strip().lower()
+    if u in {"\u00b0c", "\u00b0f"}:
         return SensorDeviceClass.TEMPERATURE
     if u in {"w", "kw"}:
         return SensorDeviceClass.POWER
@@ -438,7 +447,10 @@ def _point_native_value_from_payload(point: dict[str, Any]) -> StateType:
     type_slug = str(point.get("type_slug") or "")
     if type_slug in {"ai", "av"}:
         try:
-            return float(value)
+            rounded = round(float(value), 3)
+            if rounded == -0.0:
+                rounded = 0.0
+            return rounded
         except Exception:
             pass
     if type_slug == "bv":
@@ -471,3 +483,5 @@ def _property_slug(value: Any) -> str:
     if "." in text:
         text = text.split(".")[-1]
     return re.sub(r"[^a-z0-9]+", "", text)
+
+
