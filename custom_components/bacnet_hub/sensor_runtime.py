@@ -41,6 +41,16 @@ from .sensor_helpers import (
 _LOGGER = logging.getLogger(__name__)
 
 
+def _merge_non_none(previous: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(previous or {})
+    for key, value in dict(current or {}).items():
+        if value is not None:
+            merged[key] = value
+        elif key not in merged:
+            merged[key] = None
+    return merged
+
+
 async def _read_remote_property(
     app: Any,
     address: str,
@@ -607,18 +617,27 @@ async def _refresh_client_cache(
                 )
                 data = _client_offline_payload(client_instance, resolved_address, hint)
                 if previous_device:
-                    merged_device = dict(data.get("device", {}) or {})
-                    for key, value in previous_device.items():
-                        if value is not None:
-                            merged_device[key] = value
-                    data["device"] = merged_device
+                    data["device"] = _merge_non_none(previous_device, dict(data.get("device", {}) or {}))
                 if previous_network:
-                    merged_network = dict(data.get("network", {}) or {})
-                    for key, value in previous_network.items():
-                        if value is not None:
-                            merged_network[key] = value
-                    data["network"] = merged_network
+                    data["network"] = _merge_non_none(previous_network, dict(data.get("network", {}) or {}))
                 if previous_name:
+                    data["name"] = previous_name
+                data["has_device_object"] = bool(
+                    data.get("has_device_object")
+                    or previous_device.get("object_identifier")
+                )
+                data["has_network_object"] = bool(
+                    data.get("has_network_object")
+                    or previous_network.get("ip_address")
+                    or previous_network.get("ip_subnet_mask")
+                    or previous_network.get("mac_address_raw")
+                )
+            else:
+                if previous_device:
+                    data["device"] = _merge_non_none(previous_device, dict(data.get("device", {}) or {}))
+                if previous_network:
+                    data["network"] = _merge_non_none(previous_network, dict(data.get("network", {}) or {}))
+                if previous_name and not _safe_text(data.get("name")):
                     data["name"] = previous_name
                 data["has_device_object"] = bool(
                     data.get("has_device_object")

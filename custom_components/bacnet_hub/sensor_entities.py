@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, Callable, Dict, Optional
 
 from bacpypes3.pdu import Address
@@ -382,6 +383,9 @@ class BacnetClientPointSensor(SensorEntity):
         self._cov_task: asyncio.Task | None = None
         self._cov_lock = asyncio.Lock()
         self._cov_registered = False
+        self._cov_last_target: tuple[str, str] | None = None
+        self._cov_retry_delay_seconds: float = 10.0
+        self._cov_retry_not_before_ts: float = 0.0
         self._attr_native_value: StateType = None
         self._attr_native_unit_of_measurement: str | None = None
         self._attr_device_class: SensorDeviceClass | None = None
@@ -479,6 +483,14 @@ class BacnetClientPointSensor(SensorEntity):
         address = _safe_text(point.get("client_address"))
         if not object_identifier or not address:
             return
+        now = time.monotonic()
+        target = (str(address), str(object_identifier))
+        if self._cov_last_target != target:
+            self._cov_last_target = target
+            self._cov_retry_not_before_ts = 0.0
+            self._cov_retry_delay_seconds = 10.0
+        if now < self._cov_retry_not_before_ts:
+            return
 
         server = self.hass.data.get(DOMAIN, {}).get("servers", {}).get(self._entry_id)
         app = getattr(server, "app", None) if server is not None else None
@@ -523,9 +535,13 @@ class BacnetClientPointSensor(SensorEntity):
                     address,
                     exc_info=exc_info,
                 )
+                self._cov_retry_not_before_ts = time.monotonic() + self._cov_retry_delay_seconds
+                self._cov_retry_delay_seconds = min(self._cov_retry_delay_seconds * 2.0, 300.0)
                 return
 
             self._cov_registered = True
+            self._cov_retry_not_before_ts = 0.0
+            self._cov_retry_delay_seconds = 10.0
             self._cov_task = self.hass.async_create_task(self._async_cov_receive_loop())
 
     async def _async_cov_receive_loop(self) -> None:

@@ -250,6 +250,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             return
 
         new_entities: list[SensorEntity] = []
+        imported_point_entities_count = 0
         if instance not in known_client_instances:
             known_client_instances.add(instance)
             new_entities.extend(_client_entities(instance, address, include_network=False))
@@ -272,13 +273,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         if bool(cache.get("has_network_object")):
             new_entities.extend(_client_entities(instance, latest_address, include_network=True))
         try:
-            new_entities.extend(
-                await _import_client_points(
-                    instance,
-                    latest_address,
-                    only_new=True,
-                )
+            imported_point_entities = await _import_client_points(
+                instance,
+                latest_address,
+                only_new=True,
             )
+            imported_point_entities_count = len(imported_point_entities)
+            new_entities.extend(imported_point_entities)
         except asyncio.CancelledError:
             raise
         except BaseException:
@@ -289,10 +290,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 exc_info=True,
             )
 
-        _update_client_point_addresses(client_id, latest_address)
+        changed_address = _update_client_point_addresses(client_id, latest_address)
         if new_entities:
             async_add_entities(new_entities)
-        async_dispatcher_send(hass, _client_cov_signal(entry.entry_id, client_id))
+        if changed_address or imported_point_entities_count > 0:
+            async_dispatcher_send(hass, _client_cov_signal(entry.entry_id, client_id))
 
     @callback
     def _on_client_iam(payload: dict[str, Any] | None = None) -> None:
