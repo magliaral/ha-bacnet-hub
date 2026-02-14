@@ -380,6 +380,7 @@ class BacnetClientPointSensor(SensorEntity):
         self._unsub_cov_dispatcher: Callable[[], None] | None = None
         self._cov_context: Any | None = None
         self._cov_task: asyncio.Task | None = None
+        self._cov_lock = asyncio.Lock()
         self._cov_registered = False
         self._attr_native_value: StateType = None
         self._attr_native_unit_of_measurement: str | None = None
@@ -435,26 +436,42 @@ class BacnetClientPointSensor(SensorEntity):
         if self._unsub_cov_dispatcher is not None:
             self._unsub_cov_dispatcher()
             self._unsub_cov_dispatcher = None
+        async with self._cov_lock:
+            await self._async_stop_cov_runtime()
+
+    @callback
+    def _handle_cov_reregister(self) -> None:
+        self.hass.async_create_task(self._async_reregister_cov())
+
+    async def _async_reregister_cov(self) -> None:
+        try:
+            await self._async_register_cov()
+        except asyncio.CancelledError:
+            raise
+        except BaseException:
+            _LOGGER.debug(
+                "COV re-register failed for %s",
+                self._point_key,
+                exc_info=True,
+            )
+
+    async def _async_stop_cov_runtime(self) -> None:
         if self._cov_task is not None and not self._cov_task.done():
             self._cov_task.cancel()
             try:
                 await self._cov_task
             except asyncio.CancelledError:
                 pass
-            except Exception:
+            except BaseException:
                 pass
         self._cov_task = None
         if self._cov_context is not None:
             try:
                 await self._cov_context.__aexit__(None, None, None)
-            except Exception:
+            except BaseException:
                 pass
         self._cov_context = None
         self._cov_registered = False
-
-    @callback
-    def _handle_cov_reregister(self) -> None:
-        self.hass.async_create_task(self._async_register_cov())
 
     async def _async_register_cov(self) -> None:
         point = _client_points_get(self.hass, self._entry_id, self._client_id).get(self._point_key, {})
@@ -474,35 +491,40 @@ class BacnetClientPointSensor(SensorEntity):
             return
 
         process_id = _cov_process_identifier(self._entry_id, self._client_id, self._point_key)
-        if self._cov_context is not None:
-            try:
-                await self._cov_context.__aexit__(None, None, None)
-            except Exception:
-                pass
-            self._cov_context = None
+        async with self._cov_lock:
+            await self._async_stop_cov_runtime()
 
-        try:
-            context = cov_factory(
-                Address(address),
-                ObjectIdentifier(object_identifier),
-                subscriber_process_identifier=process_id,
-                issue_confirmed_notifications=False,
-                lifetime=CLIENT_COV_LEASE_SECONDS,
-            )
-            self._cov_context = await context.__aenter__()
-        except Exception:
-            self._cov_context = None
-            self._cov_registered = False
-            _LOGGER.debug(
-                "COV subscribe failed for %s (%s)",
-                object_identifier,
-                address,
-                exc_info=True,
-            )
-            return
+            last_err: BaseException | None = None
+            for offset in range(0, 3):
+                try:
+                    context = cov_factory(
+                        Address(address),
+                        ObjectIdentifier(object_identifier),
+                        subscriber_process_identifier=((process_id + offset - 1) % 4194303) + 1,
+                        issue_confirmed_notifications=False,
+                        lifetime=CLIENT_COV_LEASE_SECONDS,
+                    )
+                    self._cov_context = await context.__aenter__()
+                    last_err = None
+                    break
+                except BaseException as err:
+                    self._cov_context = None
+                    self._cov_registered = False
+                    last_err = err
+                    # Can happen during reload overlap when old context still exists.
+                    if isinstance(err, ValueError) and "existing context" in str(err).lower():
+                        continue
+                    break
+            if last_err is not None:
+                _LOGGER.debug(
+                    "COV subscribe failed for %s (%s)",
+                    object_identifier,
+                    address,
+                    exc_info=True,
+                )
+                return
 
-        self._cov_registered = True
-        if self._cov_task is None or self._cov_task.done():
+            self._cov_registered = True
             self._cov_task = self.hass.async_create_task(self._async_cov_receive_loop())
 
     async def _async_cov_receive_loop(self) -> None:
@@ -514,7 +536,7 @@ class BacnetClientPointSensor(SensorEntity):
                 prop, value = await context.get_value()
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except BaseException:
                 self._cov_registered = False
                 self._handle_points_update()
                 _LOGGER.debug(
