@@ -113,3 +113,7 @@ def mirrored_state_attributes(attrs: dict[str, Any]) -> dict[str, Any]:
         for key, value in (attrs or {}).items()
         if key not in MIRRORED_STATE_ATTRIBUTE_EXCLUDE
     }
+
+
+def client_iam_signal(entry_id: str) -> str:
+    return f"{DOMAIN}_client_iam_{entry_id}"

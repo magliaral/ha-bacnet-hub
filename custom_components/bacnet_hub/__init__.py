@@ -895,7 +895,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _late_sync)
 
-    server = BacnetHubServer(hass, merged_config)
+    server = BacnetHubServer(hass, merged_config, entry_id=entry.entry_id)
     lock = locks.setdefault(entry.entry_id, asyncio.Lock())
 
     async with lock:

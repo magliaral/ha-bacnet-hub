@@ -6,6 +6,7 @@ import ipaddress
 import logging
 import re
 import socket
+import time
 from typing import Any, Dict, Iterable, Optional
 
 from bacpypes3.app import Application
@@ -20,6 +21,7 @@ from bacpypes3.pdu import Address
 from bacpypes3.service.device import WhoIsIAmServices
 from bacpypes3.service.object import ReadWritePropertyServices
 from bacpypes3.service.cov import ChangeOfValueServices
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from .helpers.versions import get_integration_version, get_bacpypes3_version
 from .publisher import BacnetPublisher
@@ -29,6 +31,7 @@ from .const import (
     DEFAULT_BACNET_DEVICE_DESCRIPTION,
     DEFAULT_BACNET_OBJECT_NAME,
     DOMAIN,
+    client_iam_signal,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -190,6 +193,34 @@ class HubApp(
     def __init__(self, *args, publisher: Optional[BacnetPublisher] = None, **kwargs):
         super().__init__(*args, **kwargs)
         self.publisher: Optional[BacnetPublisher] = publisher
+        self.on_i_am: Any = None
+        self.local_device_instance: int | None = None
+
+    async def do_IAmRequest(self, apdu: IAmRequest):
+        parent_handler = getattr(super(), "do_IAmRequest", None)
+        if callable(parent_handler):
+            await parent_handler(apdu)
+
+        try:
+            dev_ident = getattr(apdu, "iAmDeviceIdentifier", None)
+            if not (isinstance(dev_ident, tuple) and len(dev_ident) == 2):
+                return
+            instance = int(dev_ident[1])
+            source = str(getattr(apdu, "pduSource", "") or "").strip()
+            if not source:
+                return
+            if self.local_device_instance is not None and instance == int(self.local_device_instance):
+                return
+            callback = self.on_i_am
+            if callback is None:
+                return
+            result = callback(instance, source)
+            if asyncio.iscoroutine(result):
+                await result
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _LOGGER.debug("I-Am hook failed", exc_info=True)
 
     async def do_WritePropertyRequest(self, apdu: WritePropertyRequest):
         """
@@ -292,9 +323,10 @@ class HubApp(
 class BacnetHubServer:
     """Starts HubApp + Publisher. Uses standard services (incl. COV)."""
 
-    def __init__(self, hass, merged_config: Dict[str, Any]) -> None:
+    def __init__(self, hass, merged_config: Dict[str, Any], *, entry_id: str) -> None:
         self.hass = hass
         self.cfg = merged_config or {}
+        self.entry_id = str(entry_id)
 
         self.address_str: str = _normalize_address(str(self.cfg.get("address") or ""))
         self.network_number: Optional[int] = int(self.cfg.get("network_number", 1))
@@ -337,6 +369,7 @@ class BacnetHubServer:
         # Debug
         self.debug_bacpypes: bool = bool(self.cfg.get("debug_bacpypes", True))
         self.kick_iam: bool = bool(self.cfg.get("kick_iam", True))
+        self.iam_event_min_seconds: float = float(self.cfg.get("iam_event_min_seconds", 10.0))
 
         # Mapping list
         self.published = list(self.cfg.get("published") or [])
@@ -347,6 +380,7 @@ class BacnetHubServer:
         self.device_object: Any | None = None
         self.network_port_object: Any | None = None
         self._kick_iam_task: asyncio.Task | None = None
+        self._iam_last_seen: dict[tuple[int, str], float] = {}
 
     async def start(self) -> None:
         if self.debug_bacpypes:
@@ -430,6 +464,8 @@ class BacnetHubServer:
 
         # --- Create application (with services incl. COV) ---
         self.app = HubApp.from_object_list([device_object, network_port_object])
+        self.app.local_device_instance = int(self.instance)
+        self.app.on_i_am = self._on_remote_i_am
 
         _LOGGER.info("BACnet Hub started on %s", self.address_str)
 
@@ -468,6 +504,25 @@ class BacnetHubServer:
         except Exception as e:
             _LOGGER.debug("I-Am failed: %s", e, exc_info=True)
 
+    async def _on_remote_i_am(self, instance: int, source: str) -> None:
+        remote_instance = int(instance)
+        address = str(source or "").strip()
+        if not address or remote_instance == int(self.instance):
+            return
+
+        now = time.monotonic()
+        key = (remote_instance, address)
+        last_seen = float(self._iam_last_seen.get(key) or 0.0)
+        if (now - last_seen) < self.iam_event_min_seconds:
+            return
+        self._iam_last_seen[key] = now
+
+        async_dispatcher_send(
+            self.hass,
+            client_iam_signal(self.entry_id),
+            {"instance": remote_instance, "address": address},
+        )
+
     async def stop(self) -> None:
         if self._kick_iam_task and not self._kick_iam_task.done():
             self._kick_iam_task.cancel()
@@ -478,6 +533,7 @@ class BacnetHubServer:
             except Exception:
                 _LOGGER.debug("Kick I-Am task stop failed", exc_info=True)
         self._kick_iam_task = None
+        self._iam_last_seen.clear()
 
         if self.publisher:
             try:

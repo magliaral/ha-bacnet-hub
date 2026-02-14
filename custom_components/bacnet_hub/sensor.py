@@ -27,6 +27,7 @@ from homeassistant.helpers.event import async_track_state_change_event, async_tr
 from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
 
 from .const import (
+    client_iam_signal,
     CONF_ADDRESS,
     CONF_DEVICE_DESCRIPTION,
     CONF_DEVICE_NAME,
@@ -636,11 +637,12 @@ async def _refresh_client_cache(
     client_address: str,
     network_port_hints: dict[str, int],
     client_targets: dict[str, tuple[int, str]] | None = None,
+    force: bool = False,
 ) -> None:
     cache = _client_cache_get(hass, entry_id, client_id)
     now = time.monotonic()
     last_refresh = float(cache.get("_last_refresh_ts") or 0.0)
-    if (now - last_refresh) < CLIENT_REFRESH_MIN_SECONDS:
+    if not force and (now - last_refresh) < CLIENT_REFRESH_MIN_SECONDS:
         return
 
     lock = _client_lock_get(hass, entry_id, client_id)
@@ -648,7 +650,7 @@ async def _refresh_client_cache(
         cache = _client_cache_get(hass, entry_id, client_id)
         now = time.monotonic()
         last_refresh = float(cache.get("_last_refresh_ts") or 0.0)
-        if (now - last_refresh) < CLIENT_REFRESH_MIN_SECONDS:
+        if not force and (now - last_refresh) < CLIENT_REFRESH_MIN_SECONDS:
             return
 
         server = hass.data.get(DOMAIN, {}).get("servers", {}).get(entry_id)
@@ -759,6 +761,49 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             )
             added_keys.add(field_key)
         return client_entities
+
+    async def _process_client_iam(client_instance: int, client_address: str) -> None:
+        instance = int(client_instance)
+        address = str(client_address or "").strip()
+        if not address:
+            return
+
+        new_entities: list[SensorEntity] = []
+        if instance not in known_client_instances:
+            known_client_instances.add(instance)
+            new_entities.extend(_client_entities(instance, address, include_network=False))
+        else:
+            _client_entities(instance, address, include_network=False)
+
+        client_id = _client_id(instance)
+        await _refresh_client_cache(
+            hass=hass,
+            entry_id=entry.entry_id,
+            client_id=client_id,
+            client_instance=instance,
+            client_address=address,
+            network_port_hints=client_network_port_hints,
+            client_targets=client_targets,
+            force=True,
+        )
+        cache = _client_cache_get(hass, entry.entry_id, client_id)
+        if bool(cache.get("has_network_object")):
+            new_entities.extend(_client_entities(instance, address, include_network=True))
+
+        if new_entities:
+            async_add_entities(new_entities)
+
+    @callback
+    def _on_client_iam(payload: dict[str, Any] | None = None) -> None:
+        data = payload or {}
+        instance = _to_int(data.get("instance"))
+        address = _safe_text(data.get("address"))
+        if instance is None or not address:
+            return
+        hass.add_job(_process_client_iam(int(instance), str(address)))
+
+    unsub_iam = async_dispatcher_connect(hass, client_iam_signal(entry.entry_id), _on_client_iam)
+    entry.async_on_unload(unsub_iam)
 
     try:
         discovered_clients = await asyncio.wait_for(
