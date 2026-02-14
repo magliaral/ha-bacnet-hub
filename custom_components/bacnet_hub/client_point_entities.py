@@ -571,12 +571,12 @@ class BacnetClientPointNumber(BacnetClientPointEntityBase, NumberEntity):
         self._attr_device_class = _sensor_device_class_from_unit(self._attr_native_unit_of_measurement)
         value = point.get("present_value")
         try:
-            self._attr_native_value = float(value) if value is not None else None
+            self._attr_native_value = round(float(value), 1) if value is not None else None
         except Exception:
             self._attr_native_value = None
 
     async def async_set_native_value(self, value: float) -> None:
-        await self._async_write_present_value(float(value))
+        await self._async_write_present_value(round(float(value), 1))
 
 
 class BacnetClientPointSwitch(BacnetClientPointEntityBase, SwitchEntity):
