@@ -648,40 +648,6 @@ def _property_slug(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "", text)
 
 
-def _point_icon(
-    type_slug: str,
-    device_class: SensorDeviceClass | None,
-    native_value: StateType | None,
-) -> str:
-    if device_class == SensorDeviceClass.TEMPERATURE:
-        return "mdi:thermometer"
-    if device_class == SensorDeviceClass.POWER:
-        return "mdi:flash"
-    if device_class == SensorDeviceClass.ENERGY:
-        return "mdi:lightning-bolt"
-    if device_class == SensorDeviceClass.VOLTAGE:
-        return "mdi:sine-wave"
-    if device_class == SensorDeviceClass.CURRENT:
-        return "mdi:current-ac"
-    if device_class == SensorDeviceClass.FREQUENCY:
-        return "mdi:pulse"
-
-    slug = str(type_slug or "").strip().lower()
-    if slug in {"ai", "av"}:
-        return "mdi:gauge"
-    if slug == "bv":
-        text = str(native_value or "").strip().lower()
-        if text in {"on", "active", "true", "1", "enabled"}:
-            return "mdi:toggle-switch"
-        if text in {"off", "inactive", "false", "0", "disabled"}:
-            return "mdi:toggle-switch-off-outline"
-        return "mdi:toggle-switch"
-    if slug == "mv":
-        return "mdi:format-list-numbered"
-    if slug == "csv":
-        return "mdi:text-box-outline"
-    return "mdi:vector-point"
-
 async def _discover_remote_clients(server: Any) -> list[tuple[int, str]]:
     app = getattr(server, "app", None)
     if app is None:
@@ -2139,11 +2105,6 @@ class BacnetClientPointSensor(SensorEntity):
         self._attr_native_unit_of_measurement = _safe_text(point.get("unit"))
         self._attr_device_class = _sensor_device_class_from_unit(self._attr_native_unit_of_measurement)
         native_value = _point_native_value_from_payload(point)
-        self._attr_icon = _point_icon(
-            str(point.get("type_slug") or ""),
-            self._attr_device_class,
-            native_value,
-        )
         self._attr_state_class = None
         if str(point.get("type_slug") or "") in {"ai", "av"} and isinstance(
             native_value,
@@ -2151,18 +2112,5 @@ class BacnetClientPointSensor(SensorEntity):
         ):
             self._attr_state_class = SensorStateClass.MEASUREMENT
         self._attr_native_value = native_value
-        self._attr_extra_state_attributes = {
-            "object_identifier": _safe_text(point.get("object_identifier")),
-            "object_type": _safe_text(point.get("object_type")),
-            "object_instance": _to_int(point.get("object_instance")),
-            "description": _safe_text(point.get("description")),
-            "status_flags": _safe_text(point.get("status_flags")),
-            "out_of_service": point.get("out_of_service"),
-            "reliability": _safe_text(point.get("reliability")),
-            "active_text": _safe_text(point.get("active_text")),
-            "inactive_text": _safe_text(point.get("inactive_text")),
-            "state_text": point.get("state_text"),
-            "number_of_states": _to_int(point.get("number_of_states")),
-            "cov_registered": self._cov_registered,
-        }
+        self._attr_extra_state_attributes = {}
         self.async_write_ha_state()
