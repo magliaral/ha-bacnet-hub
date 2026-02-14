@@ -67,7 +67,6 @@ CLIENT_REDISCOVERY_INTERVAL = timedelta(seconds=60)
 CLIENT_SCAN_INTERVAL = timedelta(seconds=60)
 CLIENT_REFRESH_MIN_SECONDS = 55.0
 CLIENT_COV_LEASE_SECONDS = 300
-CLIENT_COV_RENEW_SECONDS = 240
 
 CLIENT_DIAGNOSTIC_FIELDS: list[tuple[str, str]] = list(HUB_DIAGNOSTIC_FIELDS)
 NETWORK_DIAGNOSTIC_KEYS = {"ip_address", "ip_subnet_mask", "mac_address_raw"}
@@ -648,6 +647,41 @@ def _property_slug(value: Any) -> str:
         text = text.split(".")[-1]
     return re.sub(r"[^a-z0-9]+", "", text)
 
+
+def _point_icon(
+    type_slug: str,
+    device_class: SensorDeviceClass | None,
+    native_value: StateType | None,
+) -> str:
+    if device_class == SensorDeviceClass.TEMPERATURE:
+        return "mdi:thermometer"
+    if device_class == SensorDeviceClass.POWER:
+        return "mdi:flash"
+    if device_class == SensorDeviceClass.ENERGY:
+        return "mdi:lightning-bolt"
+    if device_class == SensorDeviceClass.VOLTAGE:
+        return "mdi:sine-wave"
+    if device_class == SensorDeviceClass.CURRENT:
+        return "mdi:current-ac"
+    if device_class == SensorDeviceClass.FREQUENCY:
+        return "mdi:pulse"
+
+    slug = str(type_slug or "").strip().lower()
+    if slug in {"ai", "av"}:
+        return "mdi:gauge"
+    if slug == "bv":
+        text = str(native_value or "").strip().lower()
+        if text in {"on", "active", "true", "1", "enabled"}:
+            return "mdi:toggle-switch"
+        if text in {"off", "inactive", "false", "0", "disabled"}:
+            return "mdi:toggle-switch-off-outline"
+        return "mdi:toggle-switch"
+    if slug == "mv":
+        return "mdi:format-list-numbered"
+    if slug == "csv":
+        return "mdi:text-box-outline"
+    return "mdi:vector-point"
+
 async def _discover_remote_clients(server: Any) -> list[tuple[int, str]]:
     app = getattr(server, "app", None)
     if app is None:
@@ -1206,6 +1240,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     async def _import_client_points(
         client_instance: int,
         client_address: str,
+        only_new: bool = True,
     ) -> list[SensorEntity]:
         live_server = hass.data.get(DOMAIN, {}).get("servers", {}).get(entry.entry_id)
         app = getattr(live_server, "app", None) if live_server is not None else None
@@ -1220,6 +1255,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             address = str(fallback_address or "").strip()
         if not address:
             return []
+
+        point_cache = _client_points_get(hass, entry.entry_id, client_id)
+        existing_point_keys = set(point_cache.keys()) if only_new else set()
 
         try:
             object_list = await _read_client_object_list(app, address, instance)
@@ -1239,20 +1277,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
         payload: dict[str, dict[str, Any]] = {}
         per_type_counts: dict[str, int] = {}
+        read_candidates = 0
         for object_type, object_instance in object_list:
+            supported = _supported_point_type(object_type)
+            if not supported:
+                continue
+            type_slug, canonical_type = supported
+            point_key = f"{type_slug}_{int(object_instance)}"
+            if only_new and point_key in existing_point_keys:
+                continue
+            read_candidates += 1
             try:
                 point = await _read_client_point_payload(
                     app,
                     address,
                     instance,
-                    object_type,
+                    canonical_type,
                     int(object_instance),
                 )
             except asyncio.CancelledError:
                 raise
             except BaseException:
                 continue
-            point_key = str(point.get("point_key") or "").strip()
+            point_key = str(point.get("point_key") or point_key).strip()
             if not point_key:
                 continue
             payload[point_key] = point
@@ -1260,7 +1307,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             per_type_counts[type_slug] = int(per_type_counts.get(type_slug, 0)) + 1
 
         if not payload:
-            _LOGGER.debug("Client point import yielded no payload for %s (%s)", instance, address)
+            if read_candidates > 0:
+                _LOGGER.debug("Client point import yielded no payload for %s (%s)", instance, address)
             return []
 
         _LOGGER.debug(
@@ -1273,54 +1321,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
         _client_points_set(hass, entry.entry_id, client_id, payload)
         async_dispatcher_send(hass, _client_points_signal(entry.entry_id, client_id))
-        return _client_point_entities(instance, client_id, _client_points_get(hass, entry.entry_id, client_id))
-
-    async def _refresh_client_points(
-        client_instance: int,
-        client_address: str,
-    ) -> list[SensorEntity]:
-        live_server = hass.data.get(DOMAIN, {}).get("servers", {}).get(entry.entry_id)
-        app = getattr(live_server, "app", None) if live_server is not None else None
-        if app is None:
-            return []
-
-        instance = int(client_instance)
-        client_id = _client_id(instance)
-        point_cache = _client_points_get(hass, entry.entry_id, client_id)
-        if not point_cache:
-            return await _import_client_points(instance, client_address)
-
-        address = str(client_address or "").strip()
-        if not address:
-            _, fallback_address = client_targets.get(client_id, (instance, ""))
-            address = str(fallback_address or "").strip()
-        if not address:
-            return []
-
-        updates: dict[str, dict[str, Any]] = {}
-        for point_key, point in list(point_cache.items()):
-            obj_type = _safe_text(point.get("object_type"))
-            obj_instance = _to_int(point.get("object_instance"))
-            if not obj_type or obj_instance is None:
-                continue
-            try:
-                payload = await _read_client_point_payload(
-                    app,
-                    address,
-                    instance,
-                    obj_type,
-                    int(obj_instance),
-                )
-            except asyncio.CancelledError:
-                raise
-            except BaseException:
-                continue
-            if payload:
-                updates[point_key] = payload
-
-        if updates:
-            _client_points_set(hass, entry.entry_id, client_id, updates)
-            async_dispatcher_send(hass, _client_points_signal(entry.entry_id, client_id))
         return _client_point_entities(instance, client_id, _client_points_get(hass, entry.entry_id, client_id))
 
     async def _process_client_iam(client_instance: int, client_address: str) -> None:
@@ -1352,7 +1352,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         if bool(cache.get("has_network_object")):
             new_entities.extend(_client_entities(instance, latest_address, include_network=True))
         try:
-            new_entities.extend(await _import_client_points(instance, latest_address))
+            new_entities.extend(
+                await _import_client_points(
+                    instance,
+                    latest_address,
+                    only_new=True,
+                )
+            )
         except asyncio.CancelledError:
             raise
         except BaseException:
@@ -1429,17 +1435,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                         include_network=True,
                     )
                 )
-            try:
-                new_entities.extend(await _refresh_client_points(client_instance, latest_address))
-            except asyncio.CancelledError:
-                raise
-            except BaseException:
-                _LOGGER.debug(
-                    "Client point refresh failed for %s (%s)",
-                    client_instance,
-                    latest_address,
-                    exc_info=True,
-                )
         if new_entities:
             async_add_entities(new_entities)
 
@@ -1465,7 +1460,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                     _client_entities(client_instance, client_address, include_network=False)
                 )
                 try:
-                    new_entities.extend(await _import_client_points(client_instance, client_address))
+                    new_entities.extend(
+                        await _import_client_points(
+                            client_instance,
+                            client_address,
+                            only_new=True,
+                        )
+                    )
                 except asyncio.CancelledError:
                     raise
                 except BaseException:
@@ -1488,12 +1489,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                         )
                     )
                 try:
-                    new_entities.extend(await _refresh_client_points(client_instance, client_address))
+                    # Import only newly discovered points; existing values are COV-driven.
+                    new_entities.extend(
+                        await _import_client_points(
+                            client_instance,
+                            client_address,
+                            only_new=True,
+                        )
+                    )
                 except asyncio.CancelledError:
                     raise
                 except BaseException:
                     _LOGGER.debug(
-                        "Client point refresh failed for %s (%s)",
+                        "Client point import failed for %s (%s)",
                         client_instance,
                         client_address,
                         exc_info=True,
@@ -1908,9 +1916,8 @@ class BacnetClientDetailSensor(SensorEntity):
 
 class BacnetClientPointSensor(SensorEntity):
     _attr_should_poll = False
-    _attr_has_entity_name = True
+    _attr_has_entity_name = False
     _attr_entity_registry_enabled_default = False
-    _attr_icon = "mdi:vector-point"
 
     def __init__(
         self,
@@ -1940,7 +1947,9 @@ class BacnetClientPointSensor(SensorEntity):
         object_instance = _to_int(cache.get("object_instance")) or 0
         self._attr_unique_id = _point_unique_id(entry_id, client_id, type_slug, object_instance)
         self.entity_id = _point_entity_id(self._client_instance, type_slug, object_instance)
-        self._attr_name = str(cache.get("object_name") or f"{type_slug.upper()} {object_instance}")
+        description = _safe_text(cache.get("description"))
+        object_name = _safe_text(cache.get("object_name"))
+        self._attr_name = str(description or object_name or f"{type_slug.upper()} {object_instance}")
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -2121,12 +2130,20 @@ class BacnetClientPointSensor(SensorEntity):
         if not point:
             return
 
+        description = _safe_text(point.get("description"))
         object_name = _safe_text(point.get("object_name"))
-        if object_name:
+        if description:
+            self._attr_name = description
+        elif object_name:
             self._attr_name = object_name
         self._attr_native_unit_of_measurement = _safe_text(point.get("unit"))
         self._attr_device_class = _sensor_device_class_from_unit(self._attr_native_unit_of_measurement)
         native_value = _point_native_value_from_payload(point)
+        self._attr_icon = _point_icon(
+            str(point.get("type_slug") or ""),
+            self._attr_device_class,
+            native_value,
+        )
         self._attr_state_class = None
         if str(point.get("type_slug") or "") in {"ai", "av"} and isinstance(
             native_value,
