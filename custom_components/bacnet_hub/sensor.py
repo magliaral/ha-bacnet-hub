@@ -22,6 +22,8 @@ from homeassistant.const import (
 )
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.event import async_track_state_change_event, async_track_time_interval
+from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
+from homeassistant.helpers import entity_registry as er
 
 from .const import (
     CONF_ADDRESS,
@@ -55,6 +57,28 @@ DIAGNOSTIC_REFRESH_DELAY_SECONDS = 2.0
 CLIENT_DISCOVERY_TIMEOUT_SECONDS = 3.0
 CLIENT_READ_TIMEOUT_SECONDS = 2.5
 CLIENT_REDISCOVERY_INTERVAL = timedelta(minutes=5)
+CLIENT_SCAN_INTERVAL = timedelta(seconds=90)
+
+CLIENT_DEVICE_OBJECT_FIELDS: list[tuple[str, str]] = [
+    ("description", "Description"),
+    ("firmware_revision", "Firmware revision"),
+    ("model_name", "Model name"),
+    ("object_identifier", "Object identifier"),
+    ("object_name", "Object name"),
+    ("system_status", "System status"),
+    ("system_status_code", "System status code"),
+    ("vendor_identifier", "Vendor identifier"),
+    ("vendor_name", "Vendor name"),
+]
+CLIENT_NETWORK_OBJECT_FIELDS: list[tuple[str, str]] = [
+    ("ip_address", "IP address"),
+    ("ip_subnet_mask", "IP subnet mask"),
+    ("mac_address_raw", "MAC address"),
+    ("network_number", "Network number"),
+    ("network_port_instance", "Network port instance"),
+    ("network_port_object_identifier", "Network port object identifier"),
+    ("udp_port", "UDP port"),
+]
 
 
 def _to_state(value: Any) -> StateType:
@@ -141,10 +165,49 @@ def _bacnet_mac_from_ip_port(ip_address: Any, udp_port: Any) -> str | None:
     return "".join(f"{octet:02X}" for octet in octets) + f"{port:04X}"
 
 
+def _to_ipv4_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, (bytes, bytearray)):
+        raw = bytes(value)
+        if len(raw) == 4:
+            return ".".join(str(octet) for octet in raw)
+        return None
+    try:
+        raw = bytes(value)
+        if len(raw) == 4:
+            return ".".join(str(octet) for octet in raw)
+    except Exception:
+        pass
+    text = str(value).strip()
+    if re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", text):
+        return text
+    return None
+
+
 def _addr_slug(value: Any) -> str:
     text = str(value or "").strip().lower()
     text = re.sub(r"[^a-z0-9]+", "_", text).strip("_")
     return text or "unknown"
+
+
+def _client_diag_signal(entry_id: str, client_id: str) -> str:
+    return f"{DOMAIN}_client_diag_{entry_id}_{client_id}"
+
+
+def _client_cache_root(hass: HomeAssistant) -> dict[str, dict[str, dict[str, Any]]]:
+    root = hass.data.setdefault(DOMAIN, {})
+    return root.setdefault("client_diag_cache", {})
+
+
+def _client_cache_get(hass: HomeAssistant, entry_id: str, client_id: str) -> dict[str, Any]:
+    per_entry = _client_cache_root(hass).setdefault(entry_id, {})
+    return per_entry.setdefault(client_id, {})
+
+
+def _client_cache_set(hass: HomeAssistant, entry_id: str, client_id: str, payload: dict[str, Any]) -> None:
+    cache = _client_cache_get(hass, entry_id, client_id)
+    cache.update(payload or {})
 
 
 def _safe_text(value: Any) -> str | None:
@@ -227,88 +290,167 @@ async def _discover_remote_clients(server: Any) -> list[tuple[int, str]]:
     return sorted(clients.values(), key=lambda item: (item[0], item[1]))
 
 
+async def _read_client_runtime(
+    app: Any,
+    client_instance: int,
+    client_address: str,
+    network_port_instance_hint: int = 1,
+) -> dict[str, Any]:
+    instance = int(client_instance)
+    address = str(client_address)
+    network_port_instance = max(1, int(network_port_instance_hint or 1))
+    device_obj = f"device,{instance}"
+
+    async def read_device(prop: str) -> Any:
+        try:
+            return await _read_remote_property(app, address, device_obj, prop)
+        except Exception:
+            return None
+
+    async def read_network(prop: str, inst: int) -> Any:
+        try:
+            return await _read_remote_property_any_objid(
+                app,
+                address,
+                [f"network-port,{inst}", f"networkPort,{inst}"],
+                prop,
+            )
+        except Exception:
+            return None
+
+    # Device object
+    object_name = _safe_text(await read_device("objectName"))
+    description = _safe_text(await read_device("description"))
+    model_name = _safe_text(await read_device("modelName"))
+    vendor_name = _safe_text(await read_device("vendorName"))
+    vendor_identifier = _to_int(await read_device("vendorIdentifier"))
+    firmware_revision = _safe_text(await read_device("firmwareRevision"))
+    hardware_revision = _safe_text(await read_device("hardwareRevision"))
+    application_software_version = _safe_text(await read_device("applicationSoftwareVersion"))
+    serial_number = _safe_text(await read_device("serialNumber"))
+    object_identifier = _object_identifier_text(await read_device("objectIdentifier"))
+    raw_system_status = await read_device("systemStatus")
+    system_status_code, system_status = _normalize_system_status(raw_system_status)
+
+    # Resolve network-port instance (if not instance 1).
+    net_object_identifier = await read_network("objectIdentifier", network_port_instance)
+    if net_object_identifier is None and network_port_instance == 1:
+        try:
+            list_len = _to_int(
+                await _read_remote_property(
+                    app, address, device_obj, "objectList", array_index=0, timeout=CLIENT_READ_TIMEOUT_SECONDS
+                )
+            )
+            if list_len and list_len > 0:
+                for idx in range(1, min(list_len, 64) + 1):
+                    oid = await _read_remote_property(
+                        app, address, device_obj, "objectList", array_index=idx, timeout=CLIENT_READ_TIMEOUT_SECONDS
+                    )
+                    inst = _object_identifier_instance(oid, "network-port")
+                    if inst is not None:
+                        network_port_instance = int(inst)
+                        break
+        except Exception:
+            pass
+        net_object_identifier = await read_network("objectIdentifier", network_port_instance)
+
+    ip_address_raw = await read_network("ipAddress", network_port_instance)
+    ip_subnet_mask_raw = await read_network("ipSubnetMask", network_port_instance)
+    udp_port = _to_int(await read_network("bacnetIPUDPPort", network_port_instance))
+    network_number = _to_int(await read_network("networkNumber", network_port_instance))
+    mac_raw = _mac_hex(await read_network("macAddress", network_port_instance))
+
+    ip_address = _to_ipv4_text(ip_address_raw) or _safe_text(ip_address_raw)
+    ip_subnet_mask = _to_ipv4_text(ip_subnet_mask_raw) or _safe_text(ip_subnet_mask_raw)
+    if not mac_raw:
+        mac_raw = _bacnet_mac_from_ip_port(ip_address, udp_port)
+
+    device_data = {
+        "client_instance": instance,
+        "client_address": address,
+        "description": description,
+        "firmware_revision": firmware_revision,
+        "hardware_revision": hardware_revision,
+        "application_software_version": application_software_version,
+        "model_name": model_name,
+        "object_identifier": object_identifier or f"OBJECT_DEVICE:{instance}",
+        "object_name": object_name,
+        "system_status": system_status,
+        "system_status_code": system_status_code,
+        "vendor_identifier": vendor_identifier,
+        "vendor_name": vendor_name,
+        "serial_number": serial_number,
+    }
+    network_data = {
+        "client_instance": instance,
+        "client_address": address,
+        "ip_address": ip_address,
+        "ip_subnet_mask": ip_subnet_mask,
+        "mac_address_raw": mac_raw,
+        "network_number": network_number,
+        "network_port_instance": network_port_instance,
+        "network_port_object_identifier": _object_identifier_text(net_object_identifier),
+        "udp_port": udp_port,
+    }
+    online = any(
+        value is not None
+        for value in (
+            object_name,
+            model_name,
+            vendor_name,
+            firmware_revision,
+            ip_address,
+            mac_raw,
+        )
+    )
+    return {
+        "online": online,
+        "device": device_data,
+        "network": network_data,
+        "network_port_instance": network_port_instance,
+        "name": object_name or f"BACnet Client {instance}",
+    }
+
+
 def _hub_diagnostics(server: Any, merged: Dict[str, Any]) -> Dict[str, Any]:
     device_obj = getattr(server, "device_object", None) if server is not None else None
     network_obj = getattr(server, "network_port_object", None) if server is not None else None
 
-    instance = _to_int(getattr(server, "instance", None)) if server is not None else None
-    if instance is None:
-        instance = _to_int(merged.get(CONF_INSTANCE))
+    instance = _to_int(getattr(server, "instance", None)) if server is not None else _to_int(merged.get(CONF_INSTANCE))
 
-    object_name = _safe_text(getattr(device_obj, "objectName", None)) or _safe_text(
-        getattr(server, "name", None) if server is not None else merged.get(CONF_DEVICE_NAME)
-    )
-    description = _safe_text(getattr(device_obj, "description", None)) or (
-        getattr(server, "description", None)
-        if server is not None
-        else merged.get(CONF_DEVICE_DESCRIPTION, DEFAULT_BACNET_DEVICE_DESCRIPTION)
-    )
-    description = _safe_text(description)
-    model_name = _safe_text(getattr(device_obj, "modelName", None)) or _safe_text(
-        getattr(server, "model_name", None) if server is not None else None
-    )
-    vendor_name = _safe_text(getattr(device_obj, "vendorName", None)) or _safe_text(
-        getattr(server, "vendor_name", None) if server is not None else None
-    )
+    object_name = _safe_text(getattr(device_obj, "objectName", None))
+    description = _safe_text(getattr(device_obj, "description", None))
+    model_name = _safe_text(getattr(device_obj, "modelName", None))
+    vendor_name = _safe_text(getattr(device_obj, "vendorName", None))
     vendor_identifier = _to_int(getattr(device_obj, "vendorIdentifier", None))
-    if vendor_identifier is None and server is not None:
-        vendor_identifier = _to_int(getattr(server, "vendor_identifier", None))
 
-    firmware_revision = _safe_text(getattr(device_obj, "firmwareRevision", None)) or _safe_text(
-        getattr(server, "firmware_revision", None) if server is not None else None
-    )
-    integration_version = _safe_text(
-        getattr(server, "application_software_version", None) if server is not None else None
-    )
-    hardware_revision = _safe_text(getattr(server, "hardware_revision", None) if server is not None else None)
+    firmware_revision = _safe_text(getattr(device_obj, "firmwareRevision", None))
+    integration_version = _safe_text(getattr(device_obj, "applicationSoftwareVersion", None))
+    hardware_revision = _safe_text(getattr(device_obj, "hardwareRevision", None))
 
     status_code, status_label = _normalize_system_status(getattr(device_obj, "systemStatus", None))
-    if status_code is None and server is not None:
-        status_code = _to_int(getattr(server, "system_status_code", None))
-    if status_label is None and server is not None:
-        status_label = _safe_text(getattr(server, "system_status", None))
     system_status = status_label
     system_status_code = status_code
 
     object_identifier = _object_identifier_text(getattr(device_obj, "objectIdentifier", None))
-    if not object_identifier and server is not None:
-        object_identifier = str(getattr(server, "device_object_identifier", "")).strip() or None
 
     network_port_object_identifier = _object_identifier_text(
         getattr(network_obj, "objectIdentifier", None)
     )
-    if not network_port_object_identifier and server is not None:
-        network_port_object_identifier = (
-            str(getattr(server, "network_port_object_identifier", "")).strip() or None
-        )
 
-    ip_address = _safe_text(getattr(network_obj, "ipAddress", None)) or _safe_text(
-        getattr(server, "ip_address", None) if server is not None else None
-    )
-    subnet_mask = _safe_text(getattr(network_obj, "ipSubnetMask", None)) or _safe_text(
-        getattr(server, "subnet_mask", None) if server is not None else None
-    )
+    ip_address = _to_ipv4_text(getattr(network_obj, "ipAddress", None))
+    subnet_mask = _to_ipv4_text(getattr(network_obj, "ipSubnetMask", None))
     udp_port = _to_int(getattr(network_obj, "bacnetIPUDPPort", None))
-    if udp_port is None and server is not None:
-        udp_port = _to_int(getattr(server, "udp_port", None))
-    network_prefix = getattr(server, "network_prefix", None) if server is not None else None
-    network_port_instance = _to_int(getattr(server, "network_port_instance", None)) if server else None
+    network_prefix = None
+    network_port_instance = _object_identifier_instance(getattr(network_obj, "objectIdentifier", None), "network-port")
     network_number = _to_int(getattr(network_obj, "networkNumber", None))
-    if network_number is None and server is not None:
-        network_number = _to_int(getattr(server, "network_number", None))
 
     mac_address_raw = _mac_hex(getattr(network_obj, "macAddress", None))
     if not mac_address_raw:
-        mac_address_raw = _mac_hex(getattr(server, "mac_address", None)) if server else None
-    if not mac_address_raw:
         mac_address_raw = _bacnet_mac_from_ip_port(ip_address, udp_port)
 
-    interface = _safe_text(getattr(server, "network_interface", None) if server is not None else None)
-    address = _safe_text(
-        getattr(server, "address_str", None)
-        if server is not None
-        else merged.get(CONF_ADDRESS)
-    )
+    interface = None
+    address = None
 
     return {
         "device_object_instance": instance,
@@ -368,16 +510,54 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         )
     server = data.get("servers", {}).get(entry.entry_id)
     known_clients: set[tuple[int, str]] = set()
+    entity_registry = er.async_get(hass)
     for client_instance, client_address in await _discover_remote_clients(server):
         known_clients.add((client_instance, client_address))
+        client_id = f"client_{int(client_instance)}_{_addr_slug(client_address)}"
+        legacy_unique_id = f"{entry.entry_id}-{client_id}-diagnostics"
+        legacy_entity_id = entity_registry.async_get_entity_id("sensor", DOMAIN, legacy_unique_id)
+        if legacy_entity_id:
+            entity_registry.async_remove(legacy_entity_id)
         entities.append(
-            BacnetClientDiagnosticSensor(
+            BacnetClientObjectSensor(
                 hass=hass,
                 entry_id=entry.entry_id,
                 client_instance=client_instance,
                 client_address=client_address,
+                object_kind="device",
             )
         )
+        entities.append(
+            BacnetClientObjectSensor(
+                hass=hass,
+                entry_id=entry.entry_id,
+                client_instance=client_instance,
+                client_address=client_address,
+                object_kind="network",
+            )
+        )
+        for key, label in CLIENT_DEVICE_OBJECT_FIELDS:
+            entities.append(
+                BacnetClientDetailSensor(
+                    hass=hass,
+                    entry_id=entry.entry_id,
+                    client_id=client_id,
+                    key=key,
+                    label=label,
+                    source="device",
+                )
+            )
+        for key, label in CLIENT_NETWORK_OBJECT_FIELDS:
+            entities.append(
+                BacnetClientDetailSensor(
+                    hass=hass,
+                    entry_id=entry.entry_id,
+                    client_id=client_id,
+                    key=key,
+                    label=label,
+                    source="network",
+                )
+            )
     for m in published:
         if (m or {}).get("object_type") != "analogValue":
             continue
@@ -415,14 +595,47 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             if key in known_clients:
                 continue
             known_clients.add(key)
+            client_id = f"client_{int(client_instance)}_{_addr_slug(client_address)}"
             new_entities.append(
-                BacnetClientDiagnosticSensor(
+                BacnetClientObjectSensor(
                     hass=hass,
                     entry_id=entry.entry_id,
                     client_instance=client_instance,
                     client_address=client_address,
+                    object_kind="device",
                 )
             )
+            new_entities.append(
+                BacnetClientObjectSensor(
+                    hass=hass,
+                    entry_id=entry.entry_id,
+                    client_instance=client_instance,
+                    client_address=client_address,
+                    object_kind="network",
+                )
+            )
+            for f_key, f_label in CLIENT_DEVICE_OBJECT_FIELDS:
+                new_entities.append(
+                    BacnetClientDetailSensor(
+                        hass=hass,
+                        entry_id=entry.entry_id,
+                        client_id=client_id,
+                        key=f_key,
+                        label=f_label,
+                        source="device",
+                    )
+                )
+            for f_key, f_label in CLIENT_NETWORK_OBJECT_FIELDS:
+                new_entities.append(
+                    BacnetClientDetailSensor(
+                        hass=hass,
+                        entry_id=entry.entry_id,
+                        client_id=client_id,
+                        key=f_key,
+                        label=f_label,
+                        source="network",
+                    )
+                )
         if new_entities:
             async_add_entities(new_entities)
 
@@ -714,17 +927,11 @@ class BacnetHubDetailSensor(SensorEntity):
         return _to_state(diagnostics.get(self._key))
 
 
-class BacnetClientDiagnosticSensor(SensorEntity):
+class BacnetClientObjectSensor(SensorEntity):
     _attr_should_poll = True
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_icon = "mdi:lan-connect"
     _attr_has_entity_name = True
-    _attr_name = "BACnet diagnostics"
-    _attr_native_value: StateType = None
-    _attr_extra_state_attributes: Dict[str, Any] = {}
-    _attr_available = False
-    _attr_suggested_unit_of_measurement = None
-    SCAN_INTERVAL = timedelta(seconds=90)
+    SCAN_INTERVAL = CLIENT_SCAN_INTERVAL
 
     def __init__(
         self,
@@ -732,15 +939,26 @@ class BacnetClientDiagnosticSensor(SensorEntity):
         entry_id: str,
         client_instance: int,
         client_address: str,
+        object_kind: str,
     ) -> None:
         self.hass = hass
         self._entry_id = entry_id
         self._instance = int(client_instance)
         self._address = str(client_address)
-        self._network_port_instance = 1
         self._client_id = f"client_{self._instance}_{_addr_slug(self._address)}"
-        self._attr_unique_id = f"{entry_id}-{self._client_id}-diagnostics"
-        self._device_info_cache: DeviceInfo = DeviceInfo(
+        self._object_kind = "network" if object_kind == "network" else "device"
+        self._network_port_instance_hint = 1
+        self._attr_unique_id = f"{entry_id}-{self._client_id}-{self._object_kind}-object"
+        if self._object_kind == "device":
+            self._attr_name = "Device object"
+            self._attr_icon = "mdi:chip"
+        else:
+            self._attr_name = "Network object"
+            self._attr_icon = "mdi:network-pos"
+        self._attr_native_value: StateType = "offline"
+        self._attr_extra_state_attributes: Dict[str, Any] = {}
+        self._attr_available = True
+        self._device_info_cache = DeviceInfo(
             identifiers={(DOMAIN, self._client_id)},
             via_device=(DOMAIN, entry_id),
             name=f"BACnet Client {self._instance}",
@@ -755,141 +973,114 @@ class BacnetClientDiagnosticSensor(SensorEntity):
     def device_info(self) -> DeviceInfo:
         return self._device_info_cache
 
-    async def _refresh_network_port_instance(self, app: Any) -> None:
+    async def async_added_to_hass(self) -> None:
         try:
-            object_list_len = await _read_remote_property(
-                app,
-                self._address,
-                f"device,{self._instance}",
-                "objectList",
-                array_index=0,
-                timeout=CLIENT_READ_TIMEOUT_SECONDS,
-            )
-            list_len = _to_int(object_list_len)
-            if list_len is None or list_len <= 0:
-                return
-            for idx in range(1, min(list_len, 64) + 1):
-                oid = await _read_remote_property(
-                    app,
-                    self._address,
-                    f"device,{self._instance}",
-                    "objectList",
-                    array_index=idx,
-                    timeout=CLIENT_READ_TIMEOUT_SECONDS,
-                )
-                inst = _object_identifier_instance(oid, "network-port")
-                if inst is not None:
-                    self._network_port_instance = inst
-                    return
+            await self.async_update()
         except Exception:
-            return
+            self._attr_native_value = "offline"
+            self._attr_available = True
+        self.async_write_ha_state()
 
     async def async_update(self) -> None:
         server = self._server()
         app = getattr(server, "app", None) if server is not None else None
         if app is None:
-            self._attr_available = False
             self._attr_native_value = "offline"
+            self._attr_available = True
             return
 
-        if self._network_port_instance <= 0:
-            self._network_port_instance = 1
-
-        device_obj = f"device,{self._instance}"
-        network_objids = [
-            f"network-port,{self._network_port_instance}",
-            f"networkPort,{self._network_port_instance}",
-        ]
-
-        async def read_device(prop: str) -> Any:
-            try:
-                return await _read_remote_property(app, self._address, device_obj, prop)
-            except Exception:
-                return None
-
-        async def read_network(prop: str) -> Any:
-            try:
-                return await _read_remote_property_any_objid(app, self._address, network_objids, prop)
-            except Exception:
-                return None
-
-        object_name = _safe_text(await read_device("objectName"))
-        description = _safe_text(await read_device("description"))
-        model_name = _safe_text(await read_device("modelName"))
-        vendor_name = _safe_text(await read_device("vendorName"))
-        vendor_identifier = _to_int(await read_device("vendorIdentifier"))
-        firmware_revision = _safe_text(await read_device("firmwareRevision"))
-        hardware_revision = _safe_text(await read_device("hardwareRevision"))
-        app_sw_version = _safe_text(await read_device("applicationSoftwareVersion"))
-        serial_number = _safe_text(await read_device("serialNumber"))
-        object_identifier = _object_identifier_text(await read_device("objectIdentifier"))
-
-        raw_system_status = await read_device("systemStatus")
-        system_status_code, system_status = _normalize_system_status(raw_system_status)
-
-        # Try to find the real network-port instance once if default instance has no value.
-        if await read_network("objectIdentifier") is None and self._network_port_instance == 1:
-            await self._refresh_network_port_instance(app)
-            network_objids = [
-                f"network-port,{self._network_port_instance}",
-                f"networkPort,{self._network_port_instance}",
-            ]
-
-        network_port_object_identifier = _object_identifier_text(await read_network("objectIdentifier"))
-        ip_address = _safe_text(await read_network("ipAddress"))
-        ip_subnet_mask = _safe_text(await read_network("ipSubnetMask"))
-        udp_port = _to_int(await read_network("bacnetIPUDPPort"))
-        network_number = _to_int(await read_network("networkNumber"))
-        mac_raw = _mac_hex(await read_network("macAddress"))
-        if not mac_raw:
-            mac_raw = _bacnet_mac_from_ip_port(ip_address, udp_port)
-
-        self._attr_available = any(
-            value is not None
-            for value in (
-                object_name,
-                model_name,
-                vendor_name,
-                firmware_revision,
-                object_identifier,
-                ip_address,
-                mac_raw,
-            )
+        data = await _read_client_runtime(
+            app,
+            self._instance,
+            self._address,
+            network_port_instance_hint=self._network_port_instance_hint,
         )
-        self._attr_native_value = "online" if self._attr_available else "offline"
+        self._network_port_instance_hint = int(data.get("network_port_instance") or 1)
+        _client_cache_set(self.hass, self._entry_id, self._client_id, data)
+        async_dispatcher_send(self.hass, _client_diag_signal(self._entry_id, self._client_id))
 
-        self._attr_extra_state_attributes = {
-            "client_instance": self._instance,
-            "client_address": self._address,
-            "description": description,
-            "firmware_revision": firmware_revision,
-            "hardware_revision": hardware_revision,
-            "application_software_version": app_sw_version,
-            "model_name": model_name,
-            "object_identifier": object_identifier or f"OBJECT_DEVICE:{self._instance}",
-            "object_name": object_name,
-            "system_status": system_status,
-            "system_status_code": system_status_code,
-            "vendor_identifier": vendor_identifier,
-            "vendor_name": vendor_name,
-            "serial_number": serial_number,
-            "ip_address": ip_address,
-            "ip_subnet_mask": ip_subnet_mask,
-            "mac_address_raw": mac_raw,
-            "network_number": network_number,
-            "network_port_instance": self._network_port_instance,
-            "network_port_object_identifier": network_port_object_identifier,
-            "udp_port": udp_port,
-        }
+        online = bool(data.get("online"))
+        self._attr_native_value = "online" if online else "offline"
+        self._attr_available = True
+        source_data = dict(data.get(self._object_kind, {}) or {})
+        source_data["client_instance"] = self._instance
+        source_data["client_address"] = self._address
+        self._attr_extra_state_attributes = source_data
 
-        device_name = object_name or f"BACnet Client {self._instance}"
         self._device_info_cache = DeviceInfo(
             identifiers={(DOMAIN, self._client_id)},
             via_device=(DOMAIN, self._entry_id),
-            name=device_name,
-            manufacturer=vendor_name,
-            model=model_name,
-            sw_version=firmware_revision,
-            hw_version=hardware_revision,
-            serial_number=serial_number,
+            name=str(data.get("name") or f"BACnet Client {self._instance}"),
+            manufacturer=_safe_text(source_data.get("vendor_name")),
+            model=_safe_text(source_data.get("model_name")),
+            sw_version=_safe_text(source_data.get("firmware_revision")),
+            hw_version=_safe_text(source_data.get("hardware_revision")),
+            serial_number=_safe_text(source_data.get("serial_number")),
         )
+
+
+class BacnetClientDetailSensor(SensorEntity):
+    _attr_should_poll = False
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_has_entity_name = True
+    _attr_icon = "mdi:information-outline"
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        client_id: str,
+        key: str,
+        label: str,
+        source: str,
+    ) -> None:
+        self.hass = hass
+        self._entry_id = entry_id
+        self._client_id = client_id
+        self._key = key
+        self._source = "network" if source == "network" else "device"
+        self._attr_name = label
+        self._attr_unique_id = f"{entry_id}-{client_id}-{self._source}-{key}"
+        self._attr_native_value: StateType = None
+        self._unsub_dispatcher: Callable[[], None] | None = None
+        self._device_info_cache = DeviceInfo(
+            identifiers={(DOMAIN, client_id)},
+            via_device=(DOMAIN, entry_id),
+            name=f"BACnet Client",
+        )
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return self._device_info_cache
+
+    async def async_added_to_hass(self) -> None:
+        signal = _client_diag_signal(self._entry_id, self._client_id)
+        self._unsub_dispatcher = async_dispatcher_connect(
+            self.hass,
+            signal,
+            self._handle_client_update,
+        )
+        self._handle_client_update()
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._unsub_dispatcher is not None:
+            self._unsub_dispatcher()
+            self._unsub_dispatcher = None
+
+    @callback
+    def _handle_client_update(self) -> None:
+        cache = _client_cache_get(self.hass, self._entry_id, self._client_id)
+        data = dict(cache.get(self._source, {}) or {})
+        self._attr_native_value = _to_state(data.get(self._key))
+
+        self._device_info_cache = DeviceInfo(
+            identifiers={(DOMAIN, self._client_id)},
+            via_device=(DOMAIN, self._entry_id),
+            name=str(cache.get("name") or "BACnet Client"),
+            manufacturer=_safe_text(data.get("vendor_name")),
+            model=_safe_text(data.get("model_name")),
+            sw_version=_safe_text(data.get("firmware_revision")),
+            hw_version=_safe_text(data.get("hardware_revision")),
+            serial_number=_safe_text(data.get("serial_number")),
+        )
+        self.async_write_ha_state()

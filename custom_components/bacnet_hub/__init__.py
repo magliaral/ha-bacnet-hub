@@ -929,6 +929,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     lock = locks.setdefault(entry.entry_id, asyncio.Lock())
 
     data[KEY_PUBLISHED_CACHE].pop(entry.entry_id, None)
+    data.setdefault("client_diag_cache", {}).pop(entry.entry_id, None)
     pending = event_sync_tasks.pop(entry.entry_id, None)
     if pending and not pending.done():
         pending.cancel()
