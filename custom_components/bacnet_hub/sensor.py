@@ -8,6 +8,8 @@ import time
 from datetime import timedelta
 from typing import Any, Dict, List, Optional, Callable
 
+from bacpypes3.pdu import Address
+from bacpypes3.primitivedata import ObjectIdentifier
 from homeassistant.components.sensor import (
     SensorEntity,
     SensorDeviceClass,
@@ -344,8 +346,29 @@ def _normalize_object_type_key(value: Any) -> str:
 def _supported_point_type(value: Any) -> tuple[str, str] | None:
     if isinstance(value, tuple) and len(value) == 2:
         return _supported_point_type(value[0])
-    key = _normalize_object_type_key(value)
-    return CLIENT_POINT_SUPPORTED_TYPES.get(key)
+    raw = str(value or "").strip()
+    key = _normalize_object_type_key(raw)
+    if key in CLIENT_POINT_SUPPORTED_TYPES:
+        return CLIENT_POINT_SUPPORTED_TYPES[key]
+
+    for prefix in ("objecttype", "object", "enum", "bacnetobjecttype"):
+        if key.startswith(prefix):
+            trimmed = key[len(prefix):]
+            if trimmed in CLIENT_POINT_SUPPORTED_TYPES:
+                return CLIENT_POINT_SUPPORTED_TYPES[trimmed]
+
+    low = raw.lower()
+    if "analog" in low and "input" in low:
+        return CLIENT_POINT_SUPPORTED_TYPES.get("analoginput")
+    if "analog" in low and "value" in low:
+        return CLIENT_POINT_SUPPORTED_TYPES.get("analogvalue")
+    if "binary" in low and "value" in low:
+        return CLIENT_POINT_SUPPORTED_TYPES.get("binaryvalue")
+    if "multistate" in low and "value" in low:
+        return CLIENT_POINT_SUPPORTED_TYPES.get("multistatevalue")
+    if "characterstring" in low and "value" in low:
+        return CLIENT_POINT_SUPPORTED_TYPES.get("characterstringvalue")
+    return None
 
 
 def _object_instance(value: Any) -> int | None:
@@ -355,6 +378,40 @@ def _object_instance(value: Any) -> int | None:
     m = re.search(r"(\d+)\s*$", text)
     if m:
         return _to_int(m.group(1))
+    return None
+
+
+def _parse_object_list_item(value: Any) -> tuple[str, int] | None:
+    if isinstance(value, tuple) and len(value) == 2:
+        inst = _to_int(value[1])
+        if inst is not None:
+            return str(value[0]), int(inst)
+
+    object_type = (
+        getattr(value, "objectType", None)
+        or getattr(value, "object_type", None)
+        or getattr(value, "type", None)
+    )
+    object_instance = (
+        getattr(value, "instance", None)
+        or getattr(value, "objectInstance", None)
+        or getattr(value, "object_instance", None)
+        or getattr(value, "instanceNumber", None)
+    )
+    inst = _to_int(object_instance)
+    if object_type is not None and inst is not None:
+        return str(object_type), int(inst)
+
+    text = str(value or "").strip()
+    if not text:
+        return None
+
+    m = re.search(r"([A-Za-z0-9_\- ]+)\s*[:,]\s*(\d+)\s*$", text)
+    if m:
+        return m.group(1), int(m.group(2))
+    m = re.search(r"([A-Za-z0-9_\- ]+)\s+(\d+)\s*$", text)
+    if m:
+        return m.group(1), int(m.group(2))
     return None
 
 
@@ -518,6 +575,7 @@ async def _read_client_object_list(
     if not list_len or list_len <= 0:
         return object_list
 
+    unknown_type_logged: set[str] = set()
     for idx in range(1, min(list_len, CLIENT_POINT_SCAN_LIMIT) + 1):
         try:
             item = await _read_remote_property(
@@ -532,11 +590,16 @@ async def _read_client_object_list(
             raise
         except BaseException:
             continue
-        if not (isinstance(item, tuple) and len(item) == 2):
+        parsed = _parse_object_list_item(item)
+        if parsed is None:
             continue
-        type_info = _supported_point_type(item[0])
-        inst = _object_instance(item)
+        item_type, inst = parsed
+        type_info = _supported_point_type(item_type)
         if not type_info or inst is None:
+            raw_type = str(item_type or "").strip()
+            if raw_type and raw_type not in unknown_type_logged:
+                unknown_type_logged.add(raw_type)
+                _LOGGER.debug("Unsupported client object type in objectList: %s", raw_type)
             continue
         canonical_type = type_info[1]
         object_list.append((canonical_type, int(inst)))
@@ -577,6 +640,13 @@ def _point_native_value_from_payload(point: dict[str, Any]) -> StateType:
     if isinstance(value, (str, int, float)):
         return value
     return str(value)
+
+
+def _property_slug(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if "." in text:
+        text = text.split(".")[-1]
+    return re.sub(r"[^a-z0-9]+", "", text)
 
 async def _discover_remote_clients(server: Any) -> list[tuple[int, str]]:
     app = getattr(server, "app", None)
@@ -1164,9 +1234,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             )
             return []
         if not object_list:
+            _LOGGER.debug("No client object-list entries for %s (%s)", instance, address)
             return []
 
         payload: dict[str, dict[str, Any]] = {}
+        per_type_counts: dict[str, int] = {}
         for object_type, object_instance in object_list:
             try:
                 point = await _read_client_point_payload(
@@ -1184,9 +1256,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             if not point_key:
                 continue
             payload[point_key] = point
+            type_slug = str(point.get("type_slug") or "").strip() or "unknown"
+            per_type_counts[type_slug] = int(per_type_counts.get(type_slug, 0)) + 1
 
         if not payload:
+            _LOGGER.debug("Client point import yielded no payload for %s (%s)", instance, address)
             return []
+
+        _LOGGER.debug(
+            "Imported %d client points for %s (%s): %s",
+            len(payload),
+            instance,
+            address,
+            per_type_counts,
+        )
 
         _client_points_set(hass, entry.entry_id, client_id, payload)
         async_dispatcher_send(hass, _client_points_signal(entry.entry_id, client_id))
@@ -1843,7 +1926,8 @@ class BacnetClientPointSensor(SensorEntity):
         self._client_instance = int(client_instance)
         self._point_key = str(point_key)
         self._unsub_dispatcher: Callable[[], None] | None = None
-        self._unsub_cov_renew: Callable[[], None] | None = None
+        self._cov_context: Any | None = None
+        self._cov_task: asyncio.Task | None = None
         self._cov_registered = False
         self._attr_native_value: StateType = None
         self._attr_native_unit_of_measurement: str | None = None
@@ -1884,22 +1968,26 @@ class BacnetClientPointSensor(SensorEntity):
         await self._async_register_cov()
         self._handle_points_update()
 
-        def _renew_cov(_now) -> None:
-            self.hass.add_job(self._async_register_cov())
-
-        self._unsub_cov_renew = async_track_time_interval(
-            self.hass,
-            _renew_cov,
-            timedelta(seconds=CLIENT_COV_RENEW_SECONDS),
-        )
-
     async def async_will_remove_from_hass(self) -> None:
         if self._unsub_dispatcher is not None:
             self._unsub_dispatcher()
             self._unsub_dispatcher = None
-        if self._unsub_cov_renew is not None:
-            self._unsub_cov_renew()
-            self._unsub_cov_renew = None
+        if self._cov_task is not None and not self._cov_task.done():
+            self._cov_task.cancel()
+            try:
+                await self._cov_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+        self._cov_task = None
+        if self._cov_context is not None:
+            try:
+                await self._cov_context.__aexit__(None, None, None)
+            except Exception:
+                pass
+        self._cov_context = None
+        self._cov_registered = False
 
     async def _async_register_cov(self) -> None:
         point = _client_points_get(self.hass, self._entry_id, self._client_id).get(self._point_key, {})
@@ -1913,33 +2001,119 @@ class BacnetClientPointSensor(SensorEntity):
         if app is None:
             return
 
-        subscribe = getattr(app, "subscribe_cov", None)
-        if not callable(subscribe):
+        cov_factory = getattr(app, "change_of_value", None)
+        if not callable(cov_factory):
+            self._cov_registered = False
             return
 
         process_id = _cov_process_identifier(self._entry_id, self._client_id, self._point_key)
+        if self._cov_context is not None:
+            try:
+                await self._cov_context.__aexit__(None, None, None)
+            except Exception:
+                pass
+            self._cov_context = None
+
         try:
-            await subscribe(
-                address,
-                object_identifier,
-                process_id,
-                confirmed=False,
+            context = cov_factory(
+                Address(address),
+                ObjectIdentifier(object_identifier),
+                subscriber_process_identifier=process_id,
+                issue_confirmed_notifications=False,
                 lifetime=CLIENT_COV_LEASE_SECONDS,
             )
-            self._cov_registered = True
-        except TypeError:
+            self._cov_context = await context.__aenter__()
+        except Exception:
+            self._cov_context = None
+            self._cov_registered = False
+            _LOGGER.debug(
+                "COV subscribe failed for %s (%s)",
+                object_identifier,
+                address,
+                exc_info=True,
+            )
+            return
+
+        self._cov_registered = True
+        if self._cov_task is None or self._cov_task.done():
+            self._cov_task = self.hass.async_create_task(self._async_cov_receive_loop())
+
+    async def _async_cov_receive_loop(self) -> None:
+        while True:
+            context = self._cov_context
+            if context is None:
+                return
             try:
-                await subscribe(
-                    address,
-                    object_identifier,
-                    process_id,
-                    CLIENT_COV_LEASE_SECONDS,
-                )
-                self._cov_registered = True
+                prop, value = await context.get_value()
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 self._cov_registered = False
-        except Exception:
-            self._cov_registered = False
+                self._handle_points_update()
+                _LOGGER.debug(
+                    "COV receive loop failed for %s",
+                    self._point_key,
+                    exc_info=True,
+                )
+                return
+
+            key = _property_slug(prop)
+            if not key:
+                continue
+            if key not in {
+                "presentvalue",
+                "statusflags",
+                "outofservice",
+                "reliability",
+                "description",
+                "objectname",
+                "statetext",
+                "activetext",
+                "inactivetext",
+            }:
+                continue
+
+            point = dict(
+                _client_points_get(self.hass, self._entry_id, self._client_id).get(self._point_key, {}) or {}
+            )
+            if not point:
+                continue
+
+            if key == "presentvalue":
+                point["present_value"] = value
+            elif key == "statusflags":
+                point["status_flags"] = _safe_text(value)
+            elif key == "outofservice":
+                point["out_of_service"] = value
+            elif key == "reliability":
+                point["reliability"] = _safe_text(value)
+            elif key == "description":
+                point["description"] = _safe_text(value)
+            elif key == "objectname":
+                point["object_name"] = _safe_text(value)
+            elif key == "statetext":
+                if isinstance(value, (list, tuple)):
+                    point["state_text"] = [str(item) for item in value]
+                else:
+                    try:
+                        point["state_text"] = [str(item) for item in list(value)]
+                    except Exception:
+                        pass
+            elif key == "activetext":
+                point["active_text"] = _safe_text(value)
+            elif key == "inactivetext":
+                point["inactive_text"] = _safe_text(value)
+
+            _client_points_set(
+                self.hass,
+                self._entry_id,
+                self._client_id,
+                {self._point_key: point},
+            )
+            async_dispatcher_send(
+                self.hass,
+                _client_points_signal(self._entry_id, self._client_id),
+            )
 
     @callback
     def _handle_points_update(self) -> None:
