@@ -21,7 +21,6 @@ from .sensor_helpers import (
     CLIENT_DIAGNOSTIC_FIELDS,
     CLIENT_DISCOVERY_TIMEOUT_SECONDS,
     CLIENT_REDISCOVERY_INTERVAL,
-    CLIENT_SCAN_INTERVAL,
     HUB_DIAGNOSTIC_FIELDS,
     HUB_DIAGNOSTIC_SCAN_INTERVAL,
     NETWORK_DIAGNOSTIC_KEYS,
@@ -326,46 +325,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         for client_entity in _client_entities(client_instance, client_address, include_network=False):
             client_initial_entities.append(client_entity)
 
-    async def _refresh_known_clients() -> None:
-        new_entities: list[SensorEntity] = []
-        for client_id, (client_instance, client_address) in list(client_targets.items()):
-            try:
-                await _refresh_client_cache(
-                    hass=hass,
-                    entry_id=entry.entry_id,
-                    client_id=client_id,
-                    client_instance=client_instance,
-                    client_address=client_address,
-                    network_port_hints=client_network_port_hints,
-                    client_targets=client_targets,
-                )
-            except asyncio.CancelledError:
-                raise
-            except BaseException:
-                _LOGGER.debug(
-                    "Client diagnostic refresh failed for %s (%s)",
-                    client_instance,
-                    client_address,
-                    exc_info=True,
-                )
-                continue
-            _, latest_address = client_targets.get(client_id, (client_instance, client_address))
-            _update_client_point_addresses(client_id, latest_address)
-            cache = _client_cache_get(hass, entry.entry_id, client_id)
-            if bool(cache.get("has_network_object")):
-                new_entities.extend(
-                    _client_entities(
-                        client_instance,
-                        latest_address,
-                        include_network=True,
-                    )
-                )
-        if new_entities:
-            async_add_entities(new_entities)
-
     async def _scan_and_add_new_clients() -> None:
         live_server = hass.data.get(DOMAIN, {}).get("servers", {}).get(entry.entry_id)
-        new_entities: list[SensorEntity] = []
         try:
             scan_clients = await asyncio.wait_for(
                 _discover_remote_clients(live_server),
@@ -379,68 +340,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             discovered_map[int(client_instance)] = str(client_address)
 
         for client_instance, client_address in discovered_map.items():
-            if int(client_instance) not in known_client_instances:
-                known_client_instances.add(int(client_instance))
-                new_entities.extend(
-                    _client_entities(client_instance, client_address, include_network=False)
+            try:
+                await _process_client_iam(int(client_instance), str(client_address))
+            except asyncio.CancelledError:
+                raise
+            except BaseException:
+                _LOGGER.debug(
+                    "Periodic client scan processing failed for %s (%s)",
+                    client_instance,
+                    client_address,
+                    exc_info=True,
                 )
-                try:
-                    new_entities.extend(
-                        await _import_client_points(
-                            client_instance,
-                            client_address,
-                            only_new=True,
-                        )
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except BaseException:
-                    _LOGGER.debug(
-                        "Client point import failed for %s (%s)",
-                        client_instance,
-                        client_address,
-                        exc_info=True,
-                    )
-            else:
-                _client_entities(client_instance, client_address, include_network=False)
-                client_id = _client_id(int(client_instance))
-                _update_client_point_addresses(client_id, client_address)
-                cache = _client_cache_get(hass, entry.entry_id, client_id)
-                if bool(cache.get("has_network_object")):
-                    new_entities.extend(
-                        _client_entities(
-                            client_instance,
-                            client_address,
-                            include_network=True,
-                        )
-                    )
-                try:
-                    new_entities.extend(
-                        await _import_client_points(
-                            client_instance,
-                            client_address,
-                            only_new=True,
-                        )
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except BaseException:
-                    _LOGGER.debug(
-                        "Client point import failed for %s (%s)",
-                        client_instance,
-                        client_address,
-                        exc_info=True,
-                    )
-        if new_entities:
-            async_add_entities(new_entities)
-
-    async def _refresh_all_clients() -> None:
-        if not client_targets:
-            await _scan_and_add_new_clients()
-        await _refresh_known_clients()
-
-    def _schedule_client_refresh(_now) -> None:
-        hass.add_job(_refresh_all_clients())
 
     def _schedule_rescan(_now) -> None:
         hass.add_job(_scan_and_add_new_clients())
@@ -493,7 +403,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     async def _initial_client_refresh() -> None:
         await asyncio.sleep(5)
         try:
-            await _refresh_all_clients()
+            await _scan_and_add_new_clients()
         except asyncio.CancelledError:
             raise
         except BaseException:
@@ -501,7 +411,5 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     hass.async_create_task(_initial_client_refresh())
 
-    unsub_refresh = async_track_time_interval(hass, _schedule_client_refresh, CLIENT_SCAN_INTERVAL)
     unsub_rescan = async_track_time_interval(hass, _schedule_rescan, CLIENT_REDISCOVERY_INTERVAL)
-    entry.async_on_unload(unsub_refresh)
     entry.async_on_unload(unsub_rescan)

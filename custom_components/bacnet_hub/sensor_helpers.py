@@ -31,8 +31,7 @@ CLIENT_OBJECTLIST_SCAN_LIMIT = 16
 CLIENT_OBJECTLIST_READ_TIMEOUT_SECONDS = 0.6
 CLIENT_POINT_REFRESH_TIMEOUT_SECONDS = 6.0
 CLIENT_POINT_SCAN_LIMIT = 128
-CLIENT_REDISCOVERY_INTERVAL = timedelta(seconds=60)
-CLIENT_SCAN_INTERVAL = timedelta(seconds=60)
+CLIENT_REDISCOVERY_INTERVAL = timedelta(minutes=15)
 CLIENT_REFRESH_MIN_SECONDS = 55.0
 CLIENT_COV_LEASE_SECONDS = 300
 
@@ -487,4 +486,3 @@ def _property_slug(value: Any) -> str:
     if "." in text:
         text = text.split(".")[-1]
     return re.sub(r"[^a-z0-9]+", "", text)
-
