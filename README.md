@@ -22,7 +22,7 @@ This integration has two roles:
 
 - Labels-first auto mapping (no manual mapping UI).
 - Automatic mapping lifecycle: add, refresh, remove, cleanup.
-- Event-driven sync with debounce on registry/label changes.
+- Event-driven sync with debounce on registry/label/area changes.
 - Deterministic entity IDs and stable unique IDs.
 - Built-in diagnostics for hub and discovered clients.
 - Integration service: `bacnet_hub.reload`.
@@ -75,7 +75,7 @@ The integration runs in labels mode and auto-manages mappings from selected labe
   - Name: `BACnet`
   - Icon: `mdi:server-network-outline`
   - Color: `light-green`
-- Entities can be discovered by direct entity label or by device label.
+- Entities can be discovered by direct entity label, by device label, or by labels assigned to the linked area (entity area or device area).
 
 ## Home Assistant -> BACnet Mapping
 
@@ -103,7 +103,11 @@ For `climate.*`, multiple BACnet mappings can be created:
 - `binaryValue`
 - `multiStateValue`
 
-Note: Only published `analogValue` and `binaryValue` are mirrored as HA entities. Published `multiStateValue` currently exists on BACnet side without dedicated HA mirror entity.
+Published mappings are mirrored as observer entities and split by platform:
+- `sensor` / `binary_sensor` only (non-interactive read-only observers)
+- configuration-like observers use `entity_category=config` (for example climate setpoints/modes)
+
+Note: This avoids confusing UI behavior where toggles/sliders can be clicked but immediately snap back.
 
 ## BACnet -> Home Assistant Writeback (for published mappings)
 
@@ -158,6 +162,7 @@ Implementation detail:
   - `entity_registry_updated`
   - `device_registry_updated`
   - `label_registry_updated`
+  - `area_registry_updated`
 - Debounce: 2 seconds.
 - Stale/orphan published entities are automatically cleaned up.
 
@@ -215,7 +220,7 @@ Fields:
 
 - No entities imported:
   - Verify selected labels in options.
-  - Verify labels are attached to entity or its device.
+  - Verify labels are attached to entity, its device, or the linked area.
 - Address bind errors (`address already in use`):
   - Ensure only one BACnet process binds the same IP/port.
 - Direct BACnet writes rejected:

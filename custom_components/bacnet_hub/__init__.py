@@ -24,7 +24,8 @@ from .const import (
     hub_display_name,
     PUBLISH_MODE_LABELS,
     published_entity_id,
-    published_unique_id,
+    published_observer_platform,
+    published_observer_unique_id,
 )
 from .discovery import (
     entity_mapping_candidates,
@@ -49,6 +50,7 @@ KEY_CLIENT_IAM_CACHE = "client_iam_cache"
 EVENT_ENTITY_REGISTRY_UPDATED = "entity_registry_updated"
 EVENT_DEVICE_REGISTRY_UPDATED = "device_registry_updated"
 EVENT_LABEL_REGISTRY_UPDATED = "label_registry_updated"
+EVENT_AREA_REGISTRY_UPDATED = "area_registry_updated"
 EVENT_SYNC_DEBOUNCE_SECONDS = 2.0
 
 PLATFORMS: List[str] = ["sensor", "number", "switch", "select", "text", "binary_sensor"]
@@ -287,29 +289,34 @@ def _expected_unique_ids(entry: ConfigEntry, published: List[Dict[str, Any]]) ->
         inst = _as_int(mapping.get("instance"), -1)
         if inst < 0:
             continue
+        entity_domain = published_observer_platform(mapping)
         expected.add(
-            published_unique_id(
+            published_observer_unique_id(
                 hub_instance=hub_instance,
                 hub_address=hub_address,
                 object_type=obj_type,
                 object_instance=inst,
+                entity_domain=entity_domain,
             )
         )
     return expected
 
 
 def _is_managed_published_unique_id(unique_id: str) -> bool:
-    # Current format only: bacnet_hub:hub:<hub_key>:<type-slug>:<instance>
+    # Supported formats:
+    # - bacnet_hub:hub:<hub_key>:<type-slug>:<instance>
+    # - bacnet_hub:hub:<hub_key>:<type-slug>:<instance>:<entity-domain>
     parts = unique_id.split(":")
     if len(parts) < 5:
         return False
     if parts[0] != DOMAIN or parts[1] != "hub":
         return False
-    return parts[-2] in {
-        "analog-value",
-        "binary-value",
-        "multi-state-value",
-    }
+    managed_types = {"analog-value", "binary-value", "multi-state-value"}
+    if parts[-2] in managed_types:
+        return True
+    if len(parts) >= 6 and parts[-3] in managed_types:
+        return True
+    return False
 
 
 def _cleanup_orphan_published_entities(
@@ -402,19 +409,16 @@ def _normalize_published_entity_ids(
         if instance < 0:
             continue
 
-        if object_type == "analogValue":
-            entity_domain = "sensor"
-        elif object_type == "binaryValue":
-            entity_domain = "binary_sensor"
-        else:
-            # No HA entity platform currently for other BACnet object types.
+        entity_domain = published_observer_platform(mapping)
+        if entity_domain not in {"sensor", "binary_sensor", "number", "switch", "select", "text"}:
             continue
 
-        unique_id = published_unique_id(
+        unique_id = published_observer_unique_id(
             hub_instance=hub_instance,
             hub_address=hub_address,
             object_type=object_type,
             object_instance=instance,
+            entity_domain=entity_domain,
         )
         wanted_entity_id = published_entity_id(
             entity_domain,
@@ -753,10 +757,18 @@ def _start_event_sync(hass: HomeAssistant, entry_id: str):
             return
         _schedule_event_sync(hass, entry_id, f"{EVENT_LABEL_REGISTRY_UPDATED}:{action or 'n/a'}")
 
+    @callback
+    def _on_area_registry_updated(event) -> None:
+        action = str((event.data or {}).get("action") or "").strip().lower()
+        if action and action not in relevant_actions:
+            return
+        _schedule_event_sync(hass, entry_id, f"{EVENT_AREA_REGISTRY_UPDATED}:{action or 'n/a'}")
+
     unsubs = [
         hass.bus.async_listen(EVENT_ENTITY_REGISTRY_UPDATED, _on_entity_registry_updated),
         hass.bus.async_listen(EVENT_DEVICE_REGISTRY_UPDATED, _on_device_registry_updated),
         hass.bus.async_listen(EVENT_LABEL_REGISTRY_UPDATED, _on_label_registry_updated),
+        hass.bus.async_listen(EVENT_AREA_REGISTRY_UPDATED, _on_area_registry_updated),
     ]
 
     def _unsub() -> None:

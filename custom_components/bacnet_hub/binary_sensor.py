@@ -8,7 +8,14 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 from .binary_sensor_entities import BacnetPublishedBinarySensor
 from .client_point_entities import BacnetClientPointBinarySensor
-from .const import CONF_ADDRESS, CONF_INSTANCE, DOMAIN, hub_display_name
+from .const import (
+    CONF_ADDRESS,
+    CONF_INSTANCE,
+    DOMAIN,
+    hub_display_name,
+    published_observer_is_config,
+    published_observer_platform,
+)
 from .sensor_helpers import _entry_client_points, _entry_points_signal, _point_platform, _to_int
 
 
@@ -22,7 +29,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     entities: List[Any] = []
     for m in published:
-        if (m or {}).get("object_type") != "binaryValue":
+        if published_observer_platform(dict(m or {})) != "binary_sensor":
             continue
         ent_id = m.get("entity_id")
         if not ent_id:
@@ -46,6 +53,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 source_attr=source_attr,
                 read_attr=read_attr,
                 hvac_on_mode=hvac_on_mode,
+                is_config=published_observer_is_config(dict(m or {})),
             )
         )
     if entities:

@@ -22,8 +22,8 @@ from .const import (
     hub_display_name,
     mirrored_state_attributes,
     published_entity_id,
+    published_observer_unique_id,
     published_suggested_object_id,
-    published_unique_id,
 )
 from .sensor_helpers import (
     CLIENT_COV_LEASE_SECONDS,
@@ -69,6 +69,7 @@ class BacnetPublishedSensor(SensorEntity):
         source_attr: str | None,
         read_attr: str | None,
         configured_unit: str | None,
+        is_config: bool = False,
     ):
         self.hass = hass
         self._entry_id = entry_id
@@ -80,11 +81,12 @@ class BacnetPublishedSensor(SensorEntity):
         self._attr_name = name
         self._remove_listener = None
         self._late_unsub: Optional[Callable[[], None]] = None
-        self._attr_unique_id = published_unique_id(
+        self._attr_unique_id = published_observer_unique_id(
             hub_instance=hub_instance,
             hub_address=hub_address,
             object_type="analogValue",
             object_instance=instance,
+            entity_domain="sensor",
         )
         self._suggested_object_id = published_suggested_object_id(
             "analogValue",
@@ -110,6 +112,8 @@ class BacnetPublishedSensor(SensorEntity):
         self._attr_icon: Optional[str] = None
         self._attr_native_value: Optional[StateType] = None
         self._attr_extra_state_attributes: Dict[str, Any] = {}
+        if is_config:
+            self._attr_entity_category = EntityCategory.CONFIG
 
     @property
     def suggested_object_id(self) -> str | None:

@@ -10,7 +10,15 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
 from homeassistant.helpers.event import async_track_time_interval
 
-from .const import CONF_ADDRESS, CONF_INSTANCE, DOMAIN, client_iam_signal, hub_display_name
+from .const import (
+    CONF_ADDRESS,
+    CONF_INSTANCE,
+    DOMAIN,
+    client_iam_signal,
+    hub_display_name,
+    published_observer_is_config,
+    published_observer_platform,
+)
 from .client_point_entities import BacnetClientPointSensor
 from .sensor_entities import (
     BacnetClientDetailSensor,
@@ -486,7 +494,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     published_entities: list[SensorEntity] = []
     for m in published:
-        if (m or {}).get("object_type") != "analogValue":
+        if published_observer_platform(dict(m or {})) != "sensor":
             continue
         ent_id = m.get("entity_id")
         if not ent_id:
@@ -510,6 +518,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 source_attr=source_attr,
                 read_attr=read_attr,
                 configured_unit=units,
+                is_config=published_observer_is_config(dict(m or {})),
             )
         )
     if published_entities:

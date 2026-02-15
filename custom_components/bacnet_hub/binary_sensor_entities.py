@@ -9,14 +9,15 @@ from homeassistant.components.binary_sensor import (
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED, STATE_ON
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.event import async_track_state_change_event
 
 from .const import (
     DOMAIN,
     mirrored_state_attributes,
     published_entity_id,
+    published_observer_unique_id,
     published_suggested_object_id,
-    published_unique_id,
 )
 
 
@@ -36,6 +37,7 @@ class BacnetPublishedBinarySensor(BinarySensorEntity):
         source_attr: str | None,
         read_attr: str | None,
         hvac_on_mode: str | None,
+        is_config: bool = False,
     ):
         self.hass = hass
         self._entry_id = entry_id
@@ -47,11 +49,12 @@ class BacnetPublishedBinarySensor(BinarySensorEntity):
         self._attr_name = name
         self._remove_listener = None
         self._late_unsub: Optional[Callable[[], None]] = None
-        self._attr_unique_id = published_unique_id(
+        self._attr_unique_id = published_observer_unique_id(
             hub_instance=hub_instance,
             hub_address=hub_address,
             object_type="binaryValue",
             object_instance=instance,
+            entity_domain="binary_sensor",
         )
         self._suggested_object_id = published_suggested_object_id(
             "binaryValue",
@@ -74,6 +77,8 @@ class BacnetPublishedBinarySensor(BinarySensorEntity):
         self._attr_icon: Optional[str] = None
         self._attr_is_on: Optional[bool] = None
         self._attr_extra_state_attributes: Dict[str, Any] = {}
+        if is_config:
+            self._attr_entity_category = EntityCategory.CONFIG
 
     @property
     def suggested_object_id(self) -> str | None:
