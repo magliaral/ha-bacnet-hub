@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import logging
 import re
 import socket
@@ -24,6 +23,10 @@ from bacpypes3.service.cov import ChangeOfValueServices
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from .helpers.versions import get_integration_version, get_bacpypes3_version
+from .helpers.bacnet import (
+    device_instance_from_identifier as _device_instance_from_identifier,
+    prefix_to_netmask as _prefix_to_netmask,
+)
 from .publisher import BacnetPublisher
 from .const import (
     CONF_DEVICE_DESCRIPTION,
@@ -57,6 +60,7 @@ _SYSTEM_STATUS_LABELS: dict[int, str] = {
     4: "non_operational",
     5: "backup_in_progress",
 }
+CLIENT_IAM_CACHE_KEY = "client_iam_cache"
 
 # ---------------------- Network/Address Helpers -----------------------------
 
@@ -117,13 +121,6 @@ def _split_ip_prefix_port(address_str: str) -> tuple[str, int, int]:
         prefix = _DEFAULT_PREFIX
     port = int(m.group("port") or _DEFAULT_PORT)
     return ip, prefix, port
-
-
-def _prefix_to_netmask(prefix: int) -> str:
-    try:
-        return str(ipaddress.ip_network(f"0.0.0.0/{prefix}", strict=False).netmask)
-    except Exception:
-        return "255.255.255.0"
 
 
 def _normalize_system_status(value: Any) -> tuple[int | None, str]:
@@ -199,18 +196,26 @@ class HubApp(
     async def do_IAmRequest(self, apdu: IAmRequest):
         parent_handler = getattr(super(), "do_IAmRequest", None)
         if callable(parent_handler):
-            await parent_handler(apdu)
+            try:
+                await parent_handler(apdu)
+            except Exception:
+                _LOGGER.debug("Parent I-Am handler failed", exc_info=True)
 
         try:
             dev_ident = getattr(apdu, "iAmDeviceIdentifier", None)
-            if not (isinstance(dev_ident, tuple) and len(dev_ident) == 2):
+            instance = _device_instance_from_identifier(dev_ident)
+            if instance is None:
                 return
-            instance = int(dev_ident[1])
-            source = str(getattr(apdu, "pduSource", "") or "").strip()
+            source = str(
+                getattr(apdu, "pduSource", None)
+                or getattr(apdu, "source", None)
+                or ""
+            ).strip()
             if not source:
                 return
             if self.local_device_instance is not None and instance == int(self.local_device_instance):
                 return
+            _LOGGER.debug("Incoming I-Am from %s (instance=%s)", source, instance)
             callback = self.on_i_am
             if callback is None:
                 return
@@ -516,6 +521,11 @@ class BacnetHubServer:
         if (now - last_seen) < self.iam_event_min_seconds:
             return
         self._iam_last_seen[key] = now
+
+        domain_data = self.hass.data.setdefault(DOMAIN, {})
+        iam_cache = domain_data.setdefault(CLIENT_IAM_CACHE_KEY, {})
+        entry_cache = iam_cache.setdefault(self.entry_id, {})
+        entry_cache[str(remote_instance)] = address
 
         async_dispatcher_send(
             self.hass,

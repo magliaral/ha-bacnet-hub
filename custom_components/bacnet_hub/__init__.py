@@ -12,6 +12,7 @@ from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
+from .helpers.bacnet import prefix_to_netmask as _prefix_to_netmask
 from .const import (
     CONF_ADDRESS,
     CONF_IMPORT_LABEL,
@@ -43,6 +44,7 @@ KEY_SYNC_UNSUB = "sync_unsub"
 KEY_EVENT_SYNC_TASKS = "event_sync_tasks"
 KEY_RELOAD_LOCKS = "reload_locks"
 KEY_LAST_RELOAD_FP = "last_reload_fingerprint"
+KEY_CLIENT_IAM_CACHE = "client_iam_cache"
 
 EVENT_ENTITY_REGISTRY_UPDATED = "entity_registry_updated"
 EVENT_DEVICE_REGISTRY_UPDATED = "device_registry_updated"
@@ -65,6 +67,7 @@ def _ensure_domain(hass: HomeAssistant) -> Dict[str, Any]:
     hass.data[DOMAIN].setdefault(KEY_EVENT_SYNC_TASKS, {})
     hass.data[DOMAIN].setdefault(KEY_RELOAD_LOCKS, {})
     hass.data[DOMAIN].setdefault(KEY_LAST_RELOAD_FP, {})
+    hass.data[DOMAIN].setdefault(KEY_CLIENT_IAM_CACHE, {})
     return hass.data[DOMAIN]
 
 
@@ -106,15 +109,6 @@ def _normalize_mac(value: Any) -> str | None:
     if not re.fullmatch(r"[0-9a-f]{2}(:[0-9a-f]{2}){5}", raw):
         return None
     return raw
-
-
-def _prefix_to_netmask(prefix: int) -> str:
-    if prefix <= 0:
-        return "0.0.0.0"
-    if prefix >= 32:
-        return "255.255.255.255"
-    mask = (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF
-    return ".".join(str((mask >> shift) & 0xFF) for shift in (24, 16, 8, 0))
 
 
 async def _async_network_adapter_for_ip(hass: HomeAssistant, ip_address: str) -> dict[str, Any]:
@@ -996,6 +990,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     data[KEY_PUBLISHED_CACHE].pop(entry.entry_id, None)
     data.setdefault("client_diag_cache", {}).pop(entry.entry_id, None)
     data.setdefault("client_point_cache", {}).pop(entry.entry_id, None)
+    data[KEY_CLIENT_IAM_CACHE].pop(entry.entry_id, None)
     pending = event_sync_tasks.pop(entry.entry_id, None)
     if pending and not pending.done():
         pending.cancel()
@@ -1022,6 +1017,7 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     data[KEY_PUBLISHED_CACHE].pop(entry.entry_id, None)
     data.setdefault("client_diag_cache", {}).pop(entry.entry_id, None)
     data.setdefault("client_point_cache", {}).pop(entry.entry_id, None)
+    data[KEY_CLIENT_IAM_CACHE].pop(entry.entry_id, None)
 
     removed_entities, removed_devices = _hard_cleanup_entry_registries(hass, entry.entry_id)
     if removed_entities or removed_devices:

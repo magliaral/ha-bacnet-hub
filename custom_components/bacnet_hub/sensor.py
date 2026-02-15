@@ -47,6 +47,7 @@ from .sensor_runtime import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+CLIENT_IAM_CACHE_KEY = "client_iam_cache"
 
 
 class _ClientPointImportTransientError(RuntimeError):
@@ -363,10 +364,38 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         address = _safe_text(data.get("address"))
         if instance is None or not address:
             return
+        _LOGGER.debug("Received client I-Am signal: instance=%s address=%s", instance, address)
         _start_bg_task(_process_client_iam(int(instance), str(address)))
 
     unsub_iam = async_dispatcher_connect(hass, client_iam_signal(entry.entry_id), _on_client_iam)
     entry.async_on_unload(unsub_iam)
+
+    cached_iam = dict(
+        (
+            hass.data.get(DOMAIN, {})
+            .get(CLIENT_IAM_CACHE_KEY, {})
+            .get(entry.entry_id, {})
+        )
+        or {}
+    )
+    if cached_iam:
+        _LOGGER.debug("Applying %d cached I-Am entries for %s", len(cached_iam), entry.entry_id)
+        for instance_key, address_raw in sorted(cached_iam.items(), key=lambda item: str(item[0])):
+            instance = _to_int(instance_key)
+            address = _safe_text(address_raw)
+            if instance is None or not address:
+                continue
+            try:
+                await _process_client_iam(int(instance), str(address))
+            except asyncio.CancelledError:
+                raise
+            except BaseException:
+                _LOGGER.debug(
+                    "Applying cached I-Am failed for %s (%s)",
+                    instance,
+                    address,
+                    exc_info=True,
+                )
 
     @callback
     def _on_client_rescan(payload: dict[str, Any] | None = None) -> None:
@@ -400,6 +429,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     discovered_by_instance: dict[int, str] = {}
     for client_instance, client_address in discovered_clients:
         discovered_by_instance[int(client_instance)] = str(client_address)
+    _LOGGER.debug(
+        "Initial client discovery found %d clients: %s",
+        len(discovered_by_instance),
+        sorted(discovered_by_instance.items()),
+    )
 
     client_initial_entities: list[SensorEntity] = []
     for client_instance, client_address in discovered_by_instance.items():
@@ -422,6 +456,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         discovered_map: dict[int, str] = {}
         for client_instance, client_address in scan_clients:
             discovered_map[int(client_instance)] = str(client_address)
+        _LOGGER.debug(
+            "Periodic client discovery found %d clients (target_instance=%s): %s",
+            len(discovered_map),
+            target_instance,
+            sorted(discovered_map.items()),
+        )
 
         for client_instance, client_address in discovered_map.items():
             if target_instance is not None and int(client_instance) != int(target_instance):

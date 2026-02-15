@@ -5,10 +5,12 @@ import logging
 import time
 from typing import Any, Dict
 
+from bacpypes3.pdu import Address
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from .const import CONF_INSTANCE, DOMAIN, client_display_name
+from .helpers.bacnet import device_instance_from_identifier as _device_instance_from_identifier
 from .sensor_helpers import (
     CLIENT_DISCOVERY_TIMEOUT_SECONDS,
     CLIENT_OBJECTLIST_READ_TIMEOUT_SECONDS,
@@ -230,32 +232,70 @@ async def _read_client_object_list(
 async def _discover_remote_clients(server: Any) -> list[tuple[int, str]]:
     app = getattr(server, "app", None)
     if app is None:
+        _LOGGER.debug("Client discovery skipped: BACnet app not available")
         return []
 
-    try:
-        i_ams = await app.who_is(timeout=CLIENT_DISCOVERY_TIMEOUT_SECONDS)
-    except Exception:
-        return []
+    responses: list[Any] = []
+
+    async def _who_is_attempt(label: str, **kwargs: Any) -> list[Any]:
+        try:
+            result = list(await app.who_is(**kwargs) or [])
+            _LOGGER.debug("Client discovery %s returned %d responses", label, len(result))
+            return result
+        except Exception:
+            _LOGGER.debug("Client discovery %s failed", label, exc_info=True)
+            return []
+
+    # Keep discovery simple and deterministic:
+    # 1) default BACpypes who_is()
+    # 2) explicit global broadcast (*:*)
+    responses.extend(
+        await _who_is_attempt(
+            "default",
+            timeout=CLIENT_DISCOVERY_TIMEOUT_SECONDS,
+        )
+    )
+
+    if not responses:
+        responses.extend(
+            await _who_is_attempt(
+                "global-broadcast(*:*)",
+                address=Address("*:*"),
+                timeout=CLIENT_DISCOVERY_TIMEOUT_SECONDS + 2.0,
+            )
+        )
 
     local_instance = _to_int(getattr(server, "instance", None))
     clients: dict[tuple[int, str], tuple[int, str]] = {}
-    for i_am in i_ams or []:
+    for i_am in responses:
         try:
             dev_ident = getattr(i_am, "iAmDeviceIdentifier", None)
-            instance = _to_int(dev_ident[1] if isinstance(dev_ident, tuple) and len(dev_ident) == 2 else None)
-            source = _safe_text(getattr(i_am, "pduSource", None))
+            instance = _device_instance_from_identifier(dev_ident)
+            source = _safe_text(
+                getattr(i_am, "pduSource", None)
+                or getattr(i_am, "source", None)
+            )
         except Exception:
             continue
         if instance is None or not source:
+            _LOGGER.debug("Ignoring I-Am with unparsable payload: %r", i_am)
             continue
         if local_instance is not None and instance == local_instance:
             continue
         key = (instance, source)
         clients[key] = key
 
-    if clients:
-        _LOGGER.debug("Discovered BACnet clients: %s", sorted(clients.values()))
-    return sorted(clients.values(), key=lambda item: (item[0], item[1]))
+    discovered = sorted(clients.values(), key=lambda item: (item[0], item[1]))
+    if discovered:
+        _LOGGER.debug("Discovered BACnet clients (%d): %s", len(discovered), discovered)
+    else:
+        _LOGGER.debug(
+            "Client discovery returned no usable I-Am responses "
+            "(raw=%d, local_instance=%s)",
+            len(responses),
+            local_instance,
+        )
+    return discovered
 
 
 async def _resolve_client_address(
