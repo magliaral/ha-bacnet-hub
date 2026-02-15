@@ -6,5 +6,6 @@
   ],
   "render_readme": true,
   "content_in_root": false,
-  "zip_release": true
+  "zip_release": true,
+  "filename": "bacnet_hub.zip"
 }

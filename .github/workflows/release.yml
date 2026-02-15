@@ -241,8 +241,7 @@ jobs:
       - name: Create ZIP archive
         if: steps.plan.outputs.skip != 'true' && steps.check_tag.outputs.exists != 'true'
         run: |
-          cd custom_components
-          zip -r ../bacnet_hub-${{ steps.plan.outputs.tag }}.zip bacnet_hub/ \
+          zip -r bacnet_hub.zip custom_components/bacnet_hub/ \
             -x "*.pyc" \
             -x "*__pycache__*" \
             -x "*.git*" \
@@ -283,7 +282,7 @@ jobs:
           name: BACnet Hub ${{ steps.plan.outputs.tag }}
           body_path: release_notes.md
           files: |
-            bacnet_hub-${{ steps.plan.outputs.tag }}.zip
+            bacnet_hub.zip
           draft: false
           prerelease: ${{ steps.context.outputs.prerelease }}
         env:
