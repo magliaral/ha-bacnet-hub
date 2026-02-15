@@ -13,6 +13,7 @@ from .const import (
     CONF_INSTANCE,
     DOMAIN,
     hub_display_name,
+    published_observer_is_config,
     published_observer_platform,
 )
 from .sensor_helpers import _entry_client_points, _entry_points_signal, _point_platform, _to_int
@@ -52,6 +53,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 source_attr=source_attr,
                 read_attr=read_attr,
                 hvac_on_mode=hvac_on_mode,
+                is_config=published_observer_is_config(dict(m or {})),
             )
         )
     if entities:

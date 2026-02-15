@@ -115,27 +115,12 @@ def published_entity_id(
 
 def published_observer_platform(mapping: dict[str, Any]) -> str:
     object_type = str(mapping.get("object_type") or "").strip()
-    source_attr = str(mapping.get("source_attr") or "").strip().lower()
-    write_action = str(mapping.get("write_action") or "").strip().lower()
-    entity_id = str(mapping.get("entity_id") or "").strip().lower()
-    entity_domain = entity_id.split(".", 1)[0] if "." in entity_id else ""
-
-    if object_type == "multiStateValue":
-        return "select"
-
-    if object_type == "analogValue":
-        if write_action == "climate_temperature" or source_attr in {"set_temperature", "temperature"}:
-            return "number"
-        if entity_domain in {"number", "input_number"}:
-            return "number"
-        return "sensor"
-
+    # Published observers are intentionally read-only.
+    # Use non-interactive platforms to avoid confusing UI toggles/sliders.
     if object_type == "binaryValue":
-        if write_action == "climate_hvac_mode" or source_attr == "hvac_mode":
-            return "switch"
-        if entity_domain in {"switch", "light", "fan", "group", "cover", "input_boolean"}:
-            return "switch"
         return "binary_sensor"
+    if object_type in {"analogValue", "multiStateValue"}:
+        return "sensor"
 
     return "sensor"
 

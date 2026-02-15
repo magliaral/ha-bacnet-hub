@@ -69,6 +69,7 @@ class BacnetPublishedSensor(SensorEntity):
         source_attr: str | None,
         read_attr: str | None,
         configured_unit: str | None,
+        is_config: bool = False,
     ):
         self.hass = hass
         self._entry_id = entry_id
@@ -111,6 +112,8 @@ class BacnetPublishedSensor(SensorEntity):
         self._attr_icon: Optional[str] = None
         self._attr_native_value: Optional[StateType] = None
         self._attr_extra_state_attributes: Dict[str, Any] = {}
+        if is_config:
+            self._attr_entity_category = EntityCategory.CONFIG
 
     @property
     def suggested_object_id(self) -> str | None:

@@ -104,11 +104,10 @@ For `climate.*`, multiple BACnet mappings can be created:
 - `multiStateValue`
 
 Published mappings are mirrored as observer entities and split by platform:
-- `sensor` / `binary_sensor` for read-only measurements/states
-- `number` / `switch` / `select` for control-like points (still read-only observer entities)
-- `number` / `switch` / `select` with `entity_category=config` for configuration-like points (for example climate setpoints/modes)
+- `sensor` / `binary_sensor` only (non-interactive read-only observers)
+- configuration-like observers use `entity_category=config` (for example climate setpoints/modes)
 
-Note: These observer entities are intentionally read-only and reject UI write attempts.
+Note: This avoids confusing UI behavior where toggles/sliders can be clicked but immediately snap back.
 
 ## BACnet -> Home Assistant Writeback (for published mappings)
 
