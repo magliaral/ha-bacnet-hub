@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import logging
 import re
 import socket
@@ -24,6 +23,10 @@ from bacpypes3.service.cov import ChangeOfValueServices
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from .helpers.versions import get_integration_version, get_bacpypes3_version
+from .helpers.bacnet import (
+    device_instance_from_identifier as _device_instance_from_identifier,
+    prefix_to_netmask as _prefix_to_netmask,
+)
 from .publisher import BacnetPublisher
 from .const import (
     CONF_DEVICE_DESCRIPTION,
@@ -60,44 +63,6 @@ _SYSTEM_STATUS_LABELS: dict[int, str] = {
 CLIENT_IAM_CACHE_KEY = "client_iam_cache"
 
 # ---------------------- Network/Address Helpers -----------------------------
-
-
-def _device_instance_from_identifier(value: Any) -> int | None:
-    if isinstance(value, tuple) and len(value) == 2:
-        try:
-            return int(value[1])
-        except Exception:
-            return None
-
-    for attr in ("instance", "objectInstance", "instanceNumber"):
-        try:
-            maybe = getattr(value, attr, None)
-        except Exception:
-            maybe = None
-        try:
-            if maybe is not None:
-                return int(maybe)
-        except Exception:
-            pass
-
-    text = str(value or "").strip()
-    if not text:
-        return None
-
-    m = re.search(r"(?:,|:)\s*(\d+)\s*$", text)
-    if m:
-        try:
-            return int(m.group(1))
-        except Exception:
-            return None
-
-    if text.isdigit():
-        try:
-            return int(text)
-        except Exception:
-            return None
-
-    return None
 
 def _detect_local_ip() -> Optional[str]:
     try:
@@ -156,13 +121,6 @@ def _split_ip_prefix_port(address_str: str) -> tuple[str, int, int]:
         prefix = _DEFAULT_PREFIX
     port = int(m.group("port") or _DEFAULT_PORT)
     return ip, prefix, port
-
-
-def _prefix_to_netmask(prefix: int) -> str:
-    try:
-        return str(ipaddress.ip_network(f"0.0.0.0/{prefix}", strict=False).netmask)
-    except Exception:
-        return "255.255.255.0"
 
 
 def _normalize_system_status(value: Any) -> tuple[int | None, str]:

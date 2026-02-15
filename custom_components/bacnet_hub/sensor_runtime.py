@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import logging
 import time
 from typing import Any, Dict
@@ -11,6 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from .const import CONF_INSTANCE, DOMAIN, client_display_name
+from .helpers.bacnet import device_instance_from_identifier as _device_instance_from_identifier
 from .sensor_helpers import (
     CLIENT_DISCOVERY_TIMEOUT_SECONDS,
     CLIENT_OBJECTLIST_READ_TIMEOUT_SECONDS,
@@ -52,48 +52,6 @@ def _merge_non_none(previous: dict[str, Any], current: dict[str, Any]) -> dict[s
         elif key not in merged:
             merged[key] = None
     return merged
-
-
-def _device_instance_from_identifier(value: Any) -> int | None:
-    if isinstance(value, tuple) and len(value) == 2:
-        return _to_int(value[1])
-
-    for attr in ("instance", "objectInstance", "instanceNumber"):
-        try:
-            maybe = getattr(value, attr, None)
-        except Exception:
-            maybe = None
-        inst = _to_int(maybe)
-        if inst is not None:
-            return inst
-
-    text = str(value or "").strip()
-    if not text:
-        return None
-
-    for sep in (",", ":"):
-        if sep in text:
-            tail = text.rsplit(sep, 1)[-1].strip()
-            inst = _to_int(tail)
-            if inst is not None:
-                return inst
-
-    return _to_int(text)
-
-
-def _directed_broadcast_for_server(server: Any) -> Address | None:
-    ip_addr = str(getattr(server, "ip_address", "") or "").strip()
-    prefix = _to_int(getattr(server, "network_prefix", None))
-    udp_port = _to_int(getattr(server, "udp_port", None)) or 47808
-
-    if not ip_addr or prefix is None or prefix < 0 or prefix > 32:
-        return None
-
-    try:
-        network = ipaddress.ip_network(f"{ip_addr}/{prefix}", strict=False)
-        return Address(f"{network.broadcast_address}:{udp_port}")
-    except Exception:
-        return None
 
 
 async def _read_remote_property(
@@ -288,7 +246,9 @@ async def _discover_remote_clients(server: Any) -> list[tuple[int, str]]:
             _LOGGER.debug("Client discovery %s failed", label, exc_info=True)
             return []
 
-    # Try default discovery first.
+    # Keep discovery simple and deterministic:
+    # 1) default BACpypes who_is()
+    # 2) explicit global broadcast (*:*)
     responses.extend(
         await _who_is_attempt(
             "default",
@@ -296,33 +256,11 @@ async def _discover_remote_clients(server: Any) -> list[tuple[int, str]]:
         )
     )
 
-    # Some simulators only answer specific broadcast variants.
-    if not responses:
-        directed = _directed_broadcast_for_server(server)
-        if directed is not None:
-            responses.extend(
-                await _who_is_attempt(
-                    f"directed-broadcast({directed})",
-                    address=directed,
-                    timeout=CLIENT_DISCOVERY_TIMEOUT_SECONDS + 1.5,
-                )
-            )
-
     if not responses:
         responses.extend(
             await _who_is_attempt(
                 "global-broadcast(*:*)",
                 address=Address("*:*"),
-                timeout=CLIENT_DISCOVERY_TIMEOUT_SECONDS + 2.0,
-            )
-        )
-
-    if not responses:
-        udp_port = _to_int(getattr(server, "udp_port", None)) or 47808
-        responses.extend(
-            await _who_is_attempt(
-                f"global-broadcast(255.255.255.255:{udp_port})",
-                address=Address(f"255.255.255.255:{udp_port}"),
                 timeout=CLIENT_DISCOVERY_TIMEOUT_SECONDS + 2.0,
             )
         )

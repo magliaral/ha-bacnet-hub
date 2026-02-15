@@ -12,6 +12,7 @@ from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
+from .helpers.bacnet import prefix_to_netmask as _prefix_to_netmask
 from .const import (
     CONF_ADDRESS,
     CONF_IMPORT_LABEL,
@@ -108,15 +109,6 @@ def _normalize_mac(value: Any) -> str | None:
     if not re.fullmatch(r"[0-9a-f]{2}(:[0-9a-f]{2}){5}", raw):
         return None
     return raw
-
-
-def _prefix_to_netmask(prefix: int) -> str:
-    if prefix <= 0:
-        return "0.0.0.0"
-    if prefix >= 32:
-        return "255.255.255.255"
-    mask = (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF
-    return ".".join(str((mask >> shift) & 0xFF) for shift in (24, 16, 8, 0))
 
 
 async def _async_network_adapter_for_ip(hass: HomeAssistant, ip_address: str) -> dict[str, Any]:
