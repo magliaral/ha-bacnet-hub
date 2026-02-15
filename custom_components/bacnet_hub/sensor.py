@@ -56,6 +56,8 @@ from .client_runtime import (
 
 _LOGGER = logging.getLogger(__name__)
 CLIENT_IAM_CACHE_KEY = "client_iam_cache"
+CLIENT_POINT_IMPORT_MAX_PARALLEL = 8
+CLIENT_SCAN_MAX_PARALLEL = 4
 
 
 class _ClientPointImportTransientError(RuntimeError):
@@ -233,6 +235,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         payload: dict[str, dict[str, Any]] = {}
         per_type_counts: dict[str, int] = {}
         read_candidates = 0
+        reads_to_run: list[tuple[str, int, str]] = []
         for object_type, object_instance in object_list:
             supported = _supported_point_type(object_type)
             if not supported:
@@ -242,24 +245,50 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             if only_new and point_key in existing_point_keys:
                 continue
             read_candidates += 1
-            try:
-                point = await _read_client_point_payload(
-                    app,
-                    address,
-                    instance,
-                    canonical_type,
-                    int(object_instance),
-                )
-            except asyncio.CancelledError:
-                raise
-            except BaseException:
-                continue
-            point_key = str(point.get("point_key") or point_key).strip()
+            reads_to_run.append((canonical_type, int(object_instance), point_key))
+
+        sem = asyncio.Semaphore(CLIENT_POINT_IMPORT_MAX_PARALLEL)
+
+        async def _read_one(
+            object_type: str,
+            object_instance: int,
+            default_point_key: str,
+        ) -> tuple[str, dict[str, Any]] | None:
+            async with sem:
+                try:
+                    point = await _read_client_point_payload(
+                        app,
+                        address,
+                        instance,
+                        object_type,
+                        int(object_instance),
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except BaseException:
+                    return None
+            point_key = str(point.get("point_key") or default_point_key).strip()
             if not point_key:
-                continue
-            payload[point_key] = point
-            type_slug = str(point.get("type_slug") or "").strip() or "unknown"
-            per_type_counts[type_slug] = int(per_type_counts.get(type_slug, 0)) + 1
+                return None
+            return point_key, point
+
+        if reads_to_run:
+            read_tasks = [
+                hass.async_create_task(_read_one(obj_type, obj_inst, default_key))
+                for obj_type, obj_inst, default_key in reads_to_run
+            ]
+            read_results = await asyncio.gather(*read_tasks, return_exceptions=True)
+            for result in read_results:
+                if isinstance(result, asyncio.CancelledError):
+                    raise result
+                if isinstance(result, BaseException):
+                    continue
+                if result is None:
+                    continue
+                point_key, point = result
+                payload[point_key] = point
+                type_slug = str(point.get("type_slug") or "").strip() or "unknown"
+                per_type_counts[type_slug] = int(per_type_counts.get(type_slug, 0)) + 1
 
         if not payload:
             if read_candidates > 0:
@@ -493,20 +522,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             sorted(discovered_map.items()),
         )
 
+        sem = asyncio.Semaphore(CLIENT_SCAN_MAX_PARALLEL)
+
+        async def _process_one(client_instance: int, client_address: str) -> None:
+            async with sem:
+                try:
+                    await _process_client_iam(int(client_instance), str(client_address))
+                except asyncio.CancelledError:
+                    raise
+                except BaseException:
+                    _LOGGER.debug(
+                        "Periodic client scan processing failed for %s (%s)",
+                        client_instance,
+                        client_address,
+                        exc_info=True,
+                    )
+
+        tasks: list[asyncio.Task] = []
         for client_instance, client_address in discovered_map.items():
             if target_instance is not None and int(client_instance) != int(target_instance):
                 continue
-            try:
-                await _process_client_iam(int(client_instance), str(client_address))
-            except asyncio.CancelledError:
-                raise
-            except BaseException:
-                _LOGGER.debug(
-                    "Periodic client scan processing failed for %s (%s)",
-                    client_instance,
-                    client_address,
-                    exc_info=True,
+            tasks.append(
+                hass.async_create_task(
+                    _process_one(int(client_instance), str(client_address))
                 )
+            )
+        if tasks:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for result in results:
+                if isinstance(result, asyncio.CancelledError):
+                    raise result
 
     def _schedule_rescan(_now) -> None:
         _start_bg_task(_scan_and_add_new_clients())
