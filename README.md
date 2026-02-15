@@ -22,7 +22,7 @@ This integration has two roles:
 
 - Labels-first auto mapping (no manual mapping UI).
 - Automatic mapping lifecycle: add, refresh, remove, cleanup.
-- Event-driven sync with debounce on registry/label changes.
+- Event-driven sync with debounce on registry/label/area changes.
 - Deterministic entity IDs and stable unique IDs.
 - Built-in diagnostics for hub and discovered clients.
 - Integration service: `bacnet_hub.reload`.
@@ -75,7 +75,7 @@ The integration runs in labels mode and auto-manages mappings from selected labe
   - Name: `BACnet`
   - Icon: `mdi:server-network-outline`
   - Color: `light-green`
-- Entities can be discovered by direct entity label or by device label.
+- Entities can be discovered by direct entity label, by device label, or by labels assigned to the linked area (entity area or device area).
 
 ## Home Assistant -> BACnet Mapping
 
@@ -158,6 +158,7 @@ Implementation detail:
   - `entity_registry_updated`
   - `device_registry_updated`
   - `label_registry_updated`
+  - `area_registry_updated`
 - Debounce: 2 seconds.
 - Stale/orphan published entities are automatically cleaned up.
 
@@ -215,7 +216,7 @@ Fields:
 
 - No entities imported:
   - Verify selected labels in options.
-  - Verify labels are attached to entity or its device.
+  - Verify labels are attached to entity, its device, or the linked area.
 - Address bind errors (`address already in use`):
   - Ensure only one BACnet process binds the same IP/port.
 - Direct BACnet writes rejected:

@@ -103,6 +103,25 @@ def _device_entry(dev_reg: Any, device_id: str) -> Any:
     return None
 
 
+def _area_entry(area_reg: Any, area_id: str) -> Any:
+    if not area_reg or not area_id:
+        return None
+    try:
+        if hasattr(area_reg, "async_get_area"):
+            return area_reg.async_get_area(area_id)
+        if hasattr(area_reg, "async_get"):
+            return area_reg.async_get(area_id)
+        if hasattr(area_reg, "areas"):
+            areas = getattr(area_reg, "areas")
+            if isinstance(areas, dict):
+                return areas.get(area_id)
+            if hasattr(areas, "get"):
+                return areas.get(area_id)
+    except Exception:
+        return None
+    return None
+
+
 def _is_numeric_state(state: Optional[State]) -> bool:
     if not state:
         return False
@@ -414,7 +433,21 @@ def entity_ids_for_label(hass: HomeAssistant, label_id: str) -> set[str]:
 
     er_mod, ent_reg = _get_entity_registry(hass)
     dr_mod, dev_reg = _get_device_registry(hass)
+    ar_mod, area_reg = _get_area_registry(hass)
     entries = _entity_registry_entries(er_mod, ent_reg)
+
+    area_label_cache: dict[str, set[str]] = {}
+
+    def _labels_for_area(area_id: Any) -> set[str]:
+        area_key = str(area_id or "").strip()
+        if not area_key or not ar_mod or not area_reg:
+            return set()
+        if area_key in area_label_cache:
+            return area_label_cache[area_key]
+        area = _area_entry(area_reg, area_key)
+        labels = set(getattr(area, "labels", set()) or set()) if area else set()
+        area_label_cache[area_key] = labels
+        return labels
 
     result: set[str] = set()
     for entry in entries:
@@ -429,12 +462,22 @@ def entity_ids_for_label(hass: HomeAssistant, label_id: str) -> set[str]:
             result.add(entity_id)
             continue
 
+        ent_area_id = getattr(entry, "area_id", None)
+        if label_id in _labels_for_area(ent_area_id):
+            result.add(entity_id)
+            continue
+
         device_id = getattr(entry, "device_id", None)
         if not device_id or not dr_mod or not dev_reg:
             continue
         device = _device_entry(dev_reg, device_id)
         dev_labels = set(getattr(device, "labels", set()) or set()) if device else set()
         if label_id in dev_labels:
+            result.add(entity_id)
+            continue
+
+        dev_area_id = getattr(device, "area_id", None) if device else None
+        if label_id in _labels_for_area(dev_area_id):
             result.add(entity_id)
 
     return result

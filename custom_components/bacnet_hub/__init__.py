@@ -49,6 +49,7 @@ KEY_CLIENT_IAM_CACHE = "client_iam_cache"
 EVENT_ENTITY_REGISTRY_UPDATED = "entity_registry_updated"
 EVENT_DEVICE_REGISTRY_UPDATED = "device_registry_updated"
 EVENT_LABEL_REGISTRY_UPDATED = "label_registry_updated"
+EVENT_AREA_REGISTRY_UPDATED = "area_registry_updated"
 EVENT_SYNC_DEBOUNCE_SECONDS = 2.0
 
 PLATFORMS: List[str] = ["sensor", "number", "switch", "select", "text", "binary_sensor"]
@@ -753,10 +754,18 @@ def _start_event_sync(hass: HomeAssistant, entry_id: str):
             return
         _schedule_event_sync(hass, entry_id, f"{EVENT_LABEL_REGISTRY_UPDATED}:{action or 'n/a'}")
 
+    @callback
+    def _on_area_registry_updated(event) -> None:
+        action = str((event.data or {}).get("action") or "").strip().lower()
+        if action and action not in relevant_actions:
+            return
+        _schedule_event_sync(hass, entry_id, f"{EVENT_AREA_REGISTRY_UPDATED}:{action or 'n/a'}")
+
     unsubs = [
         hass.bus.async_listen(EVENT_ENTITY_REGISTRY_UPDATED, _on_entity_registry_updated),
         hass.bus.async_listen(EVENT_DEVICE_REGISTRY_UPDATED, _on_device_registry_updated),
         hass.bus.async_listen(EVENT_LABEL_REGISTRY_UPDATED, _on_label_registry_updated),
+        hass.bus.async_listen(EVENT_AREA_REGISTRY_UPDATED, _on_area_registry_updated),
     ]
 
     def _unsub() -> None:

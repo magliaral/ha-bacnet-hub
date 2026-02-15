@@ -31,7 +31,7 @@
       },
       "labels": {
         "title": "Labels import",
-        "description": "Select one or more labels. Matching entities are mapped automatically on registry/label updates.",
+        "description": "Select one or more labels. Matching entities are mapped automatically on registry/label/area updates.",
         "data": {
           "import_labels": "Labels"
         }
@@ -42,3 +42,4 @@
     }
   }
 }
+
