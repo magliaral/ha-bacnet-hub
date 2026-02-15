@@ -318,6 +318,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             _client_entities(instance, address, include_network=False)
 
         client_id = _client_id(instance)
+        cache_before = _client_cache_get(hass, entry.entry_id, client_id)
+        was_online = bool(cache_before.get("online", False))
+        point_cache_before = _client_points_get(hass, entry.entry_id, client_id)
+        had_existing_points = bool(point_cache_before)
+        had_cov_unavailable_points = any(
+            bool(dict(raw_point or {}).get("_cov_unavailable", False))
+            for raw_point in point_cache_before.values()
+        )
         await _refresh_client_cache(
             hass=hass,
             entry_id=entry.entry_id,
@@ -330,13 +338,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         )
         _, latest_address = client_targets.get(client_id, (instance, address))
         cache = _client_cache_get(hass, entry.entry_id, client_id)
+        is_online = bool(cache.get("online", False))
+        should_force_point_refresh = (
+            (had_existing_points and not was_online and is_online)
+            or had_cov_unavailable_points
+        )
+        if should_force_point_refresh:
+            _LOGGER.debug(
+                "Forcing full point refresh for %s (%s): was_online=%s is_online=%s cov_unavailable=%s",
+                instance,
+                latest_address,
+                was_online,
+                is_online,
+                had_cov_unavailable_points,
+            )
         if bool(cache.get("has_network_object")):
             new_entities.extend(_client_entities(instance, latest_address, include_network=True))
         try:
             imported_point_entities = await _import_client_points(
                 instance,
                 latest_address,
-                only_new=True,
+                only_new=not should_force_point_refresh,
             )
             new_entities.extend(imported_point_entities)
         except asyncio.CancelledError:
