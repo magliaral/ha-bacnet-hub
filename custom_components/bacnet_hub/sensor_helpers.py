@@ -532,7 +532,7 @@ def _point_has_priority_array(point: dict[str, Any]) -> bool:
 
 def _point_is_writable(point: dict[str, Any]) -> bool:
     type_slug = str(point.get("type_slug") or "").strip().lower()
-    if type_slug in {"av", "bv", "mv"}:
+    if type_slug in {"av", "bv", "mv", "csv"}:
         return True
     if type_slug in {"ao", "bo"}:
         return _point_has_priority_array(point)
