@@ -60,6 +60,44 @@ _SYSTEM_STATUS_LABELS: dict[int, str] = {
 
 # ---------------------- Network/Address Helpers -----------------------------
 
+
+def _device_instance_from_identifier(value: Any) -> int | None:
+    if isinstance(value, tuple) and len(value) == 2:
+        try:
+            return int(value[1])
+        except Exception:
+            return None
+
+    for attr in ("instance", "objectInstance", "instanceNumber"):
+        try:
+            maybe = getattr(value, attr, None)
+        except Exception:
+            maybe = None
+        try:
+            if maybe is not None:
+                return int(maybe)
+        except Exception:
+            pass
+
+    text = str(value or "").strip()
+    if not text:
+        return None
+
+    m = re.search(r"(?:,|:)\s*(\d+)\s*$", text)
+    if m:
+        try:
+            return int(m.group(1))
+        except Exception:
+            return None
+
+    if text.isdigit():
+        try:
+            return int(text)
+        except Exception:
+            return None
+
+    return None
+
 def _detect_local_ip() -> Optional[str]:
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -199,18 +237,26 @@ class HubApp(
     async def do_IAmRequest(self, apdu: IAmRequest):
         parent_handler = getattr(super(), "do_IAmRequest", None)
         if callable(parent_handler):
-            await parent_handler(apdu)
+            try:
+                await parent_handler(apdu)
+            except Exception:
+                _LOGGER.debug("Parent I-Am handler failed", exc_info=True)
 
         try:
             dev_ident = getattr(apdu, "iAmDeviceIdentifier", None)
-            if not (isinstance(dev_ident, tuple) and len(dev_ident) == 2):
+            instance = _device_instance_from_identifier(dev_ident)
+            if instance is None:
                 return
-            instance = int(dev_ident[1])
-            source = str(getattr(apdu, "pduSource", "") or "").strip()
+            source = str(
+                getattr(apdu, "pduSource", None)
+                or getattr(apdu, "source", None)
+                or ""
+            ).strip()
             if not source:
                 return
             if self.local_device_instance is not None and instance == int(self.local_device_instance):
                 return
+            _LOGGER.debug("Incoming I-Am from %s (instance=%s)", source, instance)
             callback = self.on_i_am
             if callback is None:
                 return

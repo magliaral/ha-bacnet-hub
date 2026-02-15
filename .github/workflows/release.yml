@@ -219,9 +219,9 @@ jobs:
 
           git add custom_components/bacnet_hub/manifest.json
           if [ "${{ steps.plan.outputs.commit_mode }}" = "normalize" ]; then
-            git commit -m "chore(release): normalize version to ${{ steps.plan.outputs.version }} [skip ci]"
+            git commit -m "chore(release): normalize version to ${{ steps.plan.outputs.version }}"
           else
-            git commit -m "chore(release): bump prerelease version to ${{ steps.plan.outputs.version }} [skip ci]"
+            git commit -m "chore(release): bump prerelease version to ${{ steps.plan.outputs.version }}"
           fi
           git push origin "HEAD:${{ steps.context.outputs.branch }}"
 

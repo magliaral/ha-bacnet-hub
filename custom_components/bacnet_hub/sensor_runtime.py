@@ -52,6 +52,33 @@ def _merge_non_none(previous: dict[str, Any], current: dict[str, Any]) -> dict[s
     return merged
 
 
+def _device_instance_from_identifier(value: Any) -> int | None:
+    if isinstance(value, tuple) and len(value) == 2:
+        return _to_int(value[1])
+
+    for attr in ("instance", "objectInstance", "instanceNumber"):
+        try:
+            maybe = getattr(value, attr, None)
+        except Exception:
+            maybe = None
+        inst = _to_int(maybe)
+        if inst is not None:
+            return inst
+
+    text = str(value or "").strip()
+    if not text:
+        return None
+
+    for sep in (",", ":"):
+        if sep in text:
+            tail = text.rsplit(sep, 1)[-1].strip()
+            inst = _to_int(tail)
+            if inst is not None:
+                return inst
+
+    return _to_int(text)
+
+
 async def _read_remote_property(
     app: Any,
     address: str,
@@ -230,32 +257,47 @@ async def _read_client_object_list(
 async def _discover_remote_clients(server: Any) -> list[tuple[int, str]]:
     app = getattr(server, "app", None)
     if app is None:
+        _LOGGER.debug("Client discovery skipped: BACnet app not available")
         return []
 
     try:
         i_ams = await app.who_is(timeout=CLIENT_DISCOVERY_TIMEOUT_SECONDS)
     except Exception:
+        _LOGGER.debug("Client discovery who_is call failed", exc_info=True)
         return []
 
     local_instance = _to_int(getattr(server, "instance", None))
     clients: dict[tuple[int, str], tuple[int, str]] = {}
-    for i_am in i_ams or []:
+    responses = list(i_ams or [])
+    for i_am in responses:
         try:
             dev_ident = getattr(i_am, "iAmDeviceIdentifier", None)
-            instance = _to_int(dev_ident[1] if isinstance(dev_ident, tuple) and len(dev_ident) == 2 else None)
-            source = _safe_text(getattr(i_am, "pduSource", None))
+            instance = _device_instance_from_identifier(dev_ident)
+            source = _safe_text(
+                getattr(i_am, "pduSource", None)
+                or getattr(i_am, "source", None)
+            )
         except Exception:
             continue
         if instance is None or not source:
+            _LOGGER.debug("Ignoring I-Am with unparsable payload: %r", i_am)
             continue
         if local_instance is not None and instance == local_instance:
             continue
         key = (instance, source)
         clients[key] = key
 
-    if clients:
-        _LOGGER.debug("Discovered BACnet clients: %s", sorted(clients.values()))
-    return sorted(clients.values(), key=lambda item: (item[0], item[1]))
+    discovered = sorted(clients.values(), key=lambda item: (item[0], item[1]))
+    if discovered:
+        _LOGGER.debug("Discovered BACnet clients (%d): %s", len(discovered), discovered)
+    else:
+        _LOGGER.debug(
+            "Client discovery returned no usable I-Am responses "
+            "(raw=%d, local_instance=%s)",
+            len(responses),
+            local_instance,
+        )
+    return discovered
 
 
 async def _resolve_client_address(

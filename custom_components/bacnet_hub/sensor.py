@@ -363,6 +363,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         address = _safe_text(data.get("address"))
         if instance is None or not address:
             return
+        _LOGGER.debug("Received client I-Am signal: instance=%s address=%s", instance, address)
         _start_bg_task(_process_client_iam(int(instance), str(address)))
 
     unsub_iam = async_dispatcher_connect(hass, client_iam_signal(entry.entry_id), _on_client_iam)
@@ -400,6 +401,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     discovered_by_instance: dict[int, str] = {}
     for client_instance, client_address in discovered_clients:
         discovered_by_instance[int(client_instance)] = str(client_address)
+    _LOGGER.debug(
+        "Initial client discovery found %d clients: %s",
+        len(discovered_by_instance),
+        sorted(discovered_by_instance.items()),
+    )
 
     client_initial_entities: list[SensorEntity] = []
     for client_instance, client_address in discovered_by_instance.items():
@@ -422,6 +428,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         discovered_map: dict[int, str] = {}
         for client_instance, client_address in scan_clients:
             discovered_map[int(client_instance)] = str(client_address)
+        _LOGGER.debug(
+            "Periodic client discovery found %d clients (target_instance=%s): %s",
+            len(discovered_map),
+            target_instance,
+            sorted(discovered_map.items()),
+        )
 
         for client_instance, client_address in discovered_map.items():
             if target_instance is not None and int(client_instance) != int(target_instance):
