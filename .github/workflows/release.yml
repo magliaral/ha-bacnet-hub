@@ -89,21 +89,21 @@ jobs:
             TYPE="none"
 
             # MAJOR: feat(scope)!:, fix(scope)!:, refactor(scope)!:, perf(scope)!: and BREAKING CHANGE
-            if echo "$MESSAGES" | grep -Eqi "^[\"']?(feat|fix|refactor|perf)(\([^)]+\))?!:"; then
+            if echo "$MESSAGES" | grep -Eqi "^[\"'\`]?(feat|fix|refactor|perf)(\([^)]+\))?!:"; then
               TYPE="major"
             elif echo "$MESSAGES" | grep -qi "BREAKING CHANGE:"; then
               TYPE="major"
 
             # MINOR: feat: or feat(scope):
-            elif echo "$MESSAGES" | grep -Eqi "^[\"']?feat(\([^)]+\))?:"; then
+            elif echo "$MESSAGES" | grep -Eqi "^[\"'\`]?(feat)(\([^)]+\))?:"; then
               TYPE="minor"
 
             # PATCH: fix/refactor/perf/chore/test/ci/build, each with optional scope
-            elif echo "$MESSAGES" | grep -Eqi "^[\"']?(fix|refactor|perf|chore|test|ci|build)(\([^)]+\))?:"; then
+            elif echo "$MESSAGES" | grep -Eqi "^[\"'\`]?(fix|refactor|perf|chore|test|ci|build)(\([^)]+\))?:"; then
               TYPE="patch"
 
             # docs/style (with optional scope) -> none
-            elif echo "$MESSAGES" | grep -Eqi "^[\"']?(docs|style)(\([^)]+\))?:"; then
+            elif echo "$MESSAGES" | grep -Eqi "^[\"'\`]?(docs|style)(\([^)]+\))?:"; then
               TYPE="none"
             fi
           fi
