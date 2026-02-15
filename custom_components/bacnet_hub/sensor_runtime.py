@@ -95,7 +95,7 @@ async def _read_remote_properties(
                     for prop in unique_props:
                         if prop in raw:
                             result[prop] = raw.get(prop)
-                    if result:
+                    if all(prop in result for prop in unique_props):
                         return result
             except asyncio.CancelledError:
                 raise
@@ -103,6 +103,8 @@ async def _read_remote_properties(
                 continue
 
     for prop in unique_props:
+        if prop in result:
+            continue
         try:
             result[prop] = await _read_remote_property(
                 app,
