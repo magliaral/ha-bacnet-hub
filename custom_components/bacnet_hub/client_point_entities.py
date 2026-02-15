@@ -65,6 +65,8 @@ class BacnetClientPointEntityBase:
     _attr_should_poll = False
     _attr_has_entity_name = False
     _attr_entity_registry_enabled_default = False
+    _POINT_UNAVAILABLE_KEY = "_cov_unavailable"
+    _POINT_UNAVAILABLE_REASON_KEY = "_cov_unavailable_reason"
 
     def __init__(
         self,
@@ -109,6 +111,7 @@ class BacnetClientPointEntityBase:
         description = _safe_text(cache.get("description"))
         object_name = _safe_text(cache.get("object_name"))
         self._attr_name = str(description or object_name or f"{type_slug.upper()} {object_instance}")
+        self._attr_available = not bool(cache.get(self._POINT_UNAVAILABLE_KEY, False))
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -155,6 +158,43 @@ class BacnetClientPointEntityBase:
     def _get_point(self) -> dict[str, Any]:
         return dict(
             _client_points_get(self.hass, self._entry_id, self._client_id).get(self._point_key, {}) or {}
+        )
+
+    def _set_client_points_unavailable(self, unavailable: bool, *, reason: str | None = None) -> None:
+        point_cache = _client_points_get(self.hass, self._entry_id, self._client_id)
+        if not point_cache:
+            return
+
+        payload: dict[str, dict[str, Any]] = {}
+        changed = False
+        for point_key, raw_point in point_cache.items():
+            point = dict(raw_point or {})
+            prev_unavailable = bool(point.get(self._POINT_UNAVAILABLE_KEY, False))
+            if prev_unavailable != unavailable:
+                point[self._POINT_UNAVAILABLE_KEY] = unavailable
+                changed = True
+
+            if unavailable:
+                reason_text = str(reason or "cov_register_failed")
+                if str(point.get(self._POINT_UNAVAILABLE_REASON_KEY) or "") != reason_text:
+                    point[self._POINT_UNAVAILABLE_REASON_KEY] = reason_text
+                    changed = True
+            else:
+                if self._POINT_UNAVAILABLE_REASON_KEY in point:
+                    point.pop(self._POINT_UNAVAILABLE_REASON_KEY, None)
+                    changed = True
+
+            payload[str(point_key)] = point
+
+        if not changed:
+            return
+
+        _client_points_set(self.hass, self._entry_id, self._client_id, payload)
+        async_dispatcher_send(self.hass, _client_points_signal(self._entry_id, self._client_id))
+        async_dispatcher_send(
+            self.hass,
+            _entry_points_signal(self._entry_id),
+            {"client_id": self._client_id},
         )
 
     @callback
@@ -261,6 +301,7 @@ class BacnetClientPointEntityBase:
         object_identifier = _safe_text(point.get("object_identifier"))
         address = _safe_text(point.get("client_address"))
         if not object_identifier or not address:
+            self._set_client_points_unavailable(True, reason="cov_target_missing")
             return
         now = time.monotonic()
         target = (str(address), str(object_identifier))
@@ -274,11 +315,13 @@ class BacnetClientPointEntityBase:
         server = self.hass.data.get(DOMAIN, {}).get("servers", {}).get(self._entry_id)
         app = getattr(server, "app", None) if server is not None else None
         if app is None:
+            self._set_client_points_unavailable(True, reason="bacnet_app_unavailable")
             return
 
         cov_factory = getattr(app, "change_of_value", None)
         if not callable(cov_factory):
             self._cov_registered = False
+            self._set_client_points_unavailable(True, reason="cov_not_supported")
             return
 
         process_id = _cov_process_identifier(self._entry_id, self._client_id, self._point_key)
@@ -324,11 +367,13 @@ class BacnetClientPointEntityBase:
                     )
                 self._cov_retry_not_before_ts = time.monotonic() + self._cov_retry_delay_seconds
                 self._cov_retry_delay_seconds = min(self._cov_retry_delay_seconds * 2.0, 300.0)
+                self._set_client_points_unavailable(True, reason="cov_register_failed")
                 return
 
             self._cov_registered = True
             self._cov_retry_not_before_ts = 0.0
             self._cov_retry_delay_seconds = 10.0
+            self._set_client_points_unavailable(False)
             self._cov_task = self.hass.async_create_task(self._async_cov_receive_loop())
             self._schedule_cov_lease_reregister()
 
@@ -360,6 +405,7 @@ class BacnetClientPointEntityBase:
                 raise
             except BaseException:
                 self._cov_registered = False
+                self._set_client_points_unavailable(True, reason="cov_receive_failed")
                 self._handle_points_update()
                 _LOGGER.debug("COV receive loop failed for %s", self._point_key, exc_info=True)
                 return
@@ -470,6 +516,8 @@ class BacnetClientPointEntityBase:
         point = self._get_point()
         if not point:
             return
+
+        self._attr_available = not bool(point.get(self._POINT_UNAVAILABLE_KEY, False))
 
         description = _safe_text(point.get("description"))
         object_name = _safe_text(point.get("object_name"))
