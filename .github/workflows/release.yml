@@ -115,6 +115,12 @@ jobs:
         run: |
           BRANCH="${{ steps.context.outputs.branch }}"
           CURRENT_VERSION="${{ steps.current.outputs.version }}"
+          BASE_VERSION="${CURRENT_VERSION%%-*}"
+
+          if ! echo "$BASE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Invalid manifest version: $CURRENT_VERSION"
+            exit 1
+          fi
 
           if [ "$BRANCH" = "dev" ]; then
             BUMP_TYPE="${{ steps.bump.outputs.type }}"
@@ -125,7 +131,7 @@ jobs:
               exit 0
             fi
 
-            IFS='.' read -r major minor patch <<< "$CURRENT_VERSION"
+            IFS='.' read -r major minor patch <<< "$BASE_VERSION"
             case "$BUMP_TYPE" in
               major)
                 major=$((major + 1))
@@ -145,19 +151,28 @@ jobs:
                 ;;
             esac
 
-            NEW_VERSION="${major}.${minor}.${patch}"
-            RELEASE_TAG="v${NEW_VERSION}-beta.${GITHUB_RUN_NUMBER}"
-            SHOULD_COMMIT="true"
-          else
-            NEW_VERSION="$CURRENT_VERSION"
+            STABLE_BASE_VERSION="${major}.${minor}.${patch}"
+            NEW_VERSION="${STABLE_BASE_VERSION}-beta.${GITHUB_RUN_NUMBER}"
             RELEASE_TAG="v${NEW_VERSION}"
-            SHOULD_COMMIT="false"
+            SHOULD_COMMIT="true"
+            COMMIT_MODE="prerelease"
+          else
+            NEW_VERSION="$BASE_VERSION"
+            RELEASE_TAG="v${NEW_VERSION}"
+            if [ "$CURRENT_VERSION" != "$NEW_VERSION" ]; then
+              SHOULD_COMMIT="true"
+              COMMIT_MODE="normalize"
+            else
+              SHOULD_COMMIT="false"
+              COMMIT_MODE="none"
+            fi
           fi
 
           echo "skip=false" >> "$GITHUB_OUTPUT"
           echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "should_commit=$SHOULD_COMMIT" >> "$GITHUB_OUTPUT"
+          echo "commit_mode=$COMMIT_MODE" >> "$GITHUB_OUTPUT"
 
       - name: Check if tag already exists
         id: check_tag
@@ -184,7 +199,11 @@ jobs:
           git config --local user.name "github-actions[bot]"
 
           git add custom_components/bacnet_hub/manifest.json
-          git commit -m "chore(release): bump version to ${{ steps.plan.outputs.version }} [skip ci]"
+          if [ "${{ steps.plan.outputs.commit_mode }}" = "normalize" ]; then
+            git commit -m "chore(release): normalize version to ${{ steps.plan.outputs.version }} [skip ci]"
+          else
+            git commit -m "chore(release): bump prerelease version to ${{ steps.plan.outputs.version }} [skip ci]"
+          fi
           git push origin "HEAD:${{ steps.context.outputs.branch }}"
 
       - name: Create and push tag
