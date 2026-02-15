@@ -241,7 +241,8 @@ jobs:
       - name: Create ZIP archive
         if: steps.plan.outputs.skip != 'true' && steps.check_tag.outputs.exists != 'true'
         run: |
-          zip -r bacnet_hub.zip custom_components/bacnet_hub/ \
+          cd custom_components/bacnet_hub
+          zip -r "$GITHUB_WORKSPACE/bacnet_hub.zip" . \
             -x "*.pyc" \
             -x "*__pycache__*" \
             -x "*.git*" \
