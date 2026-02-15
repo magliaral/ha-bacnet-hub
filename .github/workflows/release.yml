@@ -317,6 +317,96 @@ jobs:
               }
             }
 
+      - name: Cleanup old stable releases and tags
+        if: steps.plan.outputs.skip != 'true' && steps.check_tag.outputs.exists != 'true' && steps.context.outputs.branch == 'main'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const keepTag = "${{ steps.plan.outputs.tag }}";
+            const keepLatestCount = 10;
+            const stableTagRe = /^v(\d+)\.(\d+)\.(\d+)$/;
+
+            const releases = await github.paginate(
+              github.rest.repos.listReleases,
+              { owner, repo, per_page: 100 },
+            );
+
+            const stable = releases
+              .filter((rel) => !rel.prerelease && !rel.draft)
+              .map((rel) => {
+                const m = stableTagRe.exec(String(rel.tag_name || ""));
+                if (!m) return null;
+                return {
+                  rel,
+                  tag: rel.tag_name,
+                  major: Number(m[1]),
+                  minor: Number(m[2]),
+                  patch: Number(m[3]),
+                };
+              })
+              .filter(Boolean);
+
+            stable.sort((a, b) => {
+              if (a.major !== b.major) return b.major - a.major;
+              if (a.minor !== b.minor) return b.minor - a.minor;
+              if (a.patch !== b.patch) return b.patch - a.patch;
+              const at = new Date(a.rel.published_at || a.rel.created_at || 0).getTime();
+              const bt = new Date(b.rel.published_at || b.rel.created_at || 0).getTime();
+              return bt - at;
+            });
+
+            const keep = new Set([keepTag]);
+
+            // Keep latest N stable releases overall.
+            for (const item of stable.slice(0, keepLatestCount)) {
+              keep.add(item.tag);
+            }
+
+            // Keep newest patch for every major.minor line.
+            const newestPerMinor = new Map();
+            for (const item of stable) {
+              const key = `${item.major}.${item.minor}`;
+              const prev = newestPerMinor.get(key);
+              if (!prev || item.patch > prev.patch) {
+                newestPerMinor.set(key, item);
+              }
+            }
+            for (const item of newestPerMinor.values()) {
+              keep.add(item.tag);
+            }
+
+            const stale = stable.filter((item) => !keep.has(item.tag));
+            core.info(`Stable releases: ${stable.length}`);
+            core.info(`Keeping: ${keep.size} (latest=${keepLatestCount}, plus newest per major.minor, plus current)`);
+            core.info(`Deleting stale stable releases: ${stale.length}`);
+
+            for (const item of stale) {
+              const rel = item.rel;
+              core.info(`Deleting stable release ${item.tag} (id=${rel.id})`);
+              await github.rest.repos.deleteRelease({
+                owner,
+                repo,
+                release_id: rel.id,
+              });
+
+              try {
+                await github.rest.git.deleteRef({
+                  owner,
+                  repo,
+                  ref: `tags/${item.tag}`,
+                });
+                core.info(`Deleted tag ${item.tag}`);
+              } catch (err) {
+                if (err.status === 404) {
+                  core.info(`Tag ${item.tag} already missing`);
+                } else {
+                  throw err;
+                }
+              }
+            }
+
       - name: Summary (released)
         if: steps.plan.outputs.skip != 'true' && steps.check_tag.outputs.exists != 'true'
         run: |
