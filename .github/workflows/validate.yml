@@ -37,6 +37,31 @@ jobs:
               return;
             }
 
+            // If the push head is itself a merged PR commit to main, this is not a direct push.
+            const headSha = context.payload.after;
+            if (headSha) {
+              try {
+                const headPulls = await github.request(
+                  'GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls',
+                  {
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    commit_sha: headSha,
+                  }
+                );
+
+                const mergedToMain = (headPulls.data || []).some(
+                  (pr) => pr?.base?.ref === 'main' && Boolean(pr?.merged_at)
+                );
+                if (mergedToMain) {
+                  core.info('Push head commit is linked to a merged PR into main. Guard passes.');
+                  return;
+                }
+              } catch (err) {
+                core.warning(`Unable to resolve PR link for head commit ${headSha}: ${err.message}`);
+              }
+            }
+
             const commitsWithoutPr = [];
 
             for (const commit of commits) {
@@ -49,7 +74,10 @@ jobs:
                 }
               );
 
-              if (!Array.isArray(response.data) || response.data.length === 0) {
+              const hasMergedMainPr = Array.isArray(response.data)
+                && response.data.some((pr) => pr?.base?.ref === 'main' && Boolean(pr?.merged_at));
+
+              if (!hasMergedMainPr) {
                 commitsWithoutPr.push(commit.id.slice(0, 7));
               }
             }
