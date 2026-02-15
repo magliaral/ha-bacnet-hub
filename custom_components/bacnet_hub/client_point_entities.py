@@ -33,6 +33,7 @@ from .sensor_helpers import (
     _entry_points_signal,
     _normalize_bacnet_unit,
     _point_entity_id,
+    _point_is_writable,
     _point_native_value_from_payload,
     _point_unique_id,
     _property_slug,
@@ -694,6 +695,6 @@ class BacnetClientPointText(BacnetClientPointEntityBase, TextEntity):
 
     async def async_set_value(self, value: str) -> None:
         point = self._get_point()
-        if not bool(point.get("writable_from_ha")):
+        if not _point_is_writable(point):
             raise HomeAssistantError("Point is read-only")
         await self._async_write_present_value(str(value))
