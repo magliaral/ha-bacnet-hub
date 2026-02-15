@@ -817,7 +817,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    from .server import BacnetHubServer
+    from .core.server import BacnetHubServer
 
     data = _ensure_domain(hass)
     servers: dict[str, BacnetHubServer] = data[KEY_SERVERS]

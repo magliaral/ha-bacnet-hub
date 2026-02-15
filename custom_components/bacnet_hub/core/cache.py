@@ -9,7 +9,7 @@ from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.typing import StateType
 
-from .const import DOMAIN
+from ..const import DOMAIN
 
 HUB_DIAGNOSTIC_FIELDS: list[tuple[str, str]] = [
     ("description", "Description"),

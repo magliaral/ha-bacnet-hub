@@ -1,4 +1,4 @@
-# custom_components/bacnet_hub/server.py
+# custom_components/bacnet_hub/core/server.py
 from __future__ import annotations
 
 import asyncio
@@ -22,13 +22,13 @@ from bacpypes3.service.object import ReadWritePropertyServices
 from bacpypes3.service.cov import ChangeOfValueServices
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 
-from .helpers.versions import get_integration_version, get_bacpypes3_version
-from .helpers.bacnet import (
+from ..helpers.versions import get_integration_version, get_bacpypes3_version
+from ..helpers.bacnet import (
     device_instance_from_identifier as _device_instance_from_identifier,
     prefix_to_netmask as _prefix_to_netmask,
 )
 from .publisher import BacnetPublisher
-from .const import (
+from ..const import (
     CONF_DEVICE_DESCRIPTION,
     CONF_DEVICE_NAME,
     DEFAULT_BACNET_DEVICE_DESCRIPTION,

@@ -16,7 +16,7 @@ from .const import (
     published_observer_platform,
 )
 from .published_control_entities import BacnetPublishedSelectObserver
-from .sensor_helpers import _entry_client_points, _entry_points_signal, _point_platform, _to_int
+from .core.cache import _entry_client_points, _entry_points_signal, _point_platform, _to_int
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities) -> None:

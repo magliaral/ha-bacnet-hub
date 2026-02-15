@@ -21,7 +21,7 @@ from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.typing import StateType
 
 from .const import DOMAIN, client_display_name
-from .sensor_helpers import (
+from .core.cache import (
     CLIENT_COV_LEASE_SECONDS,
     _client_cache_get,
     _client_cov_signal,
@@ -41,7 +41,7 @@ from .sensor_helpers import (
     _sensor_device_class_from_unit,
     _to_int,
 )
-from .sensor_runtime import _write_client_point_present_value
+from .core.runtime import _write_client_point_present_value
 
 _LOGGER = logging.getLogger(__name__)
 

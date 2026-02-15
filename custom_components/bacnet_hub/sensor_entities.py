@@ -25,7 +25,7 @@ from .const import (
     published_observer_unique_id,
     published_suggested_object_id,
 )
-from .sensor_helpers import (
+from .core.cache import (
     CLIENT_COV_LEASE_SECONDS,
     NETWORK_DIAGNOSTIC_KEYS,
     _client_cache_get,
@@ -48,7 +48,7 @@ from .sensor_helpers import (
     _to_int,
     _to_state,
 )
-from .sensor_runtime import _hub_diagnostics
+from .core.runtime import _hub_diagnostics
 
 _LOGGER = logging.getLogger(__name__)
 

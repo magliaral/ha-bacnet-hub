@@ -25,7 +25,7 @@ from .sensor_entities import (
     BacnetHubDetailSensor,
     BacnetPublishedSensor,
 )
-from .sensor_helpers import (
+from .core.cache import (
     CLIENT_DIAGNOSTIC_FIELDS,
     CLIENT_DISCOVERY_TIMEOUT_SECONDS,
     CLIENT_REDISCOVERY_INTERVAL,
@@ -47,7 +47,7 @@ from .sensor_helpers import (
     _supported_point_type,
     _to_int,
 )
-from .sensor_runtime import (
+from .core.runtime import (
     _discover_remote_clients,
     _read_client_object_list,
     _read_client_point_payload,
@@ -570,3 +570,4 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     unsub_rescan = async_track_time_interval(hass, _schedule_rescan, CLIENT_REDISCOVERY_INTERVAL)
     entry.async_on_unload(unsub_rescan)
+
