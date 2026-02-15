@@ -4,17 +4,9 @@ on:
   pull_request:
     branches:
       - main
-    paths:
-      - 'custom_components/**'
-      - '.github/workflows/validate.yml'
-      - '.github/workflows/release.yml'
   push:
     branches:
       - main
-    paths:
-      - 'custom_components/**'
-      - '.github/workflows/validate.yml'
-      - '.github/workflows/release.yml'
 
 permissions:
   contents: read
