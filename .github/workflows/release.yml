@@ -8,6 +8,7 @@ on:
     paths:
       - 'custom_components/**'
       - '!custom_components/**/*.md'
+      - 'hacs.json'
       - '.github/workflows/release.yml'
   workflow_dispatch:
     inputs:
