@@ -279,22 +279,53 @@ async def _discover_remote_clients(server: Any) -> list[tuple[int, str]]:
 
     responses: list[Any] = []
 
-    try:
-        responses = list(await app.who_is(timeout=CLIENT_DISCOVERY_TIMEOUT_SECONDS) or [])
-    except Exception:
-        _LOGGER.debug("Client discovery who_is call failed", exc_info=True)
-
-    directed = _directed_broadcast_for_server(server)
-    if not responses and directed is not None:
+    async def _who_is_attempt(label: str, **kwargs: Any) -> list[Any]:
         try:
-            _LOGGER.debug("Client discovery fallback via directed broadcast: %s", directed)
-            directed_responses = list(
-                await app.who_is(address=directed, timeout=CLIENT_DISCOVERY_TIMEOUT_SECONDS + 1.5)
-                or []
-            )
-            responses.extend(directed_responses)
+            result = list(await app.who_is(**kwargs) or [])
+            _LOGGER.debug("Client discovery %s returned %d responses", label, len(result))
+            return result
         except Exception:
-            _LOGGER.debug("Directed-broadcast who_is fallback failed", exc_info=True)
+            _LOGGER.debug("Client discovery %s failed", label, exc_info=True)
+            return []
+
+    # Try default discovery first.
+    responses.extend(
+        await _who_is_attempt(
+            "default",
+            timeout=CLIENT_DISCOVERY_TIMEOUT_SECONDS,
+        )
+    )
+
+    # Some simulators only answer specific broadcast variants.
+    if not responses:
+        directed = _directed_broadcast_for_server(server)
+        if directed is not None:
+            responses.extend(
+                await _who_is_attempt(
+                    f"directed-broadcast({directed})",
+                    address=directed,
+                    timeout=CLIENT_DISCOVERY_TIMEOUT_SECONDS + 1.5,
+                )
+            )
+
+    if not responses:
+        responses.extend(
+            await _who_is_attempt(
+                "global-broadcast(*:*)",
+                address=Address("*:*"),
+                timeout=CLIENT_DISCOVERY_TIMEOUT_SECONDS + 2.0,
+            )
+        )
+
+    if not responses:
+        udp_port = _to_int(getattr(server, "udp_port", None)) or 47808
+        responses.extend(
+            await _who_is_attempt(
+                f"global-broadcast(255.255.255.255:{udp_port})",
+                address=Address(f"255.255.255.255:{udp_port}"),
+                timeout=CLIENT_DISCOVERY_TIMEOUT_SECONDS + 2.0,
+            )
+        )
 
     local_instance = _to_int(getattr(server, "instance", None))
     clients: dict[tuple[int, str], tuple[int, str]] = {}
