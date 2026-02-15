@@ -113,6 +113,62 @@ def published_entity_id(
     )
 
 
+def published_observer_platform(mapping: dict[str, Any]) -> str:
+    object_type = str(mapping.get("object_type") or "").strip()
+    source_attr = str(mapping.get("source_attr") or "").strip().lower()
+    write_action = str(mapping.get("write_action") or "").strip().lower()
+    entity_id = str(mapping.get("entity_id") or "").strip().lower()
+    entity_domain = entity_id.split(".", 1)[0] if "." in entity_id else ""
+
+    if object_type == "multiStateValue":
+        return "select"
+
+    if object_type == "analogValue":
+        if write_action == "climate_temperature" or source_attr in {"set_temperature", "temperature"}:
+            return "number"
+        if entity_domain in {"number", "input_number"}:
+            return "number"
+        return "sensor"
+
+    if object_type == "binaryValue":
+        if write_action == "climate_hvac_mode" or source_attr == "hvac_mode":
+            return "switch"
+        if entity_domain in {"switch", "light", "fan", "group", "cover", "input_boolean"}:
+            return "switch"
+        return "binary_sensor"
+
+    return "sensor"
+
+
+def published_observer_is_config(mapping: dict[str, Any]) -> bool:
+    source_attr = str(mapping.get("source_attr") or "").strip().lower()
+    write_action = str(mapping.get("write_action") or "").strip().lower()
+    if write_action in {"climate_hvac_mode", "climate_temperature"}:
+        return True
+    if source_attr in {"hvac_mode", "set_temperature", "temperature"}:
+        return True
+    return False
+
+
+def published_observer_unique_id(
+    *,
+    hub_instance: Any,
+    hub_address: Any,
+    object_type: str,
+    object_instance: Any,
+    entity_domain: str,
+) -> str:
+    base = published_unique_id(
+        hub_instance=hub_instance,
+        hub_address=hub_address,
+        object_type=object_type,
+        object_instance=object_instance,
+    )
+    if entity_domain in {"sensor", "binary_sensor"}:
+        return base
+    return f"{base}:{entity_domain}"
+
+
 def mirrored_state_attributes(attrs: dict[str, Any]) -> dict[str, Any]:
     return {
         key: value

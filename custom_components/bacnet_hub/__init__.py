@@ -24,7 +24,8 @@ from .const import (
     hub_display_name,
     PUBLISH_MODE_LABELS,
     published_entity_id,
-    published_unique_id,
+    published_observer_platform,
+    published_observer_unique_id,
 )
 from .discovery import (
     entity_mapping_candidates,
@@ -288,29 +289,34 @@ def _expected_unique_ids(entry: ConfigEntry, published: List[Dict[str, Any]]) ->
         inst = _as_int(mapping.get("instance"), -1)
         if inst < 0:
             continue
+        entity_domain = published_observer_platform(mapping)
         expected.add(
-            published_unique_id(
+            published_observer_unique_id(
                 hub_instance=hub_instance,
                 hub_address=hub_address,
                 object_type=obj_type,
                 object_instance=inst,
+                entity_domain=entity_domain,
             )
         )
     return expected
 
 
 def _is_managed_published_unique_id(unique_id: str) -> bool:
-    # Current format only: bacnet_hub:hub:<hub_key>:<type-slug>:<instance>
+    # Supported formats:
+    # - bacnet_hub:hub:<hub_key>:<type-slug>:<instance>
+    # - bacnet_hub:hub:<hub_key>:<type-slug>:<instance>:<entity-domain>
     parts = unique_id.split(":")
     if len(parts) < 5:
         return False
     if parts[0] != DOMAIN or parts[1] != "hub":
         return False
-    return parts[-2] in {
-        "analog-value",
-        "binary-value",
-        "multi-state-value",
-    }
+    managed_types = {"analog-value", "binary-value", "multi-state-value"}
+    if parts[-2] in managed_types:
+        return True
+    if len(parts) >= 6 and parts[-3] in managed_types:
+        return True
+    return False
 
 
 def _cleanup_orphan_published_entities(
@@ -403,19 +409,16 @@ def _normalize_published_entity_ids(
         if instance < 0:
             continue
 
-        if object_type == "analogValue":
-            entity_domain = "sensor"
-        elif object_type == "binaryValue":
-            entity_domain = "binary_sensor"
-        else:
-            # No HA entity platform currently for other BACnet object types.
+        entity_domain = published_observer_platform(mapping)
+        if entity_domain not in {"sensor", "binary_sensor", "number", "switch", "select", "text"}:
             continue
 
-        unique_id = published_unique_id(
+        unique_id = published_observer_unique_id(
             hub_instance=hub_instance,
             hub_address=hub_address,
             object_type=object_type,
             object_instance=instance,
+            entity_domain=entity_domain,
         )
         wanted_entity_id = published_entity_id(
             entity_domain,

@@ -15,8 +15,8 @@ from .const import (
     DOMAIN,
     mirrored_state_attributes,
     published_entity_id,
+    published_observer_unique_id,
     published_suggested_object_id,
-    published_unique_id,
 )
 
 
@@ -47,11 +47,12 @@ class BacnetPublishedBinarySensor(BinarySensorEntity):
         self._attr_name = name
         self._remove_listener = None
         self._late_unsub: Optional[Callable[[], None]] = None
-        self._attr_unique_id = published_unique_id(
+        self._attr_unique_id = published_observer_unique_id(
             hub_instance=hub_instance,
             hub_address=hub_address,
             object_type="binaryValue",
             object_instance=instance,
+            entity_domain="binary_sensor",
         )
         self._suggested_object_id = published_suggested_object_id(
             "binaryValue",
