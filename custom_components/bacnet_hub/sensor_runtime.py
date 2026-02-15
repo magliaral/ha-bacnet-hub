@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import time
 from typing import Any, Dict
 
+from bacpypes3.pdu import Address
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 
@@ -77,6 +79,21 @@ def _device_instance_from_identifier(value: Any) -> int | None:
                 return inst
 
     return _to_int(text)
+
+
+def _directed_broadcast_for_server(server: Any) -> Address | None:
+    ip_addr = str(getattr(server, "ip_address", "") or "").strip()
+    prefix = _to_int(getattr(server, "network_prefix", None))
+    udp_port = _to_int(getattr(server, "udp_port", None)) or 47808
+
+    if not ip_addr or prefix is None or prefix < 0 or prefix > 32:
+        return None
+
+    try:
+        network = ipaddress.ip_network(f"{ip_addr}/{prefix}", strict=False)
+        return Address(f"{network.broadcast_address}:{udp_port}")
+    except Exception:
+        return None
 
 
 async def _read_remote_property(
@@ -260,15 +277,27 @@ async def _discover_remote_clients(server: Any) -> list[tuple[int, str]]:
         _LOGGER.debug("Client discovery skipped: BACnet app not available")
         return []
 
+    responses: list[Any] = []
+
     try:
-        i_ams = await app.who_is(timeout=CLIENT_DISCOVERY_TIMEOUT_SECONDS)
+        responses = list(await app.who_is(timeout=CLIENT_DISCOVERY_TIMEOUT_SECONDS) or [])
     except Exception:
         _LOGGER.debug("Client discovery who_is call failed", exc_info=True)
-        return []
+
+    directed = _directed_broadcast_for_server(server)
+    if not responses and directed is not None:
+        try:
+            _LOGGER.debug("Client discovery fallback via directed broadcast: %s", directed)
+            directed_responses = list(
+                await app.who_is(address=directed, timeout=CLIENT_DISCOVERY_TIMEOUT_SECONDS + 1.5)
+                or []
+            )
+            responses.extend(directed_responses)
+        except Exception:
+            _LOGGER.debug("Directed-broadcast who_is fallback failed", exc_info=True)
 
     local_instance = _to_int(getattr(server, "instance", None))
     clients: dict[tuple[int, str], tuple[int, str]] = {}
-    responses = list(i_ams or [])
     for i_am in responses:
         try:
             dev_ident = getattr(i_am, "iAmDeviceIdentifier", None)

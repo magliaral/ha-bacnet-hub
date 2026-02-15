@@ -57,6 +57,7 @@ _SYSTEM_STATUS_LABELS: dict[int, str] = {
     4: "non_operational",
     5: "backup_in_progress",
 }
+CLIENT_IAM_CACHE_KEY = "client_iam_cache"
 
 # ---------------------- Network/Address Helpers -----------------------------
 
@@ -562,6 +563,11 @@ class BacnetHubServer:
         if (now - last_seen) < self.iam_event_min_seconds:
             return
         self._iam_last_seen[key] = now
+
+        domain_data = self.hass.data.setdefault(DOMAIN, {})
+        iam_cache = domain_data.setdefault(CLIENT_IAM_CACHE_KEY, {})
+        entry_cache = iam_cache.setdefault(self.entry_id, {})
+        entry_cache[str(remote_instance)] = address
 
         async_dispatcher_send(
             self.hass,

@@ -47,6 +47,7 @@ from .sensor_runtime import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+CLIENT_IAM_CACHE_KEY = "client_iam_cache"
 
 
 class _ClientPointImportTransientError(RuntimeError):
@@ -368,6 +369,33 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     unsub_iam = async_dispatcher_connect(hass, client_iam_signal(entry.entry_id), _on_client_iam)
     entry.async_on_unload(unsub_iam)
+
+    cached_iam = dict(
+        (
+            hass.data.get(DOMAIN, {})
+            .get(CLIENT_IAM_CACHE_KEY, {})
+            .get(entry.entry_id, {})
+        )
+        or {}
+    )
+    if cached_iam:
+        _LOGGER.debug("Applying %d cached I-Am entries for %s", len(cached_iam), entry.entry_id)
+        for instance_key, address_raw in sorted(cached_iam.items(), key=lambda item: str(item[0])):
+            instance = _to_int(instance_key)
+            address = _safe_text(address_raw)
+            if instance is None or not address:
+                continue
+            try:
+                await _process_client_iam(int(instance), str(address))
+            except asyncio.CancelledError:
+                raise
+            except BaseException:
+                _LOGGER.debug(
+                    "Applying cached I-Am failed for %s (%s)",
+                    instance,
+                    address,
+                    exc_info=True,
+                )
 
     @callback
     def _on_client_rescan(payload: dict[str, Any] | None = None) -> None:
