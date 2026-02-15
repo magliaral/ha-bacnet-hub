@@ -52,7 +52,6 @@ EVENT_DEVICE_REGISTRY_UPDATED = "device_registry_updated"
 EVENT_LABEL_REGISTRY_UPDATED = "label_registry_updated"
 EVENT_AREA_REGISTRY_UPDATED = "area_registry_updated"
 EVENT_SYNC_DEBOUNCE_SECONDS = 2.0
-EVENT_SYNC_STARTUP_GRACE_SECONDS = 30.0
 
 PLATFORMS: List[str] = ["sensor", "number", "switch", "select", "text", "binary_sensor"]
 
@@ -722,19 +721,7 @@ def _schedule_event_sync(
     hass: HomeAssistant,
     entry_id: str,
     reason: str,
-    *,
-    not_before_ts: float | None = None,
 ) -> None:
-    if not_before_ts is not None:
-        now = asyncio.get_running_loop().time()
-        if now < float(not_before_ts):
-            _LOGGER.debug(
-                "Event-driven sync skipped during startup grace for %s (%s)",
-                entry_id,
-                reason,
-            )
-            return
-
     data = _ensure_domain(hass)
     tasks: dict[str, asyncio.Task] = data[KEY_EVENT_SYNC_TASKS]
 
@@ -771,8 +758,6 @@ def _is_bacnet_generated_entity_id(entity_id: str) -> bool:
 def _start_event_sync(
     hass: HomeAssistant,
     entry_id: str,
-    *,
-    not_before_ts: float | None = None,
 ):
     relevant_actions = {"create", "remove", "update"}
 
@@ -795,7 +780,6 @@ def _start_event_sync(
             hass,
             entry_id,
             f"{EVENT_ENTITY_REGISTRY_UPDATED}:{action or 'n/a'}",
-            not_before_ts=not_before_ts,
         )
 
     @callback
@@ -814,7 +798,6 @@ def _start_event_sync(
             hass,
             entry_id,
             f"{EVENT_DEVICE_REGISTRY_UPDATED}:{action or 'n/a'}",
-            not_before_ts=not_before_ts,
         )
 
     @callback
@@ -826,7 +809,6 @@ def _start_event_sync(
             hass,
             entry_id,
             f"{EVENT_LABEL_REGISTRY_UPDATED}:{action or 'n/a'}",
-            not_before_ts=not_before_ts,
         )
 
     @callback
@@ -838,7 +820,6 @@ def _start_event_sync(
             hass,
             entry_id,
             f"{EVENT_AREA_REGISTRY_UPDATED}:{action or 'n/a'}",
-            not_before_ts=not_before_ts,
         )
 
     unsubs = [
@@ -859,49 +840,14 @@ def _start_event_sync(
 
 
 def _start_sync_triggers(hass: HomeAssistant, entry_id: str):
-    startup_sync_task: asyncio.Task | None = None
-    startup_not_before_ts: float | None = None
-    if not hass.is_running:
-        startup_not_before_ts = (
-            asyncio.get_running_loop().time() + EVENT_SYNC_STARTUP_GRACE_SECONDS
-        )
-
-        async def _delayed_startup_sync() -> None:
-            try:
-                await asyncio.sleep(EVENT_SYNC_STARTUP_GRACE_SECONDS)
-                await _async_sync_auto_mappings(hass, entry_id)
-                _LOGGER.debug(
-                    "Delayed startup sync executed for %s after %.1fs grace",
-                    entry_id,
-                    EVENT_SYNC_STARTUP_GRACE_SECONDS,
-                )
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                _LOGGER.debug(
-                    "Delayed startup sync failed for %s",
-                    entry_id,
-                    exc_info=True,
-                )
-
-        startup_sync_task = hass.async_create_task(_delayed_startup_sync())
-
-    event_unsub = _start_event_sync(
-        hass,
-        entry_id,
-        not_before_ts=startup_not_before_ts,
-    )
+    event_unsub = _start_event_sync(hass, entry_id)
 
     def _unsub_all() -> None:
-        nonlocal startup_sync_task
         for unsub in (event_unsub,):
             try:
                 unsub()
             except Exception:
                 pass
-        if startup_sync_task and not startup_sync_task.done():
-            startup_sync_task.cancel()
-        startup_sync_task = None
         _cancel_event_sync_task(hass, entry_id)
 
     return _unsub_all
