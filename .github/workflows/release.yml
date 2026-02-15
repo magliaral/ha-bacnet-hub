@@ -85,7 +85,25 @@ jobs:
           if [ "$OVERRIDE" != "auto" ]; then
             TYPE="$OVERRIDE"
           else
-            MESSAGES=$(git log -1 --pretty=format:"%s%n%b")
+            TYPE="none"
+
+            if [ "${{ github.event_name }}" = "push" ]; then
+              BEFORE="${{ github.event.before }}"
+              AFTER="${{ github.sha }}"
+              if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+                MESSAGES=$(git log --no-merges "$BEFORE..$AFTER" --pretty=format:"%s%n%b")
+              else
+                MESSAGES=$(git log --no-merges -50 --pretty=format:"%s%n%b")
+              fi
+            else
+              MESSAGES=$(git log --no-merges -50 --pretty=format:"%s%n%b")
+            fi
+
+            if [ -z "$MESSAGES" ]; then
+              # Fallback if the push range only contained merge commits.
+              MESSAGES=$(git log -1 --pretty=format:"%s%n%b")
+            fi
+
             TYPE="none"
 
             # MAJOR: feat(scope)!:, fix(scope)!:, refactor(scope)!:, perf(scope)!: and BREAKING CHANGE
