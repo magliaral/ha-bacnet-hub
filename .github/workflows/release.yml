@@ -178,13 +178,9 @@ jobs:
           else
             NEW_VERSION="$BASE_VERSION"
             RELEASE_TAG="v${NEW_VERSION}"
-            if [ "$CURRENT_VERSION" != "$NEW_VERSION" ]; then
-              SHOULD_COMMIT="true"
-              COMMIT_MODE="normalize"
-            else
-              SHOULD_COMMIT="false"
-              COMMIT_MODE="none"
-            fi
+            # Main is protected (PR-only). Do not create/push bot commits on main.
+            SHOULD_COMMIT="false"
+            COMMIT_MODE="none"
           fi
 
           echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -206,6 +202,13 @@ jobs:
 
       - name: Update manifest.json
         if: steps.plan.outputs.skip != 'true' && steps.check_tag.outputs.exists != 'true' && steps.plan.outputs.should_commit == 'true'
+        run: |
+          NEW_VERSION="${{ steps.plan.outputs.version }}"
+          jq --arg version "$NEW_VERSION" '.version = $version' custom_components/bacnet_hub/manifest.json > manifest.tmp
+          mv manifest.tmp custom_components/bacnet_hub/manifest.json
+
+      - name: Normalize manifest.json for main release artifact
+        if: steps.plan.outputs.skip != 'true' && steps.check_tag.outputs.exists != 'true' && steps.context.outputs.branch == 'main' && steps.current.outputs.version != steps.plan.outputs.version
         run: |
           NEW_VERSION="${{ steps.plan.outputs.version }}"
           jq --arg version "$NEW_VERSION" '.version = $version' custom_components/bacnet_hub/manifest.json > manifest.tmp
