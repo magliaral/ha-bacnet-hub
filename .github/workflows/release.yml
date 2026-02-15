@@ -29,8 +29,12 @@ on:
           - patch
           - minor
           - major
-          - none
+      - none
         default: auto
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.target_branch || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -117,8 +121,8 @@ jobs:
             elif echo "$MESSAGES" | grep -Eqi "^[\"'\`]?(feat)(\([^)]+\))?:"; then
               TYPE="minor"
 
-            # PATCH: fix/refactor/perf/chore/test/ci/build, each with optional scope
-            elif echo "$MESSAGES" | grep -Eqi "^[\"'\`]?(fix|refactor|perf|chore|test|style|build)(\([^)]+\))?:"; then
+            # PATCH: fix/refactor/perf/chore/test/build, each with optional scope
+            elif echo "$MESSAGES" | grep -Eqi "^[\"'\`]?(fix|refactor|perf|chore|test|build)(\([^)]+\))?:"; then
               TYPE="patch"
 
             # docs/style (with optional scope) -> none
