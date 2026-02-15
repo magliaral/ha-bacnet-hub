@@ -276,6 +276,47 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Cleanup old prereleases and tags
+        if: steps.plan.outputs.skip != 'true' && steps.check_tag.outputs.exists != 'true' && steps.context.outputs.branch == 'dev'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const keepTag = "${{ steps.plan.outputs.tag }}";
+
+            const releases = await github.paginate(
+              github.rest.repos.listReleases,
+              { owner, repo, per_page: 100 },
+            );
+
+            const stale = releases.filter((rel) => rel.prerelease && rel.tag_name !== keepTag);
+            core.info(`Found ${stale.length} stale prereleases to delete`);
+
+            for (const rel of stale) {
+              core.info(`Deleting prerelease ${rel.tag_name} (id=${rel.id})`);
+              await github.rest.repos.deleteRelease({
+                owner,
+                repo,
+                release_id: rel.id,
+              });
+
+              try {
+                await github.rest.git.deleteRef({
+                  owner,
+                  repo,
+                  ref: `tags/${rel.tag_name}`,
+                });
+                core.info(`Deleted tag ${rel.tag_name}`);
+              } catch (err) {
+                if (err.status === 404) {
+                  core.info(`Tag ${rel.tag_name} already missing`);
+                } else {
+                  throw err;
+                }
+              }
+            }
+
       - name: Summary (released)
         if: steps.plan.outputs.skip != 'true' && steps.check_tag.outputs.exists != 'true'
         run: |
