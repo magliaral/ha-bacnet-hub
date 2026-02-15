@@ -122,7 +122,7 @@ def mirrored_state_attributes(attrs: dict[str, Any]) -> dict[str, Any]:
 
 
 def hub_display_name(instance: Any) -> str:
-    return f"BACnet Hub {_as_int(instance, 0)}"
+    return f"BACnet Hub ({_as_int(instance, 0)})"
 
 
 def client_display_name(instance: Any, object_name: Any | None = None) -> str:
