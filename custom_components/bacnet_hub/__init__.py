@@ -963,7 +963,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     sync_unsubs[entry.entry_id] = _start_sync_triggers(hass, entry.entry_id)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
-    hass.async_create_task(_async_sync_auto_mappings(hass, entry.entry_id))
+    # Avoid an immediate self-reload loop during HA startup.
+    # Dynamic mapping updates are still handled by event-driven sync triggers.
     _LOGGER.info("%s started (Entry %s)", DOMAIN, entry.entry_id)
 
     logging.getLogger("bacpypes3.service.cov").setLevel(logging.DEBUG)
