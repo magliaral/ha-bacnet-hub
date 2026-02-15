@@ -5,7 +5,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 from .client_point_entities import BacnetClientPointText
-from .core.cache import _entry_client_points, _entry_points_signal, _point_platform, _to_int
+from .client_runtime import _entry_client_points, _entry_points_signal, _point_platform, _to_int
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities) -> None:
@@ -41,3 +41,5 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     _add_missing()
     unsub = async_dispatcher_connect(hass, _entry_points_signal(entry.entry_id), _add_missing)
     entry.async_on_unload(unsub)
+
+

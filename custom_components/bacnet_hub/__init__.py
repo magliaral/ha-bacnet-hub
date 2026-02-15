@@ -817,7 +817,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    from .core.server import BacnetHubServer
+    from .server import BacnetHubServer
 
     data = _ensure_domain(hass)
     servers: dict[str, BacnetHubServer] = data[KEY_SERVERS]
@@ -1098,3 +1098,4 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
         _LOGGER.debug("Options update for %s (Entry %s) - starting reload.", DOMAIN, entry.entry_id)
         await hass.config_entries.async_reload(entry.entry_id)
         reload_fp[entry.entry_id] = options_fp
+
