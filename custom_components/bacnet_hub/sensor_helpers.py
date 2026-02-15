@@ -541,7 +541,9 @@ def _point_is_writable(point: dict[str, Any]) -> bool:
 
 def _point_platform(point: dict[str, Any]) -> str:
     type_slug = str(point.get("type_slug") or "").strip().lower()
-    if type_slug in {"ai", "csv"}:
+    if type_slug == "csv":
+        return "text"
+    if type_slug in {"ai"}:
         return "sensor"
     if type_slug == "bi":
         return "binary_sensor"

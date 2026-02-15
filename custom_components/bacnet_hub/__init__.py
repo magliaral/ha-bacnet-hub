@@ -49,7 +49,7 @@ EVENT_DEVICE_REGISTRY_UPDATED = "device_registry_updated"
 EVENT_LABEL_REGISTRY_UPDATED = "label_registry_updated"
 EVENT_SYNC_DEBOUNCE_SECONDS = 2.0
 
-PLATFORMS: List[str] = ["sensor", "number", "switch", "select", "binary_sensor"]
+PLATFORMS: List[str] = ["sensor", "number", "switch", "select", "text", "binary_sensor"]
 
 # Optional: if True, we write the updated friendly_names
 # back to entry.options (once). We then suppress the reload.
@@ -945,6 +945,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, ["number"])
     await hass.config_entries.async_forward_entry_setups(entry, ["switch"])
     await hass.config_entries.async_forward_entry_setups(entry, ["select"])
+    await hass.config_entries.async_forward_entry_setups(entry, ["text"])
     await hass.config_entries.async_forward_entry_setups(entry, ["binary_sensor"])
     renamed_entities = _normalize_published_entity_ids(hass, entry, published)
     if renamed_entities:

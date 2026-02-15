@@ -12,6 +12,7 @@ from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.components.select import SelectEntity
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.components.switch import SwitchEntity
+from homeassistant.components.text import TextEntity
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
@@ -500,9 +501,6 @@ class BacnetClientPointSensor(BacnetClientPointEntityBase, SensorEntity):
             point_key,
             entity_domain="sensor",
         )
-        point = self._get_point()
-        if str(point.get("type_slug") or "").strip().lower() == "csv":
-            self._attr_entity_category = EntityCategory.CONFIG
         self._attr_native_value: StateType = None
         self._attr_native_unit_of_measurement: str | None = None
         self._attr_device_class: SensorDeviceClass | None = None
@@ -667,3 +665,35 @@ class BacnetClientPointSelect(BacnetClientPointEntityBase, SelectEntity):
                 raise HomeAssistantError(f"Unsupported option: {option}")
             value_index = int(maybe_int)
         await self._async_write_present_value(int(value_index))
+
+
+class BacnetClientPointText(BacnetClientPointEntityBase, TextEntity):
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        client_id: str,
+        client_instance: int,
+        point_key: str,
+    ) -> None:
+        super().__init__(
+            hass,
+            entry_id,
+            client_id,
+            client_instance,
+            point_key,
+            entity_domain="text",
+        )
+        self._attr_native_value: str | None = None
+
+    def _apply_point_state(self, point: dict[str, Any]) -> None:
+        value = _point_native_value_from_payload(point)
+        self._attr_native_value = None if value is None else str(value)
+
+    async def async_set_value(self, value: str) -> None:
+        point = self._get_point()
+        if not bool(point.get("writable_from_ha")):
+            raise HomeAssistantError("Point is read-only")
+        await self._async_write_present_value(str(value))
