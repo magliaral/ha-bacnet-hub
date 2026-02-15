@@ -32,6 +32,10 @@ on:
           - none
         default: auto
 
+concurrency:
+  group: ${{ format('release-{0}-{1}', github.workflow, github.event_name == 'workflow_dispatch' && github.event.inputs.target_branch || github.ref_name) }}
+  cancel-in-progress: false
+
 jobs:
   release:
     name: Branch-aware release
@@ -117,8 +121,8 @@ jobs:
             elif echo "$MESSAGES" | grep -Eqi "^[\"'\`]?(feat)(\([^)]+\))?:"; then
               TYPE="minor"
 
-            # PATCH: fix/refactor/perf/chore/test/ci/build, each with optional scope
-            elif echo "$MESSAGES" | grep -Eqi "^[\"'\`]?(fix|refactor|perf|chore|test|style|build)(\([^)]+\))?:"; then
+            # PATCH: fix/refactor/perf/chore/test/build, each with optional scope
+            elif echo "$MESSAGES" | grep -Eqi "^[\"'\`]?(fix|refactor|perf|chore|test|build)(\([^)]+\))?:"; then
               TYPE="patch"
 
             # docs/style (with optional scope) -> none
@@ -255,6 +259,12 @@ jobs:
             git log -20 --pretty=format:"- %s (%h)" --no-merges > commits.txt
           fi
 
+          # Remove bot-managed prerelease bump commits from release notes.
+          grep -Evi "^- .*chore\(release\): bump prerelease version to " commits.txt > commits.filtered.txt || true
+          if [ ! -s commits.filtered.txt ]; then
+            echo "- No user-facing changes." > commits.filtered.txt
+          fi
+
           cat > release_notes.md << EOF
           ## BACnet Hub ${{ steps.plan.outputs.tag }}
 
@@ -263,7 +273,7 @@ jobs:
           ### Changes
           EOF
 
-          cat commits.txt >> release_notes.md
+          cat commits.filtered.txt >> release_notes.md
 
       - name: Create GitHub release
         if: steps.plan.outputs.skip != 'true' && steps.check_tag.outputs.exists != 'true'
