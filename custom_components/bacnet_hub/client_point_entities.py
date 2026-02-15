@@ -15,7 +15,7 @@ from homeassistant.components.switch import SwitchEntity
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.typing import StateType
 
@@ -500,6 +500,9 @@ class BacnetClientPointSensor(BacnetClientPointEntityBase, SensorEntity):
             point_key,
             entity_domain="sensor",
         )
+        point = self._get_point()
+        if str(point.get("type_slug") or "").strip().lower() == "csv":
+            self._attr_entity_category = EntityCategory.CONFIG
         self._attr_native_value: StateType = None
         self._attr_native_unit_of_measurement: str | None = None
         self._attr_device_class: SensorDeviceClass | None = None
