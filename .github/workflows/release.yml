@@ -3,6 +3,7 @@ name: Release
 on:
   push:
     branches:
+      - dev
       - main
     paths:
       - 'custom_components/**'
@@ -10,207 +11,249 @@ on:
       - '.github/workflows/release.yml'
   workflow_dispatch:
     inputs:
-      bump:
-        description: 'Version Bump Type'
+      target_branch:
+        description: 'Target branch for release'
         required: true
         type: choice
         options:
+          - dev
+          - main
+        default: dev
+      bump:
+        description: 'Bump type override for dev (auto reads latest commit)'
+        required: true
+        type: choice
+        options:
+          - auto
           - patch
           - minor
           - major
-        default: 'patch'
+          - none
+        default: auto
 
 jobs:
   release:
-    name: Auto-Release with Version Bump
+    name: Branch-aware release
     runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.actor != 'github-actions[bot]'
     permissions:
       contents: write
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.target_branch || github.ref_name }}
 
-      - name: Get Current Version
-        id: current_version
+      - name: Resolve branch context
+        id: context
         run: |
-          CURRENT_VERSION=$(jq -r '.version' custom_components/bacnet_hub/manifest.json)
-          echo "current=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
-          echo "📌 Current Version: ${CURRENT_VERSION}"
-
-      - name: Bump Version
-        id: bump_version
-        run: |
-          CURRENT_VERSION="${{ steps.current_version.outputs.current }}"
-          IFS='.' read -r major minor patch <<< "$CURRENT_VERSION"
-
-          # Determine bump type
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            BUMP_TYPE="${{ github.event.inputs.bump }}"
+            BRANCH="${{ github.event.inputs.target_branch }}"
           else
-            BUMP_TYPE="patch"
+            BRANCH="${{ github.ref_name }}"
           fi
 
-          # Increment version
-          case $BUMP_TYPE in
-            major)
-              major=$((major + 1))
-              minor=0
-              patch=0
-              ;;
-            minor)
-              minor=$((minor + 1))
-              patch=0
-              ;;
-            patch)
-              patch=$((patch + 1))
-              ;;
-          esac
-
-          NEW_VERSION="${major}.${minor}.${patch}"
-          echo "new=${NEW_VERSION}" >> $GITHUB_OUTPUT
-          echo "tag=v${NEW_VERSION}" >> $GITHUB_OUTPUT
-
-          echo "🔼 Version Bump: ${CURRENT_VERSION} → ${NEW_VERSION} (${BUMP_TYPE})"
-
-      - name: Check if Release Already Exists
-        id: check_release
-        run: |
-          NEW_TAG="${{ steps.bump_version.outputs.tag }}"
-
-          # Check if the NEW tag already exists
-          if git rev-parse "${NEW_TAG}" >/dev/null 2>&1; then
-            echo "skip=true" >> $GITHUB_OUTPUT
-            echo "⏭️ Release ${NEW_TAG} already exists - skipping"
+          if [ "$BRANCH" = "dev" ]; then
+            MODE="prerelease"
+            PRERELEASE="true"
           else
-            echo "skip=false" >> $GITHUB_OUTPUT
-            echo "✅ Creating new release ${NEW_TAG}"
+            MODE="release"
+            PRERELEASE="false"
+          fi
+
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+
+      - name: Get current version from manifest
+        id: current
+        run: |
+          CURRENT_VERSION=$(jq -r '.version' custom_components/bacnet_hub/manifest.json)
+          echo "version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Determine bump type from commit messages
+        id: bump
+        if: steps.context.outputs.branch == 'dev'
+        run: |
+          OVERRIDE="auto"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            OVERRIDE="${{ github.event.inputs.bump }}"
+          fi
+
+          if [ "$OVERRIDE" != "auto" ]; then
+            TYPE="$OVERRIDE"
+          else
+            MESSAGES=$(git log -1 --pretty=format:"%s%n%b")
+            TYPE="none"
+
+            # MAJOR: feat(scope)!:, fix(scope)!:, refactor(scope)!:, perf(scope)!: and BREAKING CHANGE
+            if echo "$MESSAGES" | grep -Eqi "^[\"']?(feat|fix|refactor|perf)(\([^)]+\))?!:"; then
+              TYPE="major"
+            elif echo "$MESSAGES" | grep -qi "BREAKING CHANGE:"; then
+              TYPE="major"
+
+            # MINOR: feat: or feat(scope):
+            elif echo "$MESSAGES" | grep -Eqi "^[\"']?feat(\([^)]+\))?:"; then
+              TYPE="minor"
+
+            # PATCH: fix/refactor/perf/chore/test/ci/build, each with optional scope
+            elif echo "$MESSAGES" | grep -Eqi "^[\"']?(fix|refactor|perf|chore|test|ci|build)(\([^)]+\))?:"; then
+              TYPE="patch"
+
+            # docs/style (with optional scope) -> none
+            elif echo "$MESSAGES" | grep -Eqi "^[\"']?(docs|style)(\([^)]+\))?:"; then
+              TYPE="none"
+            fi
+          fi
+
+          echo "type=$TYPE" >> "$GITHUB_OUTPUT"
+
+      - name: Plan version and tag
+        id: plan
+        run: |
+          BRANCH="${{ steps.context.outputs.branch }}"
+          CURRENT_VERSION="${{ steps.current.outputs.version }}"
+
+          if [ "$BRANCH" = "dev" ]; then
+            BUMP_TYPE="${{ steps.bump.outputs.type }}"
+
+            if [ -z "$BUMP_TYPE" ] || [ "$BUMP_TYPE" = "none" ]; then
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              echo "skip_reason=No release-relevant commit type detected (bump=none)." >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            IFS='.' read -r major minor patch <<< "$CURRENT_VERSION"
+            case "$BUMP_TYPE" in
+              major)
+                major=$((major + 1))
+                minor=0
+                patch=0
+                ;;
+              minor)
+                minor=$((minor + 1))
+                patch=0
+                ;;
+              patch)
+                patch=$((patch + 1))
+                ;;
+              *)
+                echo "Unknown bump type: $BUMP_TYPE"
+                exit 1
+                ;;
+            esac
+
+            NEW_VERSION="${major}.${minor}.${patch}"
+            RELEASE_TAG="v${NEW_VERSION}-beta.${GITHUB_RUN_NUMBER}"
+            SHOULD_COMMIT="true"
+          else
+            NEW_VERSION="$CURRENT_VERSION"
+            RELEASE_TAG="v${NEW_VERSION}"
+            SHOULD_COMMIT="false"
+          fi
+
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "should_commit=$SHOULD_COMMIT" >> "$GITHUB_OUTPUT"
+
+      - name: Check if tag already exists
+        id: check_tag
+        if: steps.plan.outputs.skip != 'true'
+        run: |
+          TAG="${{ steps.plan.outputs.tag }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Update manifest.json
-        if: steps.check_release.outputs.skip == 'false'
+        if: steps.plan.outputs.skip != 'true' && steps.check_tag.outputs.exists != 'true' && steps.plan.outputs.should_commit == 'true'
         run: |
-          NEW_VERSION="${{ steps.bump_version.outputs.new }}"
-
-          # Update version in manifest.json
-          jq --arg version "$NEW_VERSION" '.version = $version' \
-            custom_components/bacnet_hub/manifest.json > manifest.tmp
+          NEW_VERSION="${{ steps.plan.outputs.version }}"
+          jq --arg version "$NEW_VERSION" '.version = $version' custom_components/bacnet_hub/manifest.json > manifest.tmp
           mv manifest.tmp custom_components/bacnet_hub/manifest.json
 
-          echo "✅ Updated manifest.json to ${NEW_VERSION}"
-
-      - name: Commit Version Bump
-        if: steps.check_release.outputs.skip == 'false'
+      - name: Commit version bump
+        if: steps.plan.outputs.skip != 'true' && steps.check_tag.outputs.exists != 'true' && steps.plan.outputs.should_commit == 'true'
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
 
           git add custom_components/bacnet_hub/manifest.json
-          git commit -m "chore: bump version to ${{ steps.bump_version.outputs.new }}"
+          git commit -m "chore(release): bump version to ${{ steps.plan.outputs.version }} [skip ci]"
+          git push origin "HEAD:${{ steps.context.outputs.branch }}"
 
-          echo "✅ Version bump committed"
-
-      - name: Push Changes
-        if: steps.check_release.outputs.skip == 'false'
-        uses: ad-m/github-push-action@master
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          branch: main
-
-      - name: Create Git Tag
-        if: steps.check_release.outputs.skip == 'false'
+      - name: Create and push tag
+        if: steps.plan.outputs.skip != 'true' && steps.check_tag.outputs.exists != 'true'
         run: |
-          git tag "${{ steps.bump_version.outputs.tag }}"
-          git push origin "${{ steps.bump_version.outputs.tag }}"
+          git tag "${{ steps.plan.outputs.tag }}"
+          git push origin "${{ steps.plan.outputs.tag }}"
 
-          echo "✅ Created tag ${{ steps.bump_version.outputs.tag }}"
-
-      - name: Create ZIP Archive
-        if: steps.check_release.outputs.skip == 'false'
+      - name: Create ZIP archive
+        if: steps.plan.outputs.skip != 'true' && steps.check_tag.outputs.exists != 'true'
         run: |
           cd custom_components
-          zip -r ../bacnet_hub-${{ steps.bump_version.outputs.tag }}.zip bacnet_hub/ \
+          zip -r ../bacnet_hub-${{ steps.plan.outputs.tag }}.zip bacnet_hub/ \
             -x "*.pyc" \
             -x "*__pycache__*" \
             -x "*.git*" \
             -x "*.DS_Store"
-          cd ..
-          echo "✅ Created ZIP: bacnet_hub-${{ steps.bump_version.outputs.tag }}.zip"
 
-      - name: Generate Release Notes
-        if: steps.check_release.outputs.skip == 'false'
-        id: release_notes
+      - name: Generate release notes
+        if: steps.plan.outputs.skip != 'true' && steps.check_tag.outputs.exists != 'true'
         run: |
-          # Get last release tag
-          LAST_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          LAST_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)
 
           if [ -n "$LAST_TAG" ]; then
-            echo "Changelog since ${LAST_TAG}:"
-            git log ${LAST_TAG}..HEAD --pretty=format:"- %s (%h)" --no-merges > commits.txt
+            git log "$LAST_TAG"..HEAD --pretty=format:"- %s (%h)" --no-merges > commits.txt
           else
-            echo "First release" > commits.txt
+            git log -20 --pretty=format:"- %s (%h)" --no-merges > commits.txt
           fi
 
-          cat > release_notes.md << 'EOF'
-          ## BACnet Hub ${{ steps.bump_version.outputs.tag }}
+          cat > release_notes.md << EOF
+          ## BACnet Hub ${{ steps.plan.outputs.tag }}
 
-          ### 🔄 Changes
+          Release type: ${{ steps.context.outputs.mode }}
 
+          ### Changes
           EOF
 
           cat commits.txt >> release_notes.md
 
-          cat >> release_notes.md << 'EOF'
-
-          ### 📦 Installation via HACS
-
-          1. In HACS: ••• → Custom repositories
-          2. Add repository URL: `https://github.com/magliaral/ha-bacnet-hub`
-          3. Type: Integration
-          4. Start installation
-
-          ### 📥 Manual Installation
-
-          1. Download ZIP file
-          2. Extract to `config/custom_components/bacnet_hub/`
-          3. Restart Home Assistant
-
-          ### 📖 Documentation
-
-          See [README.md](https://github.com/magliaral/ha-bacnet-hub/blob/main/README.md) for full documentation.
-          EOF
-
-      - name: Create GitHub Release
-        if: steps.check_release.outputs.skip == 'false'
+      - name: Create GitHub release
+        if: steps.plan.outputs.skip != 'true' && steps.check_tag.outputs.exists != 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.bump_version.outputs.tag }}
-          name: BACnet Hub ${{ steps.bump_version.outputs.tag }}
+          tag_name: ${{ steps.plan.outputs.tag }}
+          name: BACnet Hub ${{ steps.plan.outputs.tag }}
           body_path: release_notes.md
           files: |
-            bacnet_hub-${{ steps.bump_version.outputs.tag }}.zip
+            bacnet_hub-${{ steps.plan.outputs.tag }}.zip
           draft: false
-          prerelease: false
+          prerelease: ${{ steps.context.outputs.prerelease }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Summary
-        if: steps.check_release.outputs.skip == 'false'
+      - name: Summary (released)
+        if: steps.plan.outputs.skip != 'true' && steps.check_tag.outputs.exists != 'true'
         run: |
-          echo "## ✅ Release created successfully!" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**New Version:** ${{ steps.bump_version.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Previous Version:** v${{ steps.current_version.outputs.current }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "📦 ZIP file uploaded as release asset" >> $GITHUB_STEP_SUMMARY
-          echo "🏷️ Git tag created and pushed" >> $GITHUB_STEP_SUMMARY
+          echo "## Release created" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Branch: ${{ steps.context.outputs.branch }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Type: ${{ steps.context.outputs.mode }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Tag: ${{ steps.plan.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Version: ${{ steps.plan.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Summary (Skipped)
-        if: steps.check_release.outputs.skip == 'true'
+      - name: Summary (skipped)
+        if: steps.plan.outputs.skip == 'true' || steps.check_tag.outputs.exists == 'true'
         run: |
-          echo "## ⏭️ Release skipped" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Release v${{ steps.current_version.outputs.current }} already exists." >> $GITHUB_STEP_SUMMARY
+          echo "## Release skipped" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${{ steps.plan.outputs.skip }}" = "true" ]; then
+            echo "- Reason: ${{ steps.plan.outputs.skip_reason }}" >> "$GITHUB_STEP_SUMMARY"
+          elif [ "${{ steps.check_tag.outputs.exists }}" = "true" ]; then
+            echo "- Reason: tag already exists (${{ steps.plan.outputs.tag }})" >> "$GITHUB_STEP_SUMMARY"
+          fi

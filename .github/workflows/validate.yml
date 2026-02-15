@@ -2,11 +2,66 @@ name: Validate
 
 on:
   pull_request:
+    branches:
+      - main
+    paths:
+      - 'custom_components/**'
+      - '.github/workflows/validate.yml'
+      - '.github/workflows/release.yml'
   push:
     branches:
       - main
+    paths:
+      - 'custom_components/**'
+      - '.github/workflows/validate.yml'
+      - '.github/workflows/release.yml'
+
+permissions:
+  contents: read
+  pull-requests: read
 
 jobs:
+  enforce_pr_only:
+    name: Guard Main (PR only)
+    if: github.event_name == 'push' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Ensure commits are linked to merged pull requests
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const commits = context.payload.commits || [];
+            if (commits.length === 0) {
+              core.info('No commits in push payload.');
+              return;
+            }
+
+            const commitsWithoutPr = [];
+
+            for (const commit of commits) {
+              const response = await github.request(
+                'GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls',
+                {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  commit_sha: commit.id
+                }
+              );
+
+              if (!Array.isArray(response.data) || response.data.length === 0) {
+                commitsWithoutPr.push(commit.id.slice(0, 7));
+              }
+            }
+
+            if (commitsWithoutPr.length > 0) {
+              core.setFailed(
+                `Direct push to main detected. Commits without PR link: ${commitsWithoutPr.join(', ')}`
+              );
+            } else {
+              core.info('All commits are linked to pull requests.');
+            }
+
   validate:
     name: Validate Integration
     runs-on: ubuntu-latest
@@ -18,25 +73,25 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
 
       - name: Check manifest.json
         run: |
           echo "Validating manifest.json..."
           if ! jq empty custom_components/bacnet_hub/manifest.json; then
-            echo "❌ manifest.json is invalid!"
+            echo "manifest.json is invalid!"
             exit 1
           fi
 
           VERSION=$(jq -r '.version' custom_components/bacnet_hub/manifest.json)
           DOMAIN=$(jq -r '.domain' custom_components/bacnet_hub/manifest.json)
 
-          echo "✅ manifest.json is valid"
+          echo "manifest.json is valid"
           echo "Domain: ${DOMAIN}"
           echo "Version: ${VERSION}"
 
           if [ "${DOMAIN}" != "bacnet_hub" ]; then
-            echo "❌ Domain should be 'bacnet_hub', but is '${DOMAIN}'"
+            echo "Domain should be 'bacnet_hub', but is '${DOMAIN}'"
             exit 1
           fi
 
@@ -44,7 +99,7 @@ jobs:
         run: |
           echo "Validating translations..."
           if ! jq empty custom_components/bacnet_hub/strings.json; then
-            echo "❌ strings.json is invalid!"
+            echo "strings.json is invalid!"
             exit 1
           fi
 
@@ -52,20 +107,20 @@ jobs:
             if [ -f "$file" ]; then
               echo "Checking $file..."
               if ! jq empty "$file"; then
-                echo "❌ $file is invalid!"
+                echo "$file is invalid!"
                 exit 1
               fi
             fi
           done
 
-          echo "✅ All translation files are valid"
+          echo "All translation files are valid"
 
       - name: Check Python Syntax
         run: |
           echo "Checking Python syntax..."
           python -m py_compile custom_components/bacnet_hub/*.py
           python -m py_compile custom_components/bacnet_hub/helpers/*.py
-          echo "✅ Python syntax is correct"
+          echo "Python syntax is correct"
 
       - name: Check Required Files
         run: |
@@ -80,18 +135,18 @@ jobs:
 
           for file in "${REQUIRED_FILES[@]}"; do
             if [ ! -f "$file" ]; then
-              echo "❌ Required file missing: $file"
+              echo "Required file missing: $file"
               exit 1
             fi
           done
 
-          echo "✅ All required files present"
+          echo "All required files present"
 
       - name: Summary
         run: |
-          echo "## ✅ Validation successful!" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- manifest.json: ✅" >> $GITHUB_STEP_SUMMARY
-          echo "- translations: ✅" >> $GITHUB_STEP_SUMMARY
-          echo "- Python syntax: ✅" >> $GITHUB_STEP_SUMMARY
-          echo "- Required files: ✅" >> $GITHUB_STEP_SUMMARY
+          echo "## Validation successful" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- manifest.json: OK" >> "$GITHUB_STEP_SUMMARY"
+          echo "- translations: OK" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Python syntax: OK" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Required files: OK" >> "$GITHUB_STEP_SUMMARY"
