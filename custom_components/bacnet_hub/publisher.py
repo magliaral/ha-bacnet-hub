@@ -1,27 +1,24 @@
-# custom_components/bacnet_hub/publisher.py
 from __future__ import annotations
 
 import asyncio
 import logging
+from typing import TYPE_CHECKING
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from homeassistant.const import EVENT_STATE_CHANGED
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.event import async_track_state_change_event
-
-from bacpypes3.app import Application
 from bacpypes3.basetypes import BinaryPV, EngineeringUnits
 from bacpypes3.local.analog import AnalogValueObject
 from bacpypes3.local.binary import BinaryValueObject
 from bacpypes3.local.multistate import MultiStateValueObject
+from homeassistant.const import EVENT_STATE_CHANGED
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.event import async_track_state_change_event
 
 from .discovery import mapping_friendly_name, mapping_source_key
 
-_LOGGER = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from homeassistant.core import State
 
 SUPPORTED_TYPES = {"binaryValue", "analogValue", "multiStateValue"}
-
-# ---------- Units Mapping ----------------------------------------------------
 
 HA_UOM_TO_BACNET_ENUM_NAME: Dict[str, str] = {
     "\u00b0c": "degreesCelsius",
@@ -58,10 +55,228 @@ HA_UOM_TO_BACNET_ENUM_NAME: Dict[str, str] = {
     "km/h": "kilometersPerHour",
 }
 
+_LOGGER = logging.getLogger(__name__)
 
-def _norm_uom_key(s: str) -> str:
-    k = s.strip().lower()
-    return k.replace(" c", "\u00b0c").replace("\u00b0 c", "\u00b0c").replace(" f", "\u00b0f").replace("\u00b0 f", "\u00b0f")
+
+def entity_domain(entity_id: str) -> str:
+    return entity_id.split(".", 1)[0] if "." in entity_id else ""
+
+
+def object_name(entity_id: str, source_attr: Any) -> str:
+    src = str(source_attr or "").strip()
+    return entity_id if not src else f"{entity_id}.{src}"
+
+
+def truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+
+    text = str(value).strip().lower()
+    if not text:
+        return False
+
+    if "inactive" in text:
+        return False
+    if "active" in text:
+        return True
+
+    if text in ("0", "false", "off", "closed"):
+        return False
+    return text in ("1", "true", "on", "open", "heat", "cool", "heating", "cooling")
+
+
+def as_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def as_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except Exception:
+        return default
+
+
+def source_value(state_obj: State, mapping: Dict[str, Any]) -> Any:
+    read_attr = str(mapping.get("read_attr") or "").strip()
+    source_attr = str(mapping.get("source_attr") or "").strip()
+    attr_name = read_attr or source_attr
+    if attr_name and attr_name != "__state__":
+        attrs = getattr(state_obj, "attributes", {}) or {}
+        value = attrs.get(attr_name)
+        if value is None and attr_name == "hvac_mode":
+            return getattr(state_obj, "state", None)
+        return value
+    return getattr(state_obj, "state", None)
+
+
+async def apply_from_ha(obj: Any, value: Any, mapping: Optional[Dict[str, Any]] = None) -> None:
+    """Write source state/attribute to BACnet object presentValue."""
+    oid = getattr(obj, "objectIdentifier", None)
+    if not isinstance(oid, tuple) or len(oid) != 2:
+        return
+
+    object_type = str((mapping or {}).get("object_type") or "")
+
+    if isinstance(obj, AnalogValueObject):
+        if value is None:
+            return
+        desired: Any = as_float(value)
+    elif isinstance(obj, MultiStateValueObject) or object_type == "multiStateValue":
+        if value is None:
+            return
+        states = [str(s).strip().lower() for s in ((mapping or {}).get("mv_states") or []) if str(s).strip()]
+        if len(states) < 2:
+            states = ["off", "on"]
+        mode = str(value).strip().lower()
+        desired = (states.index(mode) + 1) if mode in states else 1
+    else:
+        if (mapping or {}).get("write_action") == "climate_hvac_mode":
+            on_mode = str((mapping or {}).get("hvac_on_mode") or "heat").strip().lower()
+            on = str(value or "").strip().lower() == on_mode
+        else:
+            on = truthy(value)
+        desired = BinaryPV("active" if on else "inactive")
+
+    _LOGGER.debug("HA->BACnet: %r source=%r -> desired=%r (%s)", oid, value, desired, type(desired).__name__)
+
+    current = None
+    try:
+        current = getattr(obj, "presentValue", None)
+        if isinstance(obj, AnalogValueObject):
+            if current is not None and float(current) == float(desired):
+                return
+        elif isinstance(obj, MultiStateValueObject) or object_type == "multiStateValue":
+            if current is not None and int(current) == int(desired):
+                return
+        else:
+            if current == desired or str(current) == str(desired):
+                return
+    except Exception:
+        pass
+
+    object.__setattr__(obj, "_ha_guard", True)
+    try:
+        if isinstance(obj, MultiStateValueObject) or object_type == "multiStateValue":
+            obj.presentValue = int(desired)
+        else:
+            obj.presentValue = desired
+        _LOGGER.debug("HA->BACnet(direct): %r PV=%r -> %r", oid, current, desired)
+    except Exception as err:
+        _LOGGER.error("HA->BACnet assignment failed %r: %s", oid, err, exc_info=True)
+        raise
+    finally:
+        object.__setattr__(obj, "_ha_guard", False)
+
+
+def is_mapping_auto_writable(hass: HomeAssistant, mapping: Dict[str, Any]) -> bool:
+    """Slim write guard: only mapping intent + required HA service availability."""
+    action = str(mapping.get("write_action") or "").strip()
+    if action == "climate_hvac_mode":
+        return hass.services.has_service("climate", "set_hvac_mode")
+    if action == "climate_temperature":
+        return hass.services.has_service("climate", "set_temperature")
+
+    ent = str(mapping.get("entity_id") or "")
+    domain = entity_domain(ent)
+
+    if domain in ("light", "switch", "fan", "group"):
+        return hass.services.has_service(domain, "turn_on") and hass.services.has_service(domain, "turn_off")
+
+    if domain == "cover":
+        return hass.services.has_service("cover", "open_cover") and hass.services.has_service("cover", "close_cover")
+
+    if domain in ("number", "input_number"):
+        return hass.services.has_service(domain, "set_value")
+
+    return False
+
+
+async def forward_to_ha_from_bacnet(hass: HomeAssistant, mapping: Dict[str, Any], value: Any) -> None:
+    ent = str(mapping.get("entity_id") or "")
+    if not ent:
+        return
+
+    if not is_mapping_auto_writable(hass, mapping):
+        _LOGGER.debug("BACnet->HA write skipped for %s: auto-writable check failed", ent)
+        return
+
+    action = str(mapping.get("write_action") or "").strip()
+    if action == "climate_hvac_mode":
+        object_type = str(mapping.get("object_type") or "")
+        if object_type == "multiStateValue":
+            states = [str(s).strip().lower() for s in (mapping.get("mv_states") or []) if str(s).strip()]
+            idx = as_int(value, 0)
+            if idx < 1 or idx > len(states):
+                _LOGGER.warning("BACnet->HA climate hvac mode index out of range for %s: %r", ent, value)
+                return
+            hvac_mode = states[idx - 1]
+        else:
+            hvac_mode = str(mapping.get("hvac_on_mode") or "heat") if truthy(value) else str(mapping.get("hvac_off_mode") or "off")
+
+        await hass.services.async_call(
+            "climate",
+            "set_hvac_mode",
+            {"entity_id": ent, "hvac_mode": hvac_mode},
+            blocking=False,
+        )
+        _LOGGER.info("BACnet->HA climate.set_hvac_mode %s", {"entity_id": ent, "hvac_mode": hvac_mode})
+        return
+
+    if action == "climate_temperature":
+        temperature = as_float(value)
+        await hass.services.async_call(
+            "climate",
+            "set_temperature",
+            {"entity_id": ent, "temperature": temperature},
+            blocking=False,
+        )
+        _LOGGER.info(
+            "BACnet->HA climate.set_temperature %s",
+            {"entity_id": ent, "temperature": temperature},
+        )
+        return
+
+    domain = entity_domain(ent)
+
+    if domain in ("light", "switch", "fan", "group"):
+        on = truthy(value)
+        await hass.services.async_call(
+            domain,
+            f"turn_{'on' if on else 'off'}",
+            {"entity_id": ent},
+            blocking=False,
+        )
+        _LOGGER.info("BACnet->HA %s.turn_%s %s", domain, "on" if on else "off", {"entity_id": ent})
+        return
+
+    if domain == "cover":
+        service = "open_cover" if truthy(value) else "close_cover"
+        await hass.services.async_call("cover", service, {"entity_id": ent}, blocking=False)
+        _LOGGER.info("BACnet->HA cover.%s %s", service, {"entity_id": ent})
+        return
+
+    if domain in ("number", "input_number"):
+        val = as_float(value)
+        await hass.services.async_call(
+            domain,
+            "set_value",
+            {"entity_id": ent, "value": val},
+            blocking=False,
+        )
+        _LOGGER.info("BACnet->HA %s.set_value %s", domain, {"entity_id": ent, "value": val})
+        return
+
+    _LOGGER.debug("BACnet->HA write ignored for unsupported domain %s (%s)", domain, ent)
+
+
+def _norm_uom_key(value: str) -> str:
+    key = value.strip().lower()
+    return key.replace(" c", "\u00b0c").replace("\u00b0 c", "\u00b0c").replace(" f", "\u00b0f").replace("\u00b0 f", "\u00b0f")
 
 
 def _resolve_units(value: Optional[str]) -> Optional[Any]:
@@ -110,63 +325,81 @@ def _determine_cov_increment(unit: Optional[str]) -> float:
     return 0.5
 
 
-# ---------- Small Helpers ----------------------------------------------------
+def create_object(
+    hass: HomeAssistant,
+    mapping: Dict[str, Any],
+    *,
+    entity_id: str,
+    source_attr: Any,
+    friendly: str,
+) -> Any:
+    obj_type = str(mapping.get("object_type") or "")
+    inst = int(mapping.get("instance", 0))
+    obj_name = object_name(entity_id, source_attr)
 
+    if obj_type == "binaryValue":
+        obj = BinaryValueObject(
+            objectIdentifier=("binaryValue", inst),
+            objectName=obj_name,
+            presentValue=False,
+            description=friendly,
+        )
+        return obj
 
-def _entity_domain(entity_id: str) -> str:
-    return entity_id.split(".", 1)[0] if "." in entity_id else ""
+    if obj_type == "multiStateValue":
+        states = [str(s).strip() for s in (mapping.get("mv_states") or []) if str(s).strip()]
+        if len(states) < 2:
+            states = ["off", "on"]
+        obj = MultiStateValueObject(
+            objectIdentifier=("multiStateValue", inst),
+            objectName=obj_name,
+            presentValue=1,
+            numberOfStates=len(states),
+            stateText=states,
+            description=friendly,
+        )
+        return obj
 
+    obj = AnalogValueObject(
+        objectIdentifier=("analogValue", inst),
+        objectName=obj_name,
+        presentValue=0.0,
+        description=friendly,
+    )
 
-def _object_name(entity_id: str, source_attr: Any) -> str:
-    src = str(source_attr or "").strip()
-    return entity_id if not src else f"{entity_id}.{src}"
+    unit = mapping.get("units")
+    if not unit:
+        st = hass.states.get(entity_id)
+        if st:
+            unit = st.attributes.get("unit_of_measurement")
 
+    eu = _resolve_units(unit) if unit else None
+    if eu is not None:
+        try:
+            obj.units = eu  # type: ignore[attr-defined]
+        except Exception:
+            _LOGGER.debug("Failed to set units for %s (%r)", entity_id, eu, exc_info=True)
 
-def _truthy(x: Any) -> bool:
-    if isinstance(x, bool):
-        return x
-    if isinstance(x, (int, float)):
-        return x != 0
-
-    s = str(x).strip().lower()
-    if not s:
-        return False
-
-    if "inactive" in s:
-        return False
-    if "active" in s:
-        return True
-
-    if s in ("0", "false", "off", "closed"):
-        return False
-    return s in ("1", "true", "on", "open", "heat", "cool", "heating", "cooling")
-
-
-def _as_float(x: Any, default: float = 0.0) -> float:
     try:
-        return float(x)
+        cov_increment = mapping.get("cov_increment")
+        if cov_increment is not None:
+            obj.covIncrement = float(cov_increment)  # type: ignore[attr-defined]
+        else:
+            obj.covIncrement = _determine_cov_increment(unit)  # type: ignore[attr-defined]
     except Exception:
-        return default
+        _LOGGER.debug("Failed to set covIncrement for %s", entity_id, exc_info=True)
 
-
-def _as_int(x: Any, default: int = 0) -> int:
-    try:
-        return int(float(x))
-    except Exception:
-        return default
-
-
-# ---------- Publisher --------------------------------------------------------
+    return obj
 
 
 class BacnetPublisher:
     """
     Lightweight Publisher:
       - HA -> BACnet: initial + on-change via direct assignment (COV-friendly)
-      - BACnet -> HA: Forwarding is called by HubApp (WP/WPM)
+      - BACnet -> HA: Forwarding is called by server write handlers.
     """
 
-    def __init__(self, hass: HomeAssistant, app: Application, mappings: List[Dict[str, Any]]):
+    def __init__(self, hass: HomeAssistant, app: Any, mappings: List[Dict[str, Any]]):
         self.hass = hass
         self.app = app
         self._cfg = [
@@ -183,8 +416,6 @@ class BacnetPublisher:
 
         self._ha_unsub: Optional[Callable[[], None]] = None
 
-    # --- lifecycle ---
-
     async def start(self) -> None:
         for m in self._cfg:
             ent = str(m.get("entity_id") or "")
@@ -198,62 +429,13 @@ class BacnetPublisher:
                 continue
 
             friendly = str(m.get("friendly_name") or mapping_friendly_name(self.hass, m) or ent)
-            obj_type = str(m.get("object_type") or "")
-            inst = int(m.get("instance", 0))
-            obj_name = _object_name(ent, source_attr)
-
-            if obj_type == "binaryValue":
-                obj = BinaryValueObject(
-                    objectIdentifier=("binaryValue", inst),
-                    objectName=obj_name,
-                    presentValue=False,
-                    description=friendly,
-                )
-                _LOGGER.debug("BinaryValue created for %s (COV enabled)", source_key)
-            elif obj_type == "multiStateValue":
-                states = [str(s).strip() for s in (m.get("mv_states") or []) if str(s).strip()]
-                if len(states) < 2:
-                    states = ["off", "on"]
-                obj = MultiStateValueObject(
-                    objectIdentifier=("multiStateValue", inst),
-                    objectName=obj_name,
-                    presentValue=1,
-                    numberOfStates=len(states),
-                    stateText=states,
-                    description=friendly,
-                )
-                _LOGGER.debug("MultiStateValue created for %s with states=%s", source_key, states)
-            else:
-                obj = AnalogValueObject(
-                    objectIdentifier=("analogValue", inst),
-                    objectName=obj_name,
-                    presentValue=0.0,
-                    description=friendly,
-                )
-
-                unit = m.get("units")
-                if not unit:
-                    st = self.hass.states.get(ent)
-                    if st:
-                        unit = st.attributes.get("unit_of_measurement")
-
-                eu = _resolve_units(unit) if unit else None
-                if eu is not None:
-                    try:
-                        obj.units = eu  # type: ignore[attr-defined]
-                    except Exception:
-                        _LOGGER.debug("Failed to set units for %s (%r)", source_key, eu, exc_info=True)
-
-                try:
-                    cov_increment = m.get("cov_increment")
-                    if cov_increment is not None:
-                        obj.covIncrement = float(cov_increment)  # type: ignore[attr-defined]
-                    else:
-                        smart_increment = _determine_cov_increment(unit)
-                        obj.covIncrement = smart_increment  # type: ignore[attr-defined]
-                        _LOGGER.debug("covIncrement for %s: %s (unit=%s)", source_key, smart_increment, unit)
-                except Exception:
-                    _LOGGER.debug("Failed to set covIncrement for %s", source_key, exc_info=True)
+            obj = create_object(
+                self.hass,
+                m,
+                entity_id=ent,
+                source_attr=source_attr,
+                friendly=friendly,
+            )
 
             self.app.add_object(obj)
             oid = getattr(obj, "objectIdentifier", None)
@@ -320,21 +502,6 @@ class BacnetPublisher:
             except Exception as err:
                 _LOGGER.debug("Could not update description for %s: %s", source_key, err)
 
-    # --- HA -> BACnet --------------------------------------------------------
-
-    def _source_value(self, state_obj: Any, mapping: Dict[str, Any]) -> Any:
-        read_attr = str(mapping.get("read_attr") or "").strip()
-        source_attr = str(mapping.get("source_attr") or "").strip()
-        attr_name = read_attr or source_attr
-        if attr_name and attr_name != "__state__":
-            attrs = getattr(state_obj, "attributes", {}) or {}
-            val = attrs.get(attr_name)
-            # Backward compatibility: hvac_mode is typically the climate state, not an attribute.
-            if val is None and attr_name == "hvac_mode":
-                return getattr(state_obj, "state", None)
-            return val
-        return getattr(state_obj, "state", None)
-
     async def _initial_sync(self) -> None:
         for source_key, obj in self.by_source.items():
             mapping = self.map_by_source.get(source_key)
@@ -346,8 +513,8 @@ class BacnetPublisher:
             if not st:
                 continue
 
-            value = self._source_value(st, mapping)
-            await self._apply_from_ha(obj, value, mapping)
+            value = source_value(st, mapping)
+            await apply_from_ha(obj, value, mapping)
 
     @callback
     async def _on_state_changed(self, event) -> None:
@@ -366,169 +533,12 @@ class BacnetPublisher:
             if not obj or not mapping:
                 continue
 
-            value = self._source_value(ns, mapping)
-            asyncio.create_task(self._apply_from_ha(obj, value, mapping))
-
-    async def _apply_from_ha(self, obj: Any, value: Any, mapping: Optional[Dict[str, Any]] = None) -> None:
-        """Write source state/attribute to BACnet object presentValue."""
-        oid = getattr(obj, "objectIdentifier", None)
-        if not isinstance(oid, tuple) or len(oid) != 2:
-            return
-
-        object_type = str((mapping or {}).get("object_type") or "")
-
-        if isinstance(obj, AnalogValueObject):
-            if value is None:
-                return
-            desired: Any = _as_float(value)
-        elif isinstance(obj, MultiStateValueObject) or object_type == "multiStateValue":
-            if value is None:
-                return
-            states = [str(s).strip().lower() for s in ((mapping or {}).get("mv_states") or []) if str(s).strip()]
-            if len(states) < 2:
-                states = ["off", "on"]
-            mode = str(value).strip().lower()
-            desired = (states.index(mode) + 1) if mode in states else 1
-        else:
-            if (mapping or {}).get("write_action") == "climate_hvac_mode":
-                on_mode = str((mapping or {}).get("hvac_on_mode") or "heat").strip().lower()
-                on = str(value or "").strip().lower() == on_mode
-            else:
-                on = _truthy(value)
-            desired = BinaryPV("active" if on else "inactive")
-
-        _LOGGER.debug("HA->BACnet: %r source=%r -> desired=%r (%s)", oid, value, desired, type(desired).__name__)
-
-        current = None
-        try:
-            current = getattr(obj, "presentValue", None)
-            if isinstance(obj, AnalogValueObject):
-                if current is not None and float(current) == float(desired):
-                    return
-            elif isinstance(obj, MultiStateValueObject) or object_type == "multiStateValue":
-                if current is not None and int(current) == int(desired):
-                    return
-            else:
-                if current == desired or str(current) == str(desired):
-                    return
-        except Exception:
-            pass
-
-        object.__setattr__(obj, "_ha_guard", True)
-        try:
-            if isinstance(obj, MultiStateValueObject) or object_type == "multiStateValue":
-                obj.presentValue = int(desired)
-            else:
-                obj.presentValue = desired
-            _LOGGER.debug("HA->BACnet(direct): %r PV=%r -> %r", oid, current, desired)
-        except Exception as err:
-            _LOGGER.error("HA->BACnet assignment failed %r: %s", oid, err, exc_info=True)
-            raise
-        finally:
-            object.__setattr__(obj, "_ha_guard", False)
-
-    # --- BACnet -> HA --------------------------------------------------------
-
-    def _is_mapping_auto_writable(self, mapping: Dict[str, Any]) -> bool:
-        """Slim write guard: only mapping intent + required HA service availability."""
-        action = str(mapping.get("write_action") or "").strip()
-        if action == "climate_hvac_mode":
-            return self.hass.services.has_service("climate", "set_hvac_mode")
-        if action == "climate_temperature":
-            return self.hass.services.has_service("climate", "set_temperature")
-
-        ent = str(mapping.get("entity_id") or "")
-        domain = _entity_domain(ent)
-
-        if domain in ("light", "switch", "fan", "group"):
-            return self.hass.services.has_service(domain, "turn_on") and self.hass.services.has_service(domain, "turn_off")
-
-        if domain == "cover":
-            return self.hass.services.has_service("cover", "open_cover") and self.hass.services.has_service("cover", "close_cover")
-
-        if domain in ("number", "input_number"):
-            return self.hass.services.has_service(domain, "set_value")
-
-        return False
+            value = source_value(ns, mapping)
+            asyncio.create_task(apply_from_ha(obj, value, mapping))
 
     def is_mapping_writable(self, mapping: Dict[str, Any]) -> bool:
         """Public guard used by BACnet write handler before local PV updates."""
-        return self._is_mapping_auto_writable(mapping)
+        return is_mapping_auto_writable(self.hass, mapping)
 
     async def forward_to_ha_from_bacnet(self, mapping: Dict[str, Any], value: Any) -> None:
-        """Called by HubApp after successful WriteProperty(/Multiple)."""
-        ent = str(mapping.get("entity_id") or "")
-        if not ent:
-            return
-
-        if not self._is_mapping_auto_writable(mapping):
-            _LOGGER.debug("BACnet->HA write skipped for %s: auto-writable check failed", ent)
-            return
-
-        action = str(mapping.get("write_action") or "").strip()
-        if action == "climate_hvac_mode":
-            object_type = str(mapping.get("object_type") or "")
-            if object_type == "multiStateValue":
-                states = [str(s).strip().lower() for s in (mapping.get("mv_states") or []) if str(s).strip()]
-                idx = _as_int(value, 0)
-                if idx < 1 or idx > len(states):
-                    _LOGGER.warning("BACnet->HA climate hvac mode index out of range for %s: %r", ent, value)
-                    return
-                hvac_mode = states[idx - 1]
-            else:
-                hvac_mode = str(mapping.get("hvac_on_mode") or "heat") if _truthy(value) else str(mapping.get("hvac_off_mode") or "off")
-
-            await self.hass.services.async_call(
-                "climate",
-                "set_hvac_mode",
-                {"entity_id": ent, "hvac_mode": hvac_mode},
-                blocking=False,
-            )
-            _LOGGER.info("BACnet->HA climate.set_hvac_mode %s", {"entity_id": ent, "hvac_mode": hvac_mode})
-            return
-
-        if action == "climate_temperature":
-            temperature = _as_float(value)
-            await self.hass.services.async_call(
-                "climate",
-                "set_temperature",
-                {"entity_id": ent, "temperature": temperature},
-                blocking=False,
-            )
-            _LOGGER.info(
-                "BACnet->HA climate.set_temperature %s",
-                {"entity_id": ent, "temperature": temperature},
-            )
-            return
-
-        domain = _entity_domain(ent)
-
-        if domain in ("light", "switch", "fan", "group"):
-            on = _truthy(value)
-            await self.hass.services.async_call(
-                domain,
-                f"turn_{'on' if on else 'off'}",
-                {"entity_id": ent},
-                blocking=False,
-            )
-            _LOGGER.info("BACnet->HA %s.turn_%s %s", domain, "on" if on else "off", {"entity_id": ent})
-            return
-
-        if domain == "cover":
-            service = "open_cover" if _truthy(value) else "close_cover"
-            await self.hass.services.async_call("cover", service, {"entity_id": ent}, blocking=False)
-            _LOGGER.info("BACnet->HA cover.%s %s", service, {"entity_id": ent})
-            return
-
-        if domain in ("number", "input_number"):
-            val = _as_float(value)
-            await self.hass.services.async_call(
-                domain,
-                "set_value",
-                {"entity_id": ent, "value": val},
-                blocking=False,
-            )
-            _LOGGER.info("BACnet->HA %s.set_value %s", domain, {"entity_id": ent, "value": val})
-            return
-
-        _LOGGER.debug("BACnet->HA write ignored for unsupported domain %s (%s)", domain, ent)
+        await forward_to_ha_from_bacnet(self.hass, mapping, value)

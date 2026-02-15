@@ -5,8 +5,6 @@ import logging
 import time
 from typing import Any, Callable
 
-from bacpypes3.pdu import Address
-from bacpypes3.primitivedata import ObjectIdentifier
 from homeassistant.components.binary_sensor import BinarySensorEntity
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.components.select import SelectEntity
@@ -21,7 +19,7 @@ from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.typing import StateType
 
 from .const import DOMAIN, client_display_name
-from .sensor_helpers import (
+from .client_runtime import (
     CLIENT_COV_LEASE_SECONDS,
     _client_cache_get,
     _client_cov_signal,
@@ -41,7 +39,7 @@ from .sensor_helpers import (
     _sensor_device_class_from_unit,
     _to_int,
 )
-from .sensor_runtime import _write_client_point_present_value
+from .client_runtime import _open_cov_subscription_context, _write_client_point_present_value
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -328,27 +326,20 @@ class BacnetClientPointEntityBase:
         async with self._cov_lock:
             await self._async_stop_cov_runtime()
 
-            last_err: BaseException | None = None
-            for offset in range(0, 3):
-                try:
-                    context = cov_factory(
-                        Address(address),
-                        ObjectIdentifier(object_identifier),
-                        subscriber_process_identifier=((process_id + offset - 1) % 4194303) + 1,
-                        issue_confirmed_notifications=False,
-                        lifetime=CLIENT_COV_LEASE_SECONDS,
-                    )
-                    self._cov_context = await context.__aenter__()
-                    last_err = None
-                    break
-                except BaseException as err:
-                    self._cov_context = None
-                    self._cov_registered = False
-                    last_err = err
-                    await self._async_cleanup_cov_context(context, call_aexit=False)
-                    if isinstance(err, ValueError) and "existing context" in str(err).lower():
-                        continue
-                    break
+            async def _cleanup_failed_context(context_obj: Any) -> None:
+                await self._async_cleanup_cov_context(context_obj, call_aexit=False)
+
+            opened_context, last_err = await _open_cov_subscription_context(
+                app,
+                address=address,
+                object_identifier=object_identifier,
+                process_id=process_id,
+                lifetime=CLIENT_COV_LEASE_SECONDS,
+                cleanup_context=_cleanup_failed_context,
+                max_offset_attempts=3,
+            )
+            self._cov_context = opened_context
+            self._cov_registered = False
             if last_err is not None:
                 exc_info = (type(last_err), last_err, last_err.__traceback__)
                 _LOGGER.debug(
@@ -367,6 +358,10 @@ class BacnetClientPointEntityBase:
                     )
                 self._cov_retry_not_before_ts = time.monotonic() + self._cov_retry_delay_seconds
                 self._cov_retry_delay_seconds = min(self._cov_retry_delay_seconds * 2.0, 300.0)
+                self._set_client_points_unavailable(True, reason="cov_register_failed")
+                return
+
+            if self._cov_context is None:
                 self._set_client_points_unavailable(True, reason="cov_register_failed")
                 return
 
@@ -746,3 +741,5 @@ class BacnetClientPointText(BacnetClientPointEntityBase, TextEntity):
         if not _point_is_writable(point):
             raise HomeAssistantError("Point is read-only")
         await self._async_write_present_value(str(value))
+
+

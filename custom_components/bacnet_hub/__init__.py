@@ -505,6 +505,7 @@ async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> bool:
 
     _ensure_counter_floor(counters, published)
     targets = _auto_target_entity_ids(hass, options, mode)
+    startup_lenient = not hass.is_running
 
     kept: List[Dict[str, Any]] = []
     existing_mapping_keys: set[str] = set()
@@ -555,6 +556,10 @@ async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> bool:
             removed_count += 1
             continue
         if entity_id not in targets:
+            if startup_lenient:
+                kept.append(current)
+                existing_mapping_keys.add(key)
+                continue
             removed_count += 1
             continue
 
@@ -562,6 +567,10 @@ async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> bool:
         candidate_by_key = {mapping_key(spec): spec for spec in candidates}
         candidate = candidate_by_key.get(key)
         if not candidate:
+            if startup_lenient:
+                kept.append(current)
+                existing_mapping_keys.add(key)
+                continue
             removed_count += 1
             continue
 
@@ -621,6 +630,8 @@ async def _async_sync_auto_mappings(hass: HomeAssistant, entry_id: str) -> bool:
     added_count = 0
     for entity_id in sorted(targets):
         if not entity_exists(hass, entity_id):
+            continue
+        if startup_lenient and hass.states.get(entity_id) is None:
             continue
         for candidate in entity_mapping_candidates(hass, entity_id):
             key = mapping_key(candidate)
@@ -706,7 +717,11 @@ def _cancel_event_sync_task(hass: HomeAssistant, entry_id: str) -> None:
         task.cancel()
 
 
-def _schedule_event_sync(hass: HomeAssistant, entry_id: str, reason: str) -> None:
+def _schedule_event_sync(
+    hass: HomeAssistant,
+    entry_id: str,
+    reason: str,
+) -> None:
     data = _ensure_domain(hass)
     tasks: dict[str, asyncio.Task] = data[KEY_EVENT_SYNC_TASKS]
 
@@ -733,36 +748,79 @@ def _schedule_event_sync(hass: HomeAssistant, entry_id: str, reason: str) -> Non
     tasks[entry_id] = task
 
 
-def _start_event_sync(hass: HomeAssistant, entry_id: str):
+def _is_bacnet_generated_entity_id(entity_id: str) -> bool:
+    if not entity_id or "." not in entity_id:
+        return False
+    object_id = entity_id.split(".", 1)[1]
+    return object_id.startswith("bacnet_doi_") or object_id.startswith("bacnet_hub_")
+
+
+def _start_event_sync(
+    hass: HomeAssistant,
+    entry_id: str,
+):
     relevant_actions = {"create", "remove", "update"}
 
     @callback
     def _on_entity_registry_updated(event) -> None:
-        action = str((event.data or {}).get("action") or "").strip().lower()
+        event_data = event.data or {}
+        action = str(event_data.get("action") or "").strip().lower()
         if action and action not in relevant_actions:
             return
-        _schedule_event_sync(hass, entry_id, f"{EVENT_ENTITY_REGISTRY_UPDATED}:{action or 'n/a'}")
+        entity_id = str(event_data.get("entity_id") or "").strip()
+        if _is_bacnet_generated_entity_id(entity_id):
+            return
+        if action == "update":
+            changes = event_data.get("changes")
+            if isinstance(changes, dict):
+                relevant_change_keys = {"labels", "area_id", "device_id", "disabled_by", "hidden_by"}
+                if not any(key in changes for key in relevant_change_keys):
+                    return
+        _schedule_event_sync(
+            hass,
+            entry_id,
+            f"{EVENT_ENTITY_REGISTRY_UPDATED}:{action or 'n/a'}",
+        )
 
     @callback
     def _on_device_registry_updated(event) -> None:
-        action = str((event.data or {}).get("action") or "").strip().lower()
+        event_data = event.data or {}
+        action = str(event_data.get("action") or "").strip().lower()
         if action and action not in relevant_actions:
             return
-        _schedule_event_sync(hass, entry_id, f"{EVENT_DEVICE_REGISTRY_UPDATED}:{action or 'n/a'}")
+        if action == "update":
+            changes = event_data.get("changes")
+            if isinstance(changes, dict):
+                relevant_change_keys = {"labels", "area_id", "disabled_by"}
+                if not any(key in changes for key in relevant_change_keys):
+                    return
+        _schedule_event_sync(
+            hass,
+            entry_id,
+            f"{EVENT_DEVICE_REGISTRY_UPDATED}:{action or 'n/a'}",
+        )
 
     @callback
     def _on_label_registry_updated(event) -> None:
         action = str((event.data or {}).get("action") or "").strip().lower()
         if action and action not in relevant_actions:
             return
-        _schedule_event_sync(hass, entry_id, f"{EVENT_LABEL_REGISTRY_UPDATED}:{action or 'n/a'}")
+        _schedule_event_sync(
+            hass,
+            entry_id,
+            f"{EVENT_LABEL_REGISTRY_UPDATED}:{action or 'n/a'}",
+        )
 
     @callback
     def _on_area_registry_updated(event) -> None:
         action = str((event.data or {}).get("action") or "").strip().lower()
         if action and action not in relevant_actions:
             return
-        _schedule_event_sync(hass, entry_id, f"{EVENT_AREA_REGISTRY_UPDATED}:{action or 'n/a'}")
+        _schedule_event_sync(
+            hass,
+            entry_id,
+            f"{EVENT_AREA_REGISTRY_UPDATED}:{action or 'n/a'}",
+        )
 
     unsubs = [
         hass.bus.async_listen(EVENT_ENTITY_REGISTRY_UPDATED, _on_entity_registry_updated),
@@ -963,7 +1021,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     sync_unsubs[entry.entry_id] = _start_sync_triggers(hass, entry.entry_id)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
-    hass.async_create_task(_async_sync_auto_mappings(hass, entry.entry_id))
+    # Avoid an immediate self-reload loop during HA startup.
+    # Dynamic mapping updates are still handled by event-driven sync triggers.
     _LOGGER.info("%s started (Entry %s)", DOMAIN, entry.entry_id)
 
     logging.getLogger("bacpypes3.service.cov").setLevel(logging.DEBUG)
@@ -1098,3 +1157,4 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
         _LOGGER.debug("Options update for %s (Entry %s) - starting reload.", DOMAIN, entry.entry_id)
         await hass.config_entries.async_reload(entry.entry_id)
         reload_fp[entry.entry_id] = options_fp
+

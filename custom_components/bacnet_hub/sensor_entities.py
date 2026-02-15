@@ -5,8 +5,6 @@ import logging
 import time
 from typing import Any, Callable, Dict, Optional
 
-from bacpypes3.pdu import Address
-from bacpypes3.primitivedata import ObjectIdentifier
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant, callback
@@ -25,7 +23,7 @@ from .const import (
     published_observer_unique_id,
     published_suggested_object_id,
 )
-from .sensor_helpers import (
+from .client_runtime import (
     CLIENT_COV_LEASE_SECONDS,
     NETWORK_DIAGNOSTIC_KEYS,
     _client_cache_get,
@@ -48,7 +46,7 @@ from .sensor_helpers import (
     _to_int,
     _to_state,
 )
-from .sensor_runtime import _hub_diagnostics
+from .client_runtime import _hub_diagnostics, _open_cov_subscription_context
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -584,28 +582,20 @@ class BacnetClientPointSensor(SensorEntity):
         async with self._cov_lock:
             await self._async_stop_cov_runtime()
 
-            last_err: BaseException | None = None
-            for offset in range(0, 3):
-                try:
-                    context = cov_factory(
-                        Address(address),
-                        ObjectIdentifier(object_identifier),
-                        subscriber_process_identifier=((process_id + offset - 1) % 4194303) + 1,
-                        issue_confirmed_notifications=False,
-                        lifetime=CLIENT_COV_LEASE_SECONDS,
-                    )
-                    self._cov_context = await context.__aenter__()
-                    last_err = None
-                    break
-                except BaseException as err:
-                    self._cov_context = None
-                    self._cov_registered = False
-                    last_err = err
-                    await self._async_cleanup_cov_context(context, call_aexit=False)
-                    # Can happen during reload overlap when old context still exists.
-                    if isinstance(err, ValueError) and "existing context" in str(err).lower():
-                        continue
-                    break
+            async def _cleanup_failed_context(context_obj: Any) -> None:
+                await self._async_cleanup_cov_context(context_obj, call_aexit=False)
+
+            opened_context, last_err = await _open_cov_subscription_context(
+                app,
+                address=address,
+                object_identifier=object_identifier,
+                process_id=process_id,
+                lifetime=CLIENT_COV_LEASE_SECONDS,
+                cleanup_context=_cleanup_failed_context,
+                max_offset_attempts=3,
+            )
+            self._cov_context = opened_context
+            self._cov_registered = False
             if last_err is not None:
                 exc_info = (type(last_err), last_err, last_err.__traceback__)
                 _LOGGER.debug(
@@ -624,6 +614,9 @@ class BacnetClientPointSensor(SensorEntity):
                     )
                 self._cov_retry_not_before_ts = time.monotonic() + self._cov_retry_delay_seconds
                 self._cov_retry_delay_seconds = min(self._cov_retry_delay_seconds * 2.0, 300.0)
+                return
+
+            if self._cov_context is None:
                 return
 
             self._cov_registered = True
@@ -750,3 +743,5 @@ class BacnetClientPointSensor(SensorEntity):
         self._attr_native_value = native_value
         self._attr_extra_state_attributes = {}
         self.async_write_ha_state()
+
+

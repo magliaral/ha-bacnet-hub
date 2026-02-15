@@ -16,7 +16,7 @@ from .const import (
     published_observer_is_config,
     published_observer_platform,
 )
-from .sensor_helpers import _entry_client_points, _entry_points_signal, _point_platform, _to_int
+from .client_runtime import _entry_client_points, _entry_points_signal, _point_platform, _to_int
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
@@ -91,3 +91,5 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     _add_client_point_entities()
     unsub = async_dispatcher_connect(hass, _entry_points_signal(entry.entry_id), _add_client_point_entities)
     entry.async_on_unload(unsub)
+
+
