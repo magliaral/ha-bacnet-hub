@@ -380,9 +380,17 @@ jobs:
               keep.add(item.tag);
             }
 
+            // Keep all releases from the highest major line.
+            const maxMajor = stable.reduce((acc, item) => Math.max(acc, item.major), -1);
+            for (const item of stable) {
+              if (item.major === maxMajor) {
+                keep.add(item.tag);
+              }
+            }
+
             const stale = stable.filter((item) => !keep.has(item.tag));
             core.info(`Stable releases: ${stable.length}`);
-            core.info(`Keeping: ${keep.size} (latest=${keepLatestCount}, plus newest per major.minor, plus current)`);
+            core.info(`Keeping: ${keep.size} (latest=${keepLatestCount}, newest per major.minor, highest major line, plus current)`);
             core.info(`Deleting stale stable releases: ${stale.length}`);
 
             for (const item of stale) {
