@@ -287,6 +287,7 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const keepTag = "${{ steps.plan.outputs.tag }}";
+            const prereleaseTagRe = /^v\d+\.\d+\.\d+-beta\.\d+$/;
 
             const releases = await github.paginate(
               github.rest.repos.listReleases,
@@ -320,6 +321,33 @@ jobs:
               }
             }
 
+            // Also cleanup orphan prerelease tags (without release objects).
+            const tags = await github.paginate(
+              github.rest.repos.listTags,
+              { owner, repo, per_page: 100 },
+            );
+            const stalePrereleaseTags = tags
+              .map((tag) => String(tag.name || ""))
+              .filter((name) => prereleaseTagRe.test(name) && name !== keepTag);
+
+            core.info(`Found ${stalePrereleaseTags.length} stale prerelease tags to delete`);
+            for (const tagName of stalePrereleaseTags) {
+              try {
+                await github.rest.git.deleteRef({
+                  owner,
+                  repo,
+                  ref: `tags/${tagName}`,
+                });
+                core.info(`Deleted orphan prerelease tag ${tagName}`);
+              } catch (err) {
+                if (err.status === 404) {
+                  core.info(`Tag ${tagName} already missing`);
+                } else {
+                  throw err;
+                }
+              }
+            }
+
       - name: Cleanup old stable releases and tags
         if: steps.plan.outputs.skip != 'true' && steps.check_tag.outputs.exists != 'true' && steps.context.outputs.branch == 'main'
         uses: actions/github-script@v7
@@ -330,6 +358,7 @@ jobs:
             const keepTag = "${{ steps.plan.outputs.tag }}";
             const keepLatestCount = 10;
             const stableTagRe = /^v(\d+)\.(\d+)\.(\d+)$/;
+            const prereleaseTagRe = /^v\d+\.\d+\.\d+-beta\.\d+$/;
 
             const releases = await github.paginate(
               github.rest.repos.listReleases,
@@ -412,6 +441,84 @@ jobs:
               } catch (err) {
                 if (err.status === 404) {
                   core.info(`Tag ${item.tag} already missing`);
+                } else {
+                  throw err;
+                }
+              }
+            }
+
+            // On main release, remove all prereleases and their tags.
+            const prereleases = releases.filter((rel) => rel.prerelease);
+            core.info(`Deleting all prereleases on main: ${prereleases.length}`);
+            for (const rel of prereleases) {
+              core.info(`Deleting prerelease ${rel.tag_name} (id=${rel.id})`);
+              await github.rest.repos.deleteRelease({
+                owner,
+                repo,
+                release_id: rel.id,
+              });
+
+              try {
+                await github.rest.git.deleteRef({
+                  owner,
+                  repo,
+                  ref: `tags/${rel.tag_name}`,
+                });
+                core.info(`Deleted prerelease tag ${rel.tag_name}`);
+              } catch (err) {
+                if (err.status === 404) {
+                  core.info(`Tag ${rel.tag_name} already missing`);
+                } else {
+                  throw err;
+                }
+              }
+            }
+
+            // Also cleanup orphan stable tags (without release objects),
+            // using the same keep policy as for stable releases.
+            const tags = await github.paginate(
+              github.rest.repos.listTags,
+              { owner, repo, per_page: 100 },
+            );
+            const staleStableTags = tags
+              .map((tag) => String(tag.name || ""))
+              .filter((name) => stableTagRe.test(name) && !keep.has(name));
+
+            core.info(`Found ${staleStableTags.length} stale stable tags to delete`);
+            for (const tagName of staleStableTags) {
+              try {
+                await github.rest.git.deleteRef({
+                  owner,
+                  repo,
+                  ref: `tags/${tagName}`,
+                });
+                core.info(`Deleted orphan stable tag ${tagName}`);
+              } catch (err) {
+                if (err.status === 404) {
+                  core.info(`Tag ${tagName} already missing`);
+                } else {
+                  throw err;
+                }
+              }
+            }
+
+            // Remove orphan prerelease tags as well.
+            const stalePrereleaseTags = tags
+              .map((tag) => String(tag.name || ""))
+              .filter((name) => prereleaseTagRe.test(name));
+
+            core.info(`Found ${stalePrereleaseTags.length} prerelease tags to delete`);
+            for (const tagName of stalePrereleaseTags) {
+              try {
+                await github.rest.git.deleteRef({
+                  owner,
+                  repo,
+                  ref: `tags/${tagName}`,
+                });
+                core.info(`Deleted prerelease tag ${tagName}`);
+              } catch (err) {
+                if (err.status === 404) {
+                  core.info(`Tag ${tagName} already missing`);
                 } else {
                   throw err;
                 }
