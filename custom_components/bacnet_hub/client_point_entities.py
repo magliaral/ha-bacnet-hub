@@ -5,7 +5,10 @@ import logging
 import time
 from typing import Any, Callable
 
+from bacpypes3.primitivedata import Null
+
 from homeassistant.components.binary_sensor import BinarySensorEntity
+from homeassistant.components.button import ButtonEntity
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.components.select import SelectEntity
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
@@ -16,21 +19,28 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.event import async_call_later
+from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.typing import StateType
 
 from .const import DOMAIN, client_display_name
+from .helpers.tasks import create_logged_task
 from .client_runtime import (
     CLIENT_COV_LEASE_SECONDS,
+    CLIENT_COV_RENEW_FACTOR,
+    WRITE_PRIORITY_OPTIONS,
     _client_cache_get,
     _client_cov_signal,
     _client_points_get,
     _client_points_set,
     _client_points_signal,
     _client_rescan_signal,
+    _client_write_priority_get,
+    _client_write_priority_set,
     _cov_process_identifier,
     _entry_points_signal,
     _normalize_bacnet_unit,
     _point_entity_id,
+    _point_is_commandable,
     _point_is_writable,
     _point_native_value_from_payload,
     _point_unique_id,
@@ -59,12 +69,37 @@ def _point_is_on(point: dict[str, Any]) -> bool | None:
         return None
 
 
-class BacnetClientPointEntityBase:
+def _client_device_info(
+    hass: HomeAssistant, entry_id: str, client_id: str, client_instance: int
+) -> DeviceInfo:
+    diag_cache = _client_cache_get(hass, entry_id, client_id)
+    device_data = dict(diag_cache.get("device", {}) or {})
+    return DeviceInfo(
+        identifiers={(DOMAIN, client_id)},
+        via_device=(DOMAIN, entry_id),
+        name=str(diag_cache.get("name") or client_display_name(client_instance)),
+        manufacturer=_safe_text(device_data.get("vendor_name")),
+        model=_safe_text(device_data.get("model_name")),
+        sw_version=_safe_text(device_data.get("firmware_revision")),
+        hw_version=_safe_text(device_data.get("hardware_revision")),
+        serial_number=_safe_text(device_data.get("serial_number")),
+    )
+
+
+class BacnetClientPointBase:
+    """Lean point entity base: identity, naming, availability, write transport.
+
+    Carries no COV machinery. Secondary entities of a point (e.g. the release
+    button) extend this directly so the point is never subscribed twice.
+    """
+
     _attr_should_poll = False
     _attr_has_entity_name = False
     _attr_entity_registry_enabled_default = False
     _POINT_UNAVAILABLE_KEY = "_cov_unavailable"
     _POINT_UNAVAILABLE_REASON_KEY = "_cov_unavailable_reason"
+    # Appended to the point-derived display name (secondary entities only).
+    _name_suffix = ""
 
     def __init__(
         self,
@@ -84,16 +119,6 @@ class BacnetClientPointEntityBase:
         self._entity_domain = str(entity_domain).strip().lower()
 
         self._unsub_points_dispatcher: Callable[[], None] | None = None
-        self._unsub_cov_dispatcher: Callable[[], None] | None = None
-        self._cov_context: Any | None = None
-        self._cov_task: asyncio.Task | None = None
-        self._cov_lease_unsub: Callable[[], None] | None = None
-        self._cov_lock = asyncio.Lock()
-        self._cov_registered = False
-        self._cov_last_target: tuple[str, str] | None = None
-        self._cov_retry_delay_seconds: float = 10.0
-        self._cov_retry_not_before_ts: float = 0.0
-        self._cov_rescan_not_before_ts: float = 0.0
 
         cache = _client_points_get(hass, entry_id, client_id).get(self._point_key, {})
         type_slug = str(cache.get("type_slug") or "point")
@@ -108,22 +133,14 @@ class BacnetClientPointEntityBase:
         )
         description = _safe_text(cache.get("description"))
         object_name = _safe_text(cache.get("object_name"))
-        self._attr_name = str(description or object_name or f"{type_slug.upper()} {object_instance}")
+        base_name = str(description or object_name or f"{type_slug.upper()} {object_instance}")
+        self._attr_name = f"{base_name}{self._name_suffix}"
         self._attr_available = not bool(cache.get(self._POINT_UNAVAILABLE_KEY, False))
 
     @property
     def device_info(self) -> DeviceInfo:
-        diag_cache = _client_cache_get(self.hass, self._entry_id, self._client_id)
-        device_data = dict(diag_cache.get("device", {}) or {})
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._client_id)},
-            via_device=(DOMAIN, self._entry_id),
-            name=str(diag_cache.get("name") or client_display_name(self._client_instance)),
-            manufacturer=_safe_text(device_data.get("vendor_name")),
-            model=_safe_text(device_data.get("model_name")),
-            sw_version=_safe_text(device_data.get("firmware_revision")),
-            hw_version=_safe_text(device_data.get("hardware_revision")),
-            serial_number=_safe_text(device_data.get("serial_number")),
+        return _client_device_info(
+            self.hass, self._entry_id, self._client_id, self._client_instance
         )
 
     async def async_added_to_hass(self) -> None:
@@ -133,30 +150,150 @@ class BacnetClientPointEntityBase:
             signal,
             self._handle_points_update,
         )
-        cov_signal = _client_cov_signal(self._entry_id, self._client_id)
-        self._unsub_cov_dispatcher = async_dispatcher_connect(
-            self.hass,
-            cov_signal,
-            self._handle_cov_reregister,
-        )
-        self._handle_points_update()
-        await self._async_register_cov()
         self._handle_points_update()
 
     async def async_will_remove_from_hass(self) -> None:
         if self._unsub_points_dispatcher is not None:
             self._unsub_points_dispatcher()
             self._unsub_points_dispatcher = None
-        if self._unsub_cov_dispatcher is not None:
-            self._unsub_cov_dispatcher()
-            self._unsub_cov_dispatcher = None
-        async with self._cov_lock:
-            await self._async_stop_cov_runtime()
 
     def _get_point(self) -> dict[str, Any]:
         return dict(
             _client_points_get(self.hass, self._entry_id, self._client_id).get(self._point_key, {}) or {}
         )
+
+    @callback
+    def _handle_points_update(self) -> None:
+        point = self._get_point()
+        if not point:
+            return
+
+        self._attr_available = not bool(point.get(self._POINT_UNAVAILABLE_KEY, False))
+
+        base_name = _safe_text(point.get("description")) or _safe_text(point.get("object_name"))
+        if base_name:
+            self._attr_name = f"{base_name}{self._name_suffix}"
+
+        self._apply_point_state(point)
+        self.async_write_ha_state()
+
+    def _apply_point_state(self, point: dict[str, Any]) -> None:
+        raise NotImplementedError
+
+    async def _async_write_point(self, value: Any, *, optimistic: bool) -> None:
+        """Write presentValue at the client's configured priority.
+
+        With optimistic=True the local cache is updated to the written value;
+        a relinquish (Null) must pass optimistic=False so the cache only
+        changes once the device reports the resulting value via COV.
+        """
+        point = self._get_point()
+        if not point:
+            raise HomeAssistantError("Point payload unavailable")
+
+        server = self.hass.data.get(DOMAIN, {}).get("servers", {}).get(self._entry_id)
+        app = getattr(server, "app", None) if server is not None else None
+        if app is None:
+            raise HomeAssistantError("BACnet app unavailable")
+
+        address = _safe_text(point.get("client_address"))
+        object_type = _safe_text(point.get("object_type"))
+        object_instance = _to_int(point.get("object_instance"))
+        if not address or not object_type or object_instance is None:
+            raise HomeAssistantError("Point addressing incomplete")
+
+        write_priority = (
+            _client_write_priority_get(self.hass, self._entry_id, self._client_id)
+            if _point_is_commandable(point)
+            else None
+        )
+
+        await _write_client_point_present_value(
+            app,
+            address,
+            object_type,
+            int(object_instance),
+            value,
+            priority=write_priority,
+        )
+
+        if not optimistic:
+            return
+
+        point["present_value"] = value
+        _client_points_set(
+            self.hass,
+            self._entry_id,
+            self._client_id,
+            {self._point_key: point},
+        )
+        async_dispatcher_send(self.hass, _client_points_signal(self._entry_id, self._client_id))
+        async_dispatcher_send(
+            self.hass,
+            _entry_points_signal(self._entry_id),
+            {"client_id": self._client_id},
+        )
+
+    async def _async_write_present_value(self, value: Any) -> None:
+        await self._async_write_point(value, optimistic=True)
+
+
+class BacnetClientPointEntityBase(BacnetClientPointBase):
+    """Primary point entity base: adds the COV subscription runtime."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        client_id: str,
+        client_instance: int,
+        point_key: str,
+        *,
+        entity_domain: str,
+    ) -> None:
+        super().__init__(
+            hass,
+            entry_id,
+            client_id,
+            client_instance,
+            point_key,
+            entity_domain=entity_domain,
+        )
+        self._unsub_cov_dispatcher: Callable[[], None] | None = None
+        self._cov_context: Any | None = None
+        self._cov_task: asyncio.Task | None = None
+        self._cov_reregister_task: asyncio.Task | None = None
+        self._cov_lease_unsub: Callable[[], None] | None = None
+        self._cov_lock = asyncio.Lock()
+        self._cov_registered = False
+        self._cov_last_target: tuple[str, str] | None = None
+        self._cov_retry_delay_seconds: float = 10.0
+        self._cov_retry_not_before_ts: float = 0.0
+        self._cov_rescan_not_before_ts: float = 0.0
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        cov_signal = _client_cov_signal(self._entry_id, self._client_id)
+        self._unsub_cov_dispatcher = async_dispatcher_connect(
+            self.hass,
+            cov_signal,
+            self._handle_cov_reregister,
+        )
+        await self._async_register_cov()
+        self._handle_points_update()
+
+    async def async_will_remove_from_hass(self) -> None:
+        await super().async_will_remove_from_hass()
+        if self._unsub_cov_dispatcher is not None:
+            self._unsub_cov_dispatcher()
+            self._unsub_cov_dispatcher = None
+        # A pending re-register must not resurrect the COV subscription after
+        # the entity is gone.
+        if self._cov_reregister_task is not None and not self._cov_reregister_task.done():
+            self._cov_reregister_task.cancel()
+        self._cov_reregister_task = None
+        async with self._cov_lock:
+            await self._async_stop_cov_runtime()
 
     def _set_client_points_unavailable(self, unavailable: bool, *, reason: str | None = None) -> None:
         point_cache = _client_points_get(self.hass, self._entry_id, self._client_id)
@@ -197,21 +334,31 @@ class BacnetClientPointEntityBase:
 
     @callback
     def _handle_cov_reregister(self) -> None:
-        self.hass.async_create_task(self._async_reregister_cov())
+        self._start_cov_reregister_task()
+
+    def _start_cov_reregister_task(self) -> None:
+        if self._cov_reregister_task is not None and not self._cov_reregister_task.done():
+            return
+        self._cov_reregister_task = create_logged_task(
+            self.hass,
+            self._async_reregister_cov(),
+            logger=_LOGGER,
+            message=f"COV re-register for {self._point_key}",
+        )
 
     async def _async_reregister_cov(self) -> None:
         try:
             await self._async_register_cov()
         except asyncio.CancelledError:
             raise
-        except BaseException:
+        except Exception:
             _LOGGER.debug("COV re-register failed for %s", self._point_key, exc_info=True)
 
     async def _async_stop_cov_runtime(self) -> None:
         if self._cov_lease_unsub is not None:
             try:
                 self._cov_lease_unsub()
-            except BaseException:
+            except Exception:
                 pass
             self._cov_lease_unsub = None
         if self._cov_task is not None and not self._cov_task.done():
@@ -220,7 +367,7 @@ class BacnetClientPointEntityBase:
                 await self._cov_task
             except asyncio.CancelledError:
                 pass
-            except BaseException:
+            except Exception:
                 pass
         self._cov_task = None
         if self._cov_context is not None:
@@ -235,63 +382,27 @@ class BacnetClientPointEntityBase:
         if call_aexit:
             try:
                 await context_obj.__aexit__(None, None, None)
-            except BaseException:
+            except Exception:
                 pass
 
-        embedded_tasks: list[asyncio.Task] = []
-        embedded_handles: list[Any] = []
-        values: list[Any] = []
-        seen_ids: set[int] = set()
-
-        try:
-            for value in vars(context_obj).values():
-                vid = id(value)
-                if vid in seen_ids:
-                    continue
-                seen_ids.add(vid)
-                values.append(value)
-        except BaseException:
-            pass
-
-        for attr_name in dir(context_obj):
-            if attr_name.startswith("__"):
-                continue
-            low = attr_name.lower()
-            if "task" not in low and "handle" not in low and "timer" not in low:
-                continue
-            try:
-                value = getattr(context_obj, attr_name)
-            except BaseException:
-                continue
-            vid = id(value)
-            if vid in seen_ids:
-                continue
-            seen_ids.add(vid)
-            values.append(value)
-
-        for value in values:
-            if isinstance(value, asyncio.Task):
-                embedded_tasks.append(value)
-                continue
-            cancel_fn = getattr(value, "cancel", None)
-            if callable(cancel_fn):
-                embedded_handles.append(value)
-
-        for handle in embedded_handles:
+        # bacpypes3 is pinned in manifest.json. Its SubscriptionContextManager
+        # (bacpypes3.service.cov) keeps exactly these two refresh artifacts,
+        # which can outlive a failed or abandoned context.
+        handle = getattr(context_obj, "refresh_subscription_handle", None)
+        if handle is not None:
             try:
                 handle.cancel()
-            except BaseException:
+            except Exception:
                 pass
 
-        for task in embedded_tasks:
-            if task.done():
-                continue
+        task = getattr(context_obj, "refresh_subscription_task", None)
+        if isinstance(task, asyncio.Task) and not task.done():
             task.cancel()
             try:
                 await task
             except asyncio.CancelledError:
                 pass
-            except BaseException:
+            except Exception:
                 pass
 
     async def _async_register_cov(self) -> None:
@@ -376,16 +487,19 @@ class BacnetClientPointEntityBase:
         if self._cov_lease_unsub is not None:
             try:
                 self._cov_lease_unsub()
-            except BaseException:
+            except Exception:
                 pass
             self._cov_lease_unsub = None
 
-        delay = max(1.0, float(CLIENT_COV_LEASE_SECONDS))
+        # Renew before the lease expires (at CLIENT_COV_RENEW_FACTOR of the
+        # lifetime): the old subscription is still valid while the new one is
+        # opened, so entities never blip to unavailable on renewal.
+        delay = max(30.0, float(CLIENT_COV_LEASE_SECONDS) * float(CLIENT_COV_RENEW_FACTOR))
 
         @callback
         def _lease_expired(_now) -> None:
             self._cov_lease_unsub = None
-            self.hass.async_create_task(self._async_reregister_cov())
+            self._start_cov_reregister_task()
 
         self._cov_lease_unsub = async_call_later(self.hass, delay, _lease_expired)
 
@@ -398,7 +512,7 @@ class BacnetClientPointEntityBase:
                 prop, value = await context.get_value()
             except asyncio.CancelledError:
                 raise
-            except BaseException:
+            except Exception:
                 self._cov_registered = False
                 self._set_client_points_unavailable(True, reason="cov_receive_failed")
                 self._handle_points_update()
@@ -462,70 +576,6 @@ class BacnetClientPointEntityBase:
                 _entry_points_signal(self._entry_id),
                 {"client_id": self._client_id},
             )
-
-    async def _async_write_present_value(self, value: Any) -> None:
-        point = self._get_point()
-        if not point:
-            raise HomeAssistantError("Point payload unavailable")
-
-        server = self.hass.data.get(DOMAIN, {}).get("servers", {}).get(self._entry_id)
-        app = getattr(server, "app", None) if server is not None else None
-        if app is None:
-            raise HomeAssistantError("BACnet app unavailable")
-
-        address = _safe_text(point.get("client_address"))
-        object_type = _safe_text(point.get("object_type"))
-        object_instance = _to_int(point.get("object_instance"))
-        if not address or not object_type or object_instance is None:
-            raise HomeAssistantError("Point addressing incomplete")
-
-        type_slug = str(point.get("type_slug") or "").strip().lower()
-        has_priority_array = bool(point.get("has_priority_array"))
-        write_priority = 16 if type_slug in {"ao", "bo"} and has_priority_array else None
-
-        await _write_client_point_present_value(
-            app,
-            address,
-            object_type,
-            int(object_instance),
-            value,
-            priority=write_priority,
-        )
-
-        point["present_value"] = value
-        _client_points_set(
-            self.hass,
-            self._entry_id,
-            self._client_id,
-            {self._point_key: point},
-        )
-        async_dispatcher_send(self.hass, _client_points_signal(self._entry_id, self._client_id))
-        async_dispatcher_send(
-            self.hass,
-            _entry_points_signal(self._entry_id),
-            {"client_id": self._client_id},
-        )
-
-    @callback
-    def _handle_points_update(self) -> None:
-        point = self._get_point()
-        if not point:
-            return
-
-        self._attr_available = not bool(point.get(self._POINT_UNAVAILABLE_KEY, False))
-
-        description = _safe_text(point.get("description"))
-        object_name = _safe_text(point.get("object_name"))
-        if description:
-            self._attr_name = description
-        elif object_name:
-            self._attr_name = object_name
-
-        self._apply_point_state(point)
-        self.async_write_ha_state()
-
-    def _apply_point_state(self, point: dict[str, Any]) -> None:
-        raise NotImplementedError
 
 
 class BacnetClientPointSensor(BacnetClientPointEntityBase, SensorEntity):
@@ -741,5 +791,104 @@ class BacnetClientPointText(BacnetClientPointEntityBase, TextEntity):
         if not _point_is_writable(point):
             raise HomeAssistantError("Point is read-only")
         await self._async_write_present_value(str(value))
+
+
+class BacnetClientWritePrioritySelect(SelectEntity, RestoreEntity):
+    """Per-client BACnet write priority (8..16) applied to commandable writes."""
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_entity_registry_enabled_default = False
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_icon = "mdi:priority-high"
+    _attr_name = "Write priority"
+    _attr_options = [str(priority) for priority in WRITE_PRIORITY_OPTIONS]
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        client_id: str,
+        client_instance: int,
+    ) -> None:
+        self.hass = hass
+        self._entry_id = str(entry_id)
+        self._client_id = str(client_id)
+        self._client_instance = int(client_instance)
+
+        self._attr_unique_id = f"{self._entry_id}-{self._client_id}-write-priority"
+        self.entity_id = f"select.bacnet_doi_{self._client_instance}_write_priority"
+        self._attr_current_option = str(
+            _client_write_priority_get(hass, self._entry_id, self._client_id)
+        )
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return _client_device_info(
+            self.hass, self._entry_id, self._client_id, self._client_instance
+        )
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        last_state = await self.async_get_last_state()
+        value = (
+            last_state.state
+            if last_state is not None and last_state.state in self._attr_options
+            else self._attr_current_option
+        )
+        self._attr_current_option = str(
+            _client_write_priority_set(self.hass, self._entry_id, self._client_id, value)
+        )
+
+    async def async_select_option(self, option: str) -> None:
+        validated = _client_write_priority_set(
+            self.hass, self._entry_id, self._client_id, option
+        )
+        self._attr_current_option = str(validated)
+        self.async_write_ha_state()
+        _LOGGER.debug(
+            "Write priority for client %s set to %s", self._client_id, validated
+        )
+
+
+class BacnetClientPointReleaseButton(BacnetClientPointBase, ButtonEntity):
+    """Relinquish the commanded value: write Null at the configured priority."""
+
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_icon = "mdi:lock-open-variant-outline"
+    _name_suffix = " Release"
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        client_id: str,
+        client_instance: int,
+        point_key: str,
+    ) -> None:
+        super().__init__(
+            hass,
+            entry_id,
+            client_id,
+            client_instance,
+            point_key,
+            entity_domain="button",
+        )
+        # The primary entity of the point owns the bare unique_id/entity_id.
+        self._attr_unique_id = f"{self._attr_unique_id}-release"
+        self.entity_id = f"{self.entity_id}_release"
+
+    def _apply_point_state(self, point: dict[str, Any]) -> None:
+        pass
+
+    async def async_press(self) -> None:
+        point = self._get_point()
+        if not _point_is_commandable(point):
+            raise HomeAssistantError("Point has no priority array to relinquish")
+        # Null relinquishes the configured priority slot; the point's COV
+        # subscription picks up the resulting value from the device, so the
+        # cache must not be updated optimistically.
+        await self._async_write_point(Null(()), optimistic=False)
+        _LOGGER.debug("Relinquished %s at the configured priority", self._point_key)
 
 

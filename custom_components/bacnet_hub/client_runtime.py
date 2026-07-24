@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
+import time
 from datetime import timedelta
-from typing import Any
+from typing import Any, Awaitable, Callable, Dict
 
+from bacpypes3.pdu import Address
+from bacpypes3.primitivedata import ObjectIdentifier
 from homeassistant.components.sensor import SensorDeviceClass
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
 from homeassistant.helpers.typing import StateType
 
-from .const import DOMAIN
+from .const import CONF_INSTANCE, DOMAIN, client_display_name
+from .helpers.bacnet import device_instance_from_identifier as _device_instance_from_identifier
 
 HUB_DIAGNOSTIC_FIELDS: list[tuple[str, str]] = [
     ("description", "Description"),
@@ -33,7 +39,16 @@ CLIENT_POINT_REFRESH_TIMEOUT_SECONDS = 6.0
 CLIENT_POINT_SCAN_LIMIT = 128
 CLIENT_REDISCOVERY_INTERVAL = timedelta(minutes=15)
 CLIENT_REFRESH_MIN_SECONDS = 55.0
-CLIENT_COV_LEASE_SECONDS = 300
+CLIENT_COV_LEASE_SECONDS = 600
+# Renew the COV subscription at this fraction of the lease lifetime, while the
+# old subscription is still valid, so entities never drop to unavailable
+# between renewals.
+CLIENT_COV_RENEW_FACTOR = 0.8
+
+# BACnet write priority used for commandable objects. 16 is the lowest level
+# and matches the behaviour of a priority-less write per the BACnet spec.
+DEFAULT_WRITE_PRIORITY = 16
+WRITE_PRIORITY_OPTIONS: list[int] = list(range(8, 17))
 
 CLIENT_DIAGNOSTIC_FIELDS: list[tuple[str, str]] = list(HUB_DIAGNOSTIC_FIELDS)
 NETWORK_DIAGNOSTIC_KEYS = {"ip_address", "ip_subnet_mask", "mac_address_raw"}
@@ -298,6 +313,31 @@ def _client_points_set(
     cache.update(payload or {})
 
 
+def _client_write_priority_root(hass: HomeAssistant) -> dict[str, dict[str, int]]:
+    root = hass.data.setdefault(DOMAIN, {})
+    return root.setdefault("client_write_priority", {})
+
+
+def _client_write_priority_get(hass: HomeAssistant, entry_id: str, client_id: str) -> int:
+    # Values are validated by _client_write_priority_set, the only writer.
+    per_entry = _client_write_priority_root(hass).get(str(entry_id), {})
+    return per_entry.get(str(client_id), DEFAULT_WRITE_PRIORITY)
+
+
+def _client_write_priority_set(
+    hass: HomeAssistant, entry_id: str, client_id: str, value: Any
+) -> int:
+    try:
+        priority = int(value)
+    except (TypeError, ValueError):
+        priority = DEFAULT_WRITE_PRIORITY
+    if priority not in WRITE_PRIORITY_OPTIONS:
+        priority = DEFAULT_WRITE_PRIORITY
+    per_entry = _client_write_priority_root(hass).setdefault(str(entry_id), {})
+    per_entry[str(client_id)] = priority
+    return priority
+
+
 def _client_locks_root(hass: HomeAssistant) -> dict[str, dict[str, asyncio.Lock]]:
     root = hass.data.setdefault(DOMAIN, {})
     return root.setdefault("client_diag_locks", {})
@@ -539,6 +579,69 @@ def _point_is_writable(point: dict[str, Any]) -> bool:
     return False
 
 
+def _point_is_commandable(point: dict[str, Any]) -> bool:
+    """Commandable per BACnet: object exposes a priority array we can write to."""
+    type_slug = str(point.get("type_slug") or "").strip().lower()
+    return type_slug in {"ao", "bo", "av", "bv", "mv"} and _point_has_priority_array(point)
+
+
+def _client_instance_for(point: dict[str, Any], client_id: str) -> int:
+    """Device instance for a client point, falling back to the client_id suffix."""
+    instance = _to_int((point or {}).get("client_instance"))
+    if instance is None:
+        instance = _to_int(str(client_id).split("_")[-1]) or 0
+    return int(instance)
+
+
+def _setup_client_point_platform(
+    hass: HomeAssistant,
+    entry: Any,
+    async_add_entities: Callable[[list[Any]], None],
+    *,
+    match: Callable[[dict[str, Any]], bool],
+    build: Callable[[str, int, str, dict[str, Any]], Any],
+    client_match: Callable[[dict[str, Any]], bool] | None = None,
+    client_build: Callable[[str, int], Any] | None = None,
+) -> None:
+    """Create client point entities now and whenever new points are imported.
+
+    match/build run per point: build(client_id, client_instance, point_key,
+    point) returns the entity. client_match/client_build optionally create one
+    additional entity per client device, triggered by its first matching point.
+    """
+    added: set[tuple[str, str]] = set()
+    added_clients: set[str] = set()
+
+    @callback
+    def _add_missing(_payload=None) -> None:
+        entities: list[Any] = []
+        for client_id, point_cache in _entry_client_points(hass, entry.entry_id).items():
+            cid = str(client_id)
+            for point_key, point in point_cache.items():
+                point = point or {}
+                if (
+                    client_build is not None
+                    and cid not in added_clients
+                    and (client_match is None or client_match(point))
+                ):
+                    entities.append(client_build(cid, _client_instance_for(point, cid)))
+                    added_clients.add(cid)
+                key = (cid, str(point_key))
+                if key in added or not match(point):
+                    continue
+                entities.append(
+                    build(cid, _client_instance_for(point, cid), str(point_key), point)
+                )
+                added.add(key)
+        if entities:
+            async_add_entities(entities)
+
+    _add_missing()
+    entry.async_on_unload(
+        async_dispatcher_connect(hass, _entry_points_signal(entry.entry_id), _add_missing)
+    )
+
+
 def _point_platform(point: dict[str, Any]) -> str:
     type_slug = str(point.get("type_slug") or "").strip().lower()
     if type_slug == "csv":
@@ -556,18 +659,6 @@ def _point_platform(point: dict[str, Any]) -> str:
     return "sensor"
 
 
-import asyncio
-import logging
-import time
-from typing import Any, Awaitable, Callable, Dict
-
-from bacpypes3.pdu import Address
-from bacpypes3.primitivedata import ObjectIdentifier
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.dispatcher import async_dispatcher_send
-
-from .const import CONF_INSTANCE, DOMAIN, client_display_name
-from .helpers.bacnet import device_instance_from_identifier as _device_instance_from_identifier
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -691,13 +782,21 @@ async def _write_client_point_present_value(
         attempts.append(((address, objid, "presentValue", value, int(priority)), {}))
         attempts.append(((address, objid, "presentValue", value, None, int(priority)), {}))
 
-    last_err: BaseException | None = None
+    last_err: Exception | None = None
     for args, kwargs in attempts:
         try:
             return await asyncio.wait_for(write_fn(*args, **kwargs), timeout=timeout)
         except asyncio.CancelledError:
             raise
-        except BaseException as err:
+        except Exception as err:
+            _LOGGER.debug(
+                "write_property attempt failed for %s (%s: %s), args=%r kwargs=%r",
+                objid,
+                type(err).__name__,
+                err,
+                args,
+                kwargs,
+            )
             last_err = err
             continue
     if last_err is not None:

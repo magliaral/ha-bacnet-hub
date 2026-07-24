@@ -53,7 +53,7 @@ EVENT_LABEL_REGISTRY_UPDATED = "label_registry_updated"
 EVENT_AREA_REGISTRY_UPDATED = "area_registry_updated"
 EVENT_SYNC_DEBOUNCE_SECONDS = 2.0
 
-PLATFORMS: List[str] = ["sensor", "number", "switch", "select", "text", "binary_sensor"]
+PLATFORMS: List[str] = ["sensor", "number", "switch", "select", "text", "binary_sensor", "button"]
 
 # Optional: if True, we write the updated friendly_names
 # back to entry.options (once). We then suppress the reload.
@@ -1011,6 +1011,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, ["select"])
     await hass.config_entries.async_forward_entry_setups(entry, ["text"])
     await hass.config_entries.async_forward_entry_setups(entry, ["binary_sensor"])
+    await hass.config_entries.async_forward_entry_setups(entry, ["button"])
     renamed_entities = _normalize_published_entity_ids(hass, entry, published)
     if renamed_entities:
         _LOGGER.info(
@@ -1024,8 +1025,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Avoid an immediate self-reload loop during HA startup.
     # Dynamic mapping updates are still handled by event-driven sync triggers.
     _LOGGER.info("%s started (Entry %s)", DOMAIN, entry.entry_id)
-
-    logging.getLogger("bacpypes3.service.cov").setLevel(logging.DEBUG)
     return True
 
 
@@ -1061,6 +1060,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     data[KEY_PUBLISHED_CACHE].pop(entry.entry_id, None)
     data.setdefault("client_diag_cache", {}).pop(entry.entry_id, None)
     data.setdefault("client_point_cache", {}).pop(entry.entry_id, None)
+    data.setdefault("client_write_priority", {}).pop(entry.entry_id, None)
     data[KEY_CLIENT_IAM_CACHE].pop(entry.entry_id, None)
     pending = event_sync_tasks.pop(entry.entry_id, None)
     if pending and not pending.done():
@@ -1088,6 +1088,7 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     data[KEY_PUBLISHED_CACHE].pop(entry.entry_id, None)
     data.setdefault("client_diag_cache", {}).pop(entry.entry_id, None)
     data.setdefault("client_point_cache", {}).pop(entry.entry_id, None)
+    data.setdefault("client_write_priority", {}).pop(entry.entry_id, None)
     data[KEY_CLIENT_IAM_CACHE].pop(entry.entry_id, None)
 
     removed_entities, removed_devices = _hard_cleanup_entry_registries(hass, entry.entry_id)
