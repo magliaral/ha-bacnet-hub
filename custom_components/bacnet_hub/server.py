@@ -21,6 +21,7 @@ from bacpypes3.service.object import ReadWritePropertyServices
 from bacpypes3.service.cov import ChangeOfValueServices
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 
+from .helpers.tasks import cancel_tasks, create_logged_task
 from .helpers.versions import get_integration_version, get_bacpypes3_version
 from .helpers.bacnet import (
     device_instance_from_identifier as _device_instance_from_identifier,
@@ -191,6 +192,11 @@ class HubApp(
         self.publisher: Optional[BacnetPublisher] = publisher
         self.on_i_am: Any = None
         self.local_device_instance: int | None = None
+        self._bg_tasks: set[asyncio.Task] = set()
+
+    def close(self) -> None:
+        cancel_tasks(self._bg_tasks)
+        super().close()
 
     async def do_IAmRequest(self, apdu: IAmRequest):
         parent_handler = getattr(super(), "do_IAmRequest", None)
@@ -317,7 +323,13 @@ class HubApp(
                 return
 
             # Don't block: HA service call as task
-            asyncio.create_task(self.publisher.forward_to_ha_from_bacnet(mapping, new_value))
+            create_logged_task(
+                self.publisher.hass,
+                self.publisher.forward_to_ha_from_bacnet(mapping, new_value),
+                logger=_LOGGER,
+                message=f"BACnet->HA forward for {oid}",
+                task_set=self._bg_tasks,
+            )
         except Exception as e:
             _LOGGER.error("Hook do_WritePropertyRequest failed for %r: %s",
                          getattr(apdu, 'objectIdentifier', 'unknown'), e, exc_info=True)
@@ -371,7 +383,7 @@ class BacnetHubServer:
         self.network_interface: Optional[str] = None
 
         # Debug
-        self.debug_bacpypes: bool = bool(self.cfg.get("debug_bacpypes", True))
+        self.debug_bacpypes: bool = bool(self.cfg.get("debug_bacpypes", False))
         self.kick_iam: bool = bool(self.cfg.get("kick_iam", True))
         self.iam_event_min_seconds: float = float(self.cfg.get("iam_event_min_seconds", 10.0))
 
@@ -416,10 +428,10 @@ class BacnetHubServer:
         vendor_info = get_vendor_info(self.vendor_identifier)
         device_object_class = vendor_info.get_object_class(ObjectType.device)
         if not device_object_class:
-            raise RuntimeError("vendor identifier {self.vendor_identifier} missing device object class")
+            raise RuntimeError(f"vendor identifier {self.vendor_identifier} missing device object class")
         network_port_object_class = vendor_info.get_object_class(ObjectType.networkPort)
         if not network_port_object_class:
-            raise RuntimeError("vendor identifier {self.vendor_identifier} missing network port object class")
+            raise RuntimeError(f"vendor identifier {self.vendor_identifier} missing network port object class")
 
         # Address for NetworkPort
         address = self.address_str or ("host:0" if self.foreign else "host")
@@ -553,7 +565,7 @@ class BacnetHubServer:
 
         if self.app:
             try:
-                await self.app.close()
+                self.app.close()
             except Exception:
                 pass
             self.app = None

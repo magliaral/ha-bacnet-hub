@@ -26,7 +26,8 @@
           "instance": "Instanznummer",
           "address": "Lokale BACnet/IP-Adresse (zum Beispiel 192.168.31.36/24:47808)",
           "device_name": "BACnet Objektname",
-          "device_description": "BACnet Gerätebeschreibung"
+          "device_description": "BACnet Gerätebeschreibung",
+          "debug_bacpypes": "Ausführliches bacpypes3-Debug-Logging aktivieren"
         }
       },
       "labels": {

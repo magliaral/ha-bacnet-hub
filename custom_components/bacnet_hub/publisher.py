@@ -9,11 +9,11 @@ from bacpypes3.basetypes import BinaryPV, EngineeringUnits
 from bacpypes3.local.analog import AnalogValueObject
 from bacpypes3.local.binary import BinaryValueObject
 from bacpypes3.local.multistate import MultiStateValueObject
-from homeassistant.const import EVENT_STATE_CHANGED
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_track_state_change_event
 
 from .discovery import mapping_friendly_name, mapping_source_key
+from .helpers.tasks import cancel_tasks, create_logged_task
 
 if TYPE_CHECKING:
     from homeassistant.core import State
@@ -415,6 +415,7 @@ class BacnetPublisher:
         self.map_by_oid: Dict[Tuple[str, int], Dict[str, Any]] = {}
 
         self._ha_unsub: Optional[Callable[[], None]] = None
+        self._bg_tasks: set[asyncio.Task] = set()
 
     async def start(self) -> None:
         for m in self._cfg:
@@ -477,6 +478,8 @@ class BacnetPublisher:
                 pass
             self._ha_unsub = None
 
+        cancel_tasks(self._bg_tasks)
+
         self.by_source.clear()
         self.map_by_source.clear()
         self.sources_by_entity.clear()
@@ -517,10 +520,7 @@ class BacnetPublisher:
             await apply_from_ha(obj, value, mapping)
 
     @callback
-    async def _on_state_changed(self, event) -> None:
-        if event.event_type != EVENT_STATE_CHANGED:
-            return
-
+    def _on_state_changed(self, event) -> None:
         data = event.data or {}
         ent = data.get("entity_id")
         ns = data.get("new_state")
@@ -534,7 +534,13 @@ class BacnetPublisher:
                 continue
 
             value = source_value(ns, mapping)
-            asyncio.create_task(apply_from_ha(obj, value, mapping))
+            create_logged_task(
+                self.hass,
+                apply_from_ha(obj, value, mapping),
+                logger=_LOGGER,
+                message=f"HA->BACnet apply for {source_key}",
+                task_set=self._bg_tasks,
+            )
 
     def is_mapping_writable(self, mapping: Dict[str, Any]) -> bool:
         """Public guard used by BACnet write handler before local PV updates."""
