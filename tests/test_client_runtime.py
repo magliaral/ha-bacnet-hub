@@ -14,6 +14,7 @@ from custom_components.bacnet_hub.client_runtime import (
     _point_is_writable,
     _point_platform,
     _point_unique_id,
+    _read_remote_property,
     _write_client_point_present_value,
 )
 
@@ -97,8 +98,10 @@ def test_point_ids_are_stable() -> None:
 
 
 class FakeApp:
-    def __init__(self, fail_first_signatures: int = 0) -> None:
+    def __init__(self, fail_first_signatures: int = 0, present_value: Any = None) -> None:
         self.calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+        self.read_calls: list[tuple[Any, ...]] = []
+        self.present_value = present_value
         self._failures_left = fail_first_signatures
 
     async def write_property(self, *args: Any, **kwargs: Any) -> str:
@@ -107,6 +110,10 @@ class FakeApp:
             self._failures_left -= 1
             raise TypeError("unsupported signature")
         return "ok"
+
+    async def read_property(self, *args: Any, array_index: Any = None) -> Any:
+        self.read_calls.append(args)
+        return self.present_value
 
 
 async def test_write_present_value_passes_priority_kwarg() -> None:
@@ -155,3 +162,18 @@ async def test_write_present_value_raises_last_error() -> None:
         await _write_client_point_present_value(
             app, "192.168.1.10", "analogOutput", 3, 1.0, priority=8
         )
+
+
+async def test_readback_returns_device_value_not_written_value() -> None:
+    # Priority 5 is active with "active": writing "inactive" at priority 8
+    # does not change presentValue; the read-back must report the device
+    # value, not the value that was written.
+    app = FakeApp(present_value="active")
+    await _write_client_point_present_value(
+        app, "192.168.1.10", "binaryOutput", 2, "inactive", priority=8
+    )
+    value = await _read_remote_property(
+        app, "192.168.1.10", "binaryOutput,2", "presentValue"
+    )
+    assert value == "active"
+    assert app.read_calls == [("192.168.1.10", "binaryOutput,2", "presentValue")]

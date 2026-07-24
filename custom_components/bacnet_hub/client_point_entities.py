@@ -27,6 +27,7 @@ from .helpers.tasks import create_logged_task
 from .client_runtime import (
     CLIENT_COV_LEASE_SECONDS,
     CLIENT_COV_RENEW_FACTOR,
+    CLIENT_WRITE_READBACK_DELAY_SECONDS,
     WRITE_PRIORITY_OPTIONS,
     _client_cache_get,
     _client_cov_signal,
@@ -49,7 +50,11 @@ from .client_runtime import (
     _sensor_device_class_from_unit,
     _to_int,
 )
-from .client_runtime import _open_cov_subscription_context, _write_client_point_present_value
+from .client_runtime import (
+    _open_cov_subscription_context,
+    _read_remote_property,
+    _write_client_point_present_value,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -119,6 +124,7 @@ class BacnetClientPointBase:
         self._entity_domain = str(entity_domain).strip().lower()
 
         self._unsub_points_dispatcher: Callable[[], None] | None = None
+        self._readback_task: asyncio.Task | None = None
 
         cache = _client_points_get(hass, entry_id, client_id).get(self._point_key, {})
         type_slug = str(cache.get("type_slug") or "point")
@@ -156,6 +162,9 @@ class BacnetClientPointBase:
         if self._unsub_points_dispatcher is not None:
             self._unsub_points_dispatcher()
             self._unsub_points_dispatcher = None
+        if self._readback_task is not None and not self._readback_task.done():
+            self._readback_task.cancel()
+        self._readback_task = None
 
     def _get_point(self) -> dict[str, Any]:
         return dict(
@@ -183,9 +192,11 @@ class BacnetClientPointBase:
     async def _async_write_point(self, value: Any, *, optimistic: bool) -> None:
         """Write presentValue at the client's configured priority.
 
-        With optimistic=True the local cache is updated to the written value;
-        a relinquish (Null) must pass optimistic=False so the cache only
-        changes once the device reports the resulting value via COV.
+        With optimistic=True the local cache is updated to the written value
+        for a snappy UI; a relinquish (Null) must pass optimistic=False. In
+        both cases a delayed read-back verifies the cache against the device:
+        a write below the highest active priority slot does not change
+        presentValue, and COV stays silent when nothing changed.
         """
         point = self._get_point()
         if not point:
@@ -217,9 +228,41 @@ class BacnetClientPointBase:
             priority=write_priority,
         )
 
-        if not optimistic:
-            return
+        if optimistic:
+            self._update_present_value_cache(value)
 
+        if self._readback_task is not None and not self._readback_task.done():
+            self._readback_task.cancel()
+        self._readback_task = create_logged_task(
+            self.hass,
+            self._async_readback_present_value(
+                app, address, object_type, int(object_instance)
+            ),
+            logger=_LOGGER,
+            message=f"presentValue read-back for {self._point_key}",
+        )
+
+    async def _async_readback_present_value(
+        self, app: Any, address: str, object_type: str, object_instance: int
+    ) -> None:
+        await asyncio.sleep(CLIENT_WRITE_READBACK_DELAY_SECONDS)
+        try:
+            value = await _read_remote_property(
+                app, address, f"{object_type},{int(object_instance)}", "presentValue"
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _LOGGER.debug(
+                "presentValue read-back failed for %s", self._point_key, exc_info=True
+            )
+            return
+        self._update_present_value_cache(value)
+
+    def _update_present_value_cache(self, value: Any) -> None:
+        point = self._get_point()
+        if not point:
+            return
         point["present_value"] = value
         _client_points_set(
             self.hass,

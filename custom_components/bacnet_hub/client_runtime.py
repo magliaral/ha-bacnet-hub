@@ -45,6 +45,11 @@ CLIENT_COV_LEASE_SECONDS = 600
 # between renewals.
 CLIENT_COV_RENEW_FACTOR = 0.8
 
+# Delay before reading back presentValue after a write/relinquish. A write
+# below the highest active priority slot does not change presentValue and
+# COV stays silent when nothing changed, so the cache must be verified.
+CLIENT_WRITE_READBACK_DELAY_SECONDS = 1.0
+
 # BACnet write priority used for commandable objects. 16 is the lowest level
 # and matches the behaviour of a priority-less write per the BACnet spec.
 DEFAULT_WRITE_PRIORITY = 16
