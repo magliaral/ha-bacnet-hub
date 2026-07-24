@@ -1,0 +1,5 @@
+pytest
+pytest-asyncio
+homeassistant
+bacpypes3==0.0.106
+PyYAML>=6.0.1
