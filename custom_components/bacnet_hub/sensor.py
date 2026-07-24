@@ -20,6 +20,7 @@ from .const import (
     published_observer_platform,
 )
 from .client_point_entities import BacnetClientPointSensor
+from .helpers.tasks import create_logged_task
 from .sensor_entities import (
     BacnetClientDetailSensor,
     BacnetHubDetailSensor,
@@ -34,7 +35,6 @@ from .client_runtime import (
     NETWORK_DIAGNOSTIC_KEYS,
     _client_cache_get,
     _client_cov_signal,
-    _client_diag_signal,
     _client_id,
     _client_points_get,
     _client_points_set,
@@ -101,19 +101,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         return current is platform_server_ref
 
     def _start_bg_task(coro: Any) -> None:
-        task = hass.async_create_task(coro)
-        bg_tasks.add(task)
-
-        def _done(done_task: asyncio.Task) -> None:
-            bg_tasks.discard(done_task)
-            try:
-                _ = done_task.exception()
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                _LOGGER.debug("Background task failed", exc_info=True)
-
-        task.add_done_callback(_done)
+        create_logged_task(
+            hass,
+            coro,
+            logger=_LOGGER,
+            message="Client discovery background task",
+            task_set=bg_tasks,
+        )
 
     @callback
     def _cancel_bg_tasks() -> None:
