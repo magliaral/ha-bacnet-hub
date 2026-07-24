@@ -24,6 +24,8 @@ This integration has two roles:
 - Automatic mapping lifecycle: add, refresh, remove, cleanup.
 - Event-driven sync with debounce on registry/label/area changes.
 - Deterministic entity IDs and stable unique IDs.
+- Configurable BACnet write priority (8..16) per discovered client device.
+- Release button per commandable point to relinquish the commanded value.
 - Built-in diagnostics for hub and discovered clients.
 - Integration service: `bacnet_hub.reload`.
 
@@ -32,7 +34,7 @@ This integration has two roles:
 - Home Assistant with custom integrations enabled.
 - Network access to BACnet/IP segment.
 - Dependency (from `manifest.json`):
-  - `bacpypes3==0.0.102`
+  - `bacpypes3==0.0.106`
 
 ## Installation
 
@@ -65,6 +67,12 @@ Required fields:
 Defaults:
 - `device_name`: `HA-BACnet-Hub`
 - `device_description`: `BACnet Hub - Home Assistant Custom Integration`
+
+### Options
+
+Beyond the device fields above, the options flow offers:
+
+- `debug_bacpypes` (default: off) — escalates the `bacpypes3` loggers to `DEBUG` for wire-level troubleshooting. Leave off in normal operation; the log volume is substantial.
 
 ### Label import model
 
@@ -155,6 +163,18 @@ Writable conditions:
 Implementation detail:
 - Imported client point entities are created with `entity_registry_enabled_default = false` (disabled by default until enabled in HA).
 
+### Write priority and release (commandable points)
+
+Commandable points (`ao`, `bo`, `av`, `bv`, `mv` with a `priorityArray`) are written at a configurable BACnet priority:
+
+- Each discovered client device gets a **Write priority** `select` entity (options `8..16`, default `16`, category *Configuration*, disabled by default).
+  - `16` is the lowest priority and matches the behavior of a priority-less write, so nothing changes until you actively pick another level.
+  - `8` is *Manual Operator* — useful to override a controller's own program.
+  - The chosen priority survives restarts.
+- Each commandable point gets a **Release** `button` entity (category *Configuration*, disabled by default).
+  - Pressing it writes BACnet `Null` at the configured priority, clearing that slot in the point's `priorityArray` so the remote controller takes over again with its own value.
+  - Without a release, a value written from HA stays latched in the priority array indefinitely.
+
 ## Synchronization Model
 
 - Initial auto-sync runs during setup.
@@ -194,6 +214,8 @@ Published mirror entities use deterministic IDs based on hub instance + BACnet o
 Client point entities:
 
 - `<platform>.bacnet_doi_<client_instance>_<type_slug>_<object_instance>`
+- Release buttons: `button.bacnet_doi_<client_instance>_<type_slug>_<object_instance>_release`
+- Write priority: `select.bacnet_doi_<client_instance>_write_priority`
 
 Published unique IDs are stable and hub-scoped:
 
@@ -228,6 +250,17 @@ Fields:
 - Client points not updating:
   - Confirm remote device supports COV/read for the point.
   - Trigger reload via `bacnet_hub.reload`.
+
+## Development
+
+Unit tests live in `tests/` and run against the pinned dependencies:
+
+```bash
+pip install -r requirements_test.txt
+pytest
+```
+
+The CI workflow (`.github/workflows/validate.yml`) runs manifest/translation validation, a Python syntax check, and the test suite on every PR.
 
 ## License
 
