@@ -15,6 +15,8 @@ CONF_DEVICE_NAME = "device_name"
 CONF_DEVICE_DESCRIPTION = "device_description"
 CONF_OBJECTS_YAML = "objects_yaml"
 
+CONF_DEBUG_BACPYPES = "debug_bacpypes"
+
 CONF_PUBLISH_MODE = "publish_mode"
 CONF_IMPORT_LABEL = "import_label"
 CONF_IMPORT_LABELS = "import_labels"

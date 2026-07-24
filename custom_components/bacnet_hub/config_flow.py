@@ -12,6 +12,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import selector as sel
 
 from .const import (
+    CONF_DEBUG_BACPYPES,
     CONF_DEVICE_DESCRIPTION,
     CONF_DEVICE_NAME,
     CONF_IMPORT_AREAS,
@@ -477,6 +478,9 @@ class BacnetHubOptionsFlow(OptionsFlow):
                 self._opts["address"] = addr
                 self._opts[CONF_DEVICE_NAME] = object_name
                 self._opts[CONF_DEVICE_DESCRIPTION] = device_description
+                self._opts[CONF_DEBUG_BACPYPES] = bool(
+                    user_input.get(CONF_DEBUG_BACPYPES, False)
+                )
                 return await self.async_step_labels()
 
         schema = vol.Schema(
@@ -510,6 +514,10 @@ class BacnetHubOptionsFlow(OptionsFlow):
                         multiple=True,
                     )
                 ),
+                vol.Optional(
+                    CONF_DEBUG_BACPYPES,
+                    default=bool(self._opts.get(CONF_DEBUG_BACPYPES, False)),
+                ): sel.BooleanSelector(),
             }
         )
         return self.async_show_form(
