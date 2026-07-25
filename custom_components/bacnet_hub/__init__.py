@@ -1028,6 +1028,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
+async def async_remove_config_entry_device(
+    hass: HomeAssistant, entry: ConfigEntry, device_entry: dr.DeviceEntry
+) -> bool:
+    """Allow deleting client devices from the device registry.
+
+    Refused only for the hub device itself (it represents this config entry
+    and is recreated on every setup). Every other device on this entry is a
+    discovered BACnet client: deleting one is always safe - a client that is
+    still on the network simply reappears with its next I-Am / rescan, while
+    stale clients (powered off, renumbered, test devices) finally go away.
+    """
+    for domain, identifier in device_entry.identifiers:
+        if domain != DOMAIN:
+            continue
+        ident = str(identifier)
+        if ident == entry.entry_id or ident.startswith("device-instance-"):
+            return False
+    return True
+
+
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     data = _ensure_domain(hass)
     servers: dict[str, Any] = data[KEY_SERVERS]
