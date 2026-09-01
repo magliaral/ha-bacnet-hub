@@ -8,7 +8,9 @@ from bacpypes3.primitivedata import Null
 from custom_components.bacnet_hub.client_runtime import (
     DEFAULT_WRITE_PRIORITY,
     WRITE_PRIORITY_OPTIONS,
+    _normalize_priority_array,
     _point_entity_id,
+    _point_extra_attributes,
     _point_has_priority_array,
     _point_is_commandable,
     _point_is_writable,
@@ -21,7 +23,7 @@ from custom_components.bacnet_hub.client_runtime import (
 
 def test_write_priority_options() -> None:
     assert WRITE_PRIORITY_OPTIONS == [8, 9, 10, 11, 12, 13, 14, 15, 16]
-    assert DEFAULT_WRITE_PRIORITY == 16
+    assert DEFAULT_WRITE_PRIORITY == 8
 
 
 @pytest.mark.parametrize(
@@ -95,6 +97,40 @@ def test_point_ids_are_stable() -> None:
         == "number.bacnet_doi_5_ao_3"
     )
     assert _point_entity_id(5, "ai", 1) == "sensor.bacnet_doi_5_ai_1"
+
+
+def test_normalize_priority_array() -> None:
+    from bacpypes3.basetypes import PriorityValue
+
+    raw = [PriorityValue(null=()), PriorityValue(real=21.5), PriorityValue(unsigned=3)]
+    normalized = _normalize_priority_array(raw)
+    assert normalized is not None
+    assert len(normalized) == 16
+    assert normalized[0] is None
+    assert normalized[1] == 21.5
+    assert isinstance(normalized[1], float)
+    assert normalized[2] == 3
+    assert normalized[3:] == [None] * 13
+
+    # Missing priorityArray stays None (drives has_priority_array).
+    assert _normalize_priority_array(None) is None
+    # Plain scalars pass through; short arrays are padded to 16 slots.
+    assert _normalize_priority_array([None, 1.0])[:3] == [None, 1.0, None]
+    assert len(_normalize_priority_array([])) == 16
+
+
+def test_point_extra_attributes() -> None:
+    point = {
+        "priority_array": [None] * 7 + [21.5] + [None] * 8,
+        "relinquish_default": 18.0,
+    }
+    assert _point_extra_attributes(point) == {
+        "priority_array": point["priority_array"],
+        "relinquish_default": 18.0,
+    }
+    # Points without a priorityArray expose no priority attributes at all.
+    assert _point_extra_attributes({"relinquish_default": 0}) == {}
+    assert _point_extra_attributes({"priority_array": None}) == {}
 
 
 class FakeApp:

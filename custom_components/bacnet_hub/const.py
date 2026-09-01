@@ -5,6 +5,10 @@ from typing import Any
 
 DOMAIN = "bacnet_hub"
 DEFAULT_NAME = "BACnet Hub"
+
+# hass.data[DOMAIN] key mapping entity_id -> live client point entity, used by
+# the bacnet_hub.release service to resolve its targets across platforms.
+KEY_CLIENT_POINT_ENTITIES = "client_point_entities"
 DEFAULT_BACNET_OBJECT_NAME = "HA-BACnet-Hub"
 DEFAULT_BACNET_DEVICE_DESCRIPTION = "BACnet Hub - Home Assistant Custom Integration"
 

@@ -41,5 +41,27 @@
     "error": {
       "invalid_label_selection": "Bitte mindestens ein gültiges Label auswählen."
     }
+  },
+  "services": {
+    "reload": {
+      "name": "Neu laden",
+      "description": "Lädt einen BACnet-Hub-Konfigurationseintrag neu.",
+      "fields": {
+        "entry_id": {
+          "name": "Konfigurationseintrags-ID",
+          "description": "Optional. Ohne Angabe wird bei genau einem BACnet-Hub-Eintrag dieser neu geladen."
+        }
+      }
+    },
+    "release": {
+      "name": "Handbedienung aufheben",
+      "description": "Gibt den gewählten Prioritäts-Slot eines kommandierbaren BACnet-Punkts frei (schreibt Null in das Priority Array).",
+      "fields": {
+        "priority": {
+          "name": "Priorität",
+          "description": "BACnet-Priorität (1-16), deren Slot freigegeben wird. Standard ist 8 (Manual Operator)."
+        }
+      }
+    }
   }
 }

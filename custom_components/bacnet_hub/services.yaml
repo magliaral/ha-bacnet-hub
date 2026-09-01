@@ -8,3 +8,22 @@ reload:
       example: 01KHE05WAZNH9B5A6PW7FPX1J0
       selector:
         text:
+
+release:
+  name: Handbedienung aufheben
+  description: Gibt den gewählten Prioritäts-Slot eines kommandierbaren BACnet-Punkts frei (schreibt Null in das Priority Array).
+  target:
+    entity:
+      integration: bacnet_hub
+  fields:
+    priority:
+      name: Priorität
+      description: BACnet-Priorität (1-16), deren Slot freigegeben wird. Standard ist 8 (Manual Operator).
+      required: false
+      default: 8
+      example: 8
+      selector:
+        number:
+          min: 1
+          max: 16
+          mode: box

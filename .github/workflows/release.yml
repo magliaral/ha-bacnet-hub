@@ -95,7 +95,10 @@ jobs:
             if [ "${{ github.event_name }}" = "push" ]; then
               BEFORE="${{ github.event.before }}"
               AFTER="${{ github.sha }}"
-              if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+              # After a force push event.before can be unreachable; git log
+              # would then fail hard under set -e, so fall back to recent
+              # history in that case.
+              if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ] && git cat-file -e "$BEFORE" 2>/dev/null; then
                 MESSAGES=$(git log --no-merges "$BEFORE..$AFTER" --pretty=format:"%s%n%b")
               else
                 MESSAGES=$(git log --no-merges -50 --pretty=format:"%s%n%b")

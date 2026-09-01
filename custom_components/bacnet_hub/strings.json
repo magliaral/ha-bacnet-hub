@@ -41,6 +41,28 @@
     "error": {
       "invalid_label_selection": "Please select at least one valid label."
     }
+  },
+  "services": {
+    "reload": {
+      "name": "Reload",
+      "description": "Reloads a BACnet Hub config entry.",
+      "fields": {
+        "entry_id": {
+          "name": "Config entry ID",
+          "description": "Optional. If omitted and only one BACnet Hub entry exists, that entry is reloaded."
+        }
+      }
+    },
+    "release": {
+      "name": "Release manual override",
+      "description": "Releases the selected priority slot of a commandable BACnet point (writes Null to the priority array).",
+      "fields": {
+        "priority": {
+          "name": "Priority",
+          "description": "BACnet priority (1-16) whose slot is released. Defaults to 8 (Manual Operator)."
+        }
+      }
+    }
   }
 }
 

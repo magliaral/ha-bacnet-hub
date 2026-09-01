@@ -4,13 +4,30 @@ import asyncio
 import json
 import logging
 import re
+from pathlib import Path
 from typing import Any, Dict, List
 
+import voluptuous as vol
+
+from homeassistant.components import frontend
+from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import HomeAssistant, ServiceCall, callback
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import service as service_helper
+from homeassistant.loader import async_get_integration
+
+# HA 2025.6 moved target extraction to helpers.target and later removed the
+# helpers.service variant; support both so the release service works across
+# versions.
+try:
+    from homeassistant.helpers import target as target_helper
+except ImportError:
+    target_helper = None
 
 from .helpers.bacnet import prefix_to_netmask as _prefix_to_netmask
 from .const import (
@@ -21,6 +38,7 @@ from .const import (
     CONF_PUBLISH_MODE,
     DEFAULT_PUBLISH_MODE,
     DOMAIN,
+    KEY_CLIENT_POINT_ENTITIES,
     hub_display_name,
     PUBLISH_MODE_LABELS,
     published_entity_id,
@@ -46,6 +64,21 @@ KEY_EVENT_SYNC_TASKS = "event_sync_tasks"
 KEY_RELOAD_LOCKS = "reload_locks"
 KEY_LAST_RELOAD_FP = "last_reload_fingerprint"
 KEY_CLIENT_IAM_CACHE = "client_iam_cache"
+KEY_FRONTEND_REGISTERED = "frontend_registered"
+
+FRONTEND_SCRIPT_URL = "/bacnet_hub/bacnet-release-feature.js"
+
+SERVICE_RELEASE = "release"
+ATTR_PRIORITY = "priority"
+# 8 = "Manual Operator" per the BACnet priority table.
+DEFAULT_RELEASE_PRIORITY = 8
+SERVICE_RELEASE_SCHEMA = cv.make_entity_service_schema(
+    {
+        vol.Optional(ATTR_PRIORITY, default=DEFAULT_RELEASE_PRIORITY): vol.All(
+            vol.Coerce(int), vol.Range(min=1, max=16)
+        )
+    }
+)
 
 EVENT_ENTITY_REGISTRY_UPDATED = "entity_registry_updated"
 EVENT_DEVICE_REGISTRY_UPDATED = "device_registry_updated"
@@ -53,7 +86,7 @@ EVENT_LABEL_REGISTRY_UPDATED = "label_registry_updated"
 EVENT_AREA_REGISTRY_UPDATED = "area_registry_updated"
 EVENT_SYNC_DEBOUNCE_SECONDS = 2.0
 
-PLATFORMS: List[str] = ["sensor", "number", "switch", "select", "text", "binary_sensor", "button"]
+PLATFORMS: List[str] = ["sensor", "number", "switch", "select", "text", "binary_sensor"]
 
 # Optional: if True, we write the updated friendly_names
 # back to entry.options (once). We then suppress the reload.
@@ -853,6 +886,61 @@ def _start_sync_triggers(hass: HomeAssistant, entry_id: str):
     return _unsub_all
 
 
+async def _async_extract_target_entity_ids(hass: HomeAssistant, call: ServiceCall) -> set[str]:
+    """Resolve a service call's entity/device/area/label targets to entity ids."""
+    if target_helper is not None and hasattr(
+        target_helper, "async_extract_referenced_entity_ids"
+    ):
+        selected = target_helper.async_extract_referenced_entity_ids(
+            hass, target_helper.TargetSelectorData(call.data)
+        )
+    else:
+        selected = service_helper.async_extract_referenced_entity_ids(hass, call)
+    # Very old HA versions expose the helper as a coroutine.
+    if asyncio.iscoroutine(selected):
+        selected = await selected
+    return set(selected.referenced) | set(selected.indirectly_referenced)
+
+
+async def _async_release_targets(
+    hass: HomeAssistant, entity_ids: set[str], priority: int
+) -> None:
+    """Release the priority slot on every target entity.
+
+    Errors are collected per entity and raised as one bundled exception at
+    the end instead of aborting on the first failure.
+    """
+    if not entity_ids:
+        raise ServiceValidationError("No target entities given")
+
+    entities: dict = hass.data.get(DOMAIN, {}).get(KEY_CLIENT_POINT_ENTITIES, {})
+    errors: list[Exception] = []
+    messages: list[str] = []
+    for entity_id in sorted(entity_ids):
+        entity = entities.get(entity_id)
+        if entity is None:
+            err: Exception = ServiceValidationError(
+                f"{entity_id}: not a loaded BACnet Hub point"
+            )
+            errors.append(err)
+            messages.append(str(err))
+            continue
+        try:
+            await entity.async_release(priority)
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:
+            errors.append(err)
+            messages.append(str(err))
+
+    if not errors:
+        return
+    bundled = "; ".join(messages)
+    if all(isinstance(err, ServiceValidationError) for err in errors):
+        raise ServiceValidationError(bundled)
+    raise HomeAssistantError(bundled)
+
+
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     data = _ensure_domain(hass)
 
@@ -870,7 +958,33 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
         _LOGGER.info("Service reload for entry %s", entry_id)
         await hass.config_entries.async_reload(entry_id)
 
+    async def _svc_release(call: ServiceCall) -> None:
+        entity_ids = await _async_extract_target_entity_ids(hass, call)
+        await _async_release_targets(hass, entity_ids, int(call.data[ATTR_PRIORITY]))
+
     hass.services.async_register(DOMAIN, "reload", _svc_reload)
+    hass.services.async_register(
+        DOMAIN, SERVICE_RELEASE, _svc_release, schema=SERVICE_RELEASE_SCHEMA
+    )
+
+    # Serve the bundled tile feature once per HA start (guarded for safety);
+    # the manifest version acts as a cache buster so browsers pick up updates.
+    if not data.get(KEY_FRONTEND_REGISTERED):
+        integration = await async_get_integration(hass, DOMAIN)
+        await hass.http.async_register_static_paths(
+            [
+                StaticPathConfig(
+                    FRONTEND_SCRIPT_URL,
+                    str(Path(__file__).parent / "www" / "bacnet-release-feature.js"),
+                    True,
+                )
+            ]
+        )
+        frontend.add_extra_js_url(
+            hass, f"{FRONTEND_SCRIPT_URL}?v={integration.version}"
+        )
+        data[KEY_FRONTEND_REGISTERED] = True
+
     return True
 
 
@@ -1011,7 +1125,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, ["select"])
     await hass.config_entries.async_forward_entry_setups(entry, ["text"])
     await hass.config_entries.async_forward_entry_setups(entry, ["binary_sensor"])
-    await hass.config_entries.async_forward_entry_setups(entry, ["button"])
     renamed_entities = _normalize_published_entity_ids(hass, entry, published)
     if renamed_entities:
         _LOGGER.info(

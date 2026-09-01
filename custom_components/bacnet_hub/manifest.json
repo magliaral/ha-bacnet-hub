@@ -1,11 +1,15 @@
 {
   "domain": "bacnet_hub",
   "name": "BACnet Hub",
-  "version": "1.4.0-beta.145",
+  "version": "2.0.0-beta.160",
   "documentation": "https://github.com/magliaral/ha-bacnet-hub",
   "issue_tracker": "https://github.com/magliaral/ha-bacnet-hub/issues",
   "codeowners": [
     "@magliaral"
+  ],
+  "dependencies": [
+    "http",
+    "frontend"
   ],
   "iot_class": "local_push",
   "integration_type": "hub",
