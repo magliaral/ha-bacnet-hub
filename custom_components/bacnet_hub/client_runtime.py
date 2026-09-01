@@ -8,7 +8,7 @@ from datetime import timedelta
 from typing import Any, Awaitable, Callable, Dict
 
 from bacpypes3.pdu import Address
-from bacpypes3.primitivedata import ObjectIdentifier
+from bacpypes3.primitivedata import Null, ObjectIdentifier
 from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
@@ -50,9 +50,15 @@ CLIENT_COV_RENEW_FACTOR = 0.8
 # COV stays silent when nothing changed, so the cache must be verified.
 CLIENT_WRITE_READBACK_DELAY_SECONDS = 1.0
 
-# BACnet write priority used for commandable objects. 16 is the lowest level
-# and matches the behaviour of a priority-less write per the BACnet spec.
-DEFAULT_WRITE_PRIORITY = 16
+# Poll interval for priorityArray/relinquishDefault on commandable points.
+# BACnet sends no COV for these properties, so external writes that leave
+# presentValue unchanged are only visible through polling.
+CLIENT_PRIORITY_POLL_INTERVAL = timedelta(seconds=30)
+
+# BACnet write priority used for commandable objects. 8 is "Manual Operator"
+# per the BACnet priority table — writes from HA override the controller's
+# own program until the slot is released again.
+DEFAULT_WRITE_PRIORITY = 8
 WRITE_PRIORITY_OPTIONS: list[int] = list(range(8, 17))
 
 CLIENT_DIAGNOSTIC_FIELDS: list[tuple[str, str]] = list(HUB_DIAGNOSTIC_FIELDS)
@@ -575,6 +581,72 @@ def _point_has_priority_array(point: dict[str, Any]) -> bool:
     return bool(text and text not in {"none", "null", "false", "0", "[]", "()"})
 
 
+# Scalar choices of a bacpypes3 PriorityValue, in the order they are probed.
+_PRIORITY_VALUE_SCALAR_CHOICES: tuple[str, ...] = (
+    "real",
+    "double",
+    "unsigned",
+    "integer",
+    "enumerated",
+    "boolean",
+    "characterString",
+)
+
+
+def _normalize_priority_slot(value: Any) -> Any:
+    """Normalize a priorityArray slot (or relinquishDefault) to a plain scalar.
+
+    Returns None for an empty slot. bacpypes3 PriorityValue is a Choice whose
+    null choice yields an empty tuple, so presence must be tested with
+    ``is not None`` instead of truthiness.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (bool, int, float, str)):
+        return value
+    if getattr(value, "null", None) is not None:
+        return None
+    for choice in _PRIORITY_VALUE_SCALAR_CHOICES:
+        raw = getattr(value, choice, None)
+        if raw is None:
+            continue
+        try:
+            if choice in {"real", "double"}:
+                return float(raw)
+            if choice in {"unsigned", "integer", "enumerated"}:
+                return int(raw)
+            if choice == "boolean":
+                return bool(raw)
+            return str(raw)
+        except (TypeError, ValueError):
+            return str(raw)
+    return str(value)
+
+
+def _normalize_priority_array(raw: Any) -> list[Any] | None:
+    """Normalize a priorityArray into a list of exactly 16 slots (None = free)."""
+    if raw is None:
+        return None
+    try:
+        slots = [_normalize_priority_slot(item) for item in raw]
+    except TypeError:
+        return None
+    slots = slots[:16]
+    slots.extend([None] * (16 - len(slots)))
+    return slots
+
+
+def _point_extra_attributes(point: dict[str, Any]) -> dict[str, Any]:
+    """State attributes for commandable points (empty without a priorityArray)."""
+    priority_array = point.get("priority_array")
+    if not isinstance(priority_array, list):
+        return {}
+    return {
+        "priority_array": list(priority_array),
+        "relinquish_default": point.get("relinquish_default"),
+    }
+
+
 def _point_is_writable(point: dict[str, Any]) -> bool:
     type_slug = str(point.get("type_slug") or "").strip().lower()
     if type_slug in {"av", "bv", "mv", "csv"}:
@@ -807,6 +879,43 @@ async def _write_client_point_present_value(
     if last_err is not None:
         raise last_err
     raise RuntimeError("Unable to write presentValue")
+
+
+async def _async_release_point(
+    app: Any,
+    address: str,
+    object_type: str,
+    object_instance: int,
+    priority: int,
+) -> dict[str, Any]:
+    """Write Null at the given priority and re-read the point immediately.
+
+    Returns the cache updates (present_value, priority_array) so the caller
+    can refresh the HA state without waiting for a COV notification.
+    """
+    await _write_client_point_present_value(
+        app,
+        address,
+        object_type,
+        int(object_instance),
+        Null(()),
+        priority=int(priority),
+    )
+    objid = f"{str(object_type)},{int(object_instance)}"
+    values = await _read_remote_properties(
+        app, address, objid, ["presentValue", "priorityArray", "relinquishDefault"]
+    )
+    # Failed reads come back as None; never clobber the cache with them.
+    updates: dict[str, Any] = {}
+    if values.get("presentValue") is not None:
+        updates["present_value"] = values["presentValue"]
+    priority_array = _normalize_priority_array(values.get("priorityArray"))
+    if priority_array is not None:
+        updates["priority_array"] = priority_array
+    relinquish_default = _normalize_priority_slot(values.get("relinquishDefault"))
+    if relinquish_default is not None:
+        updates["relinquish_default"] = relinquish_default
+    return updates
 
 
 async def _open_cov_subscription_context(
@@ -1189,6 +1298,7 @@ async def _read_client_point_payload(
         "activeText",
         "inactiveText",
         "priorityArray",
+        "relinquishDefault",
     ]
     values = await _read_remote_properties(app, address, objid, props)
     state_text_value = values.get("stateText")
@@ -1207,7 +1317,8 @@ async def _read_client_point_payload(
         int(object_instance),
     )
     point_key = f"{type_slug}_{int(object_instance)}"
-    has_priority_array = values.get("priorityArray") is not None
+    priority_array = _normalize_priority_array(values.get("priorityArray"))
+    has_priority_array = priority_array is not None
     writable_from_ha = _point_is_writable(
         {
             "type_slug": type_slug,
@@ -1234,6 +1345,8 @@ async def _read_client_point_payload(
         "active_text": _safe_text(values.get("activeText")),
         "inactive_text": _safe_text(values.get("inactiveText")),
         "has_priority_array": has_priority_array,
+        "priority_array": priority_array,
+        "relinquish_default": _normalize_priority_slot(values.get("relinquishDefault")),
         "writable_from_ha": writable_from_ha,
     }
 
