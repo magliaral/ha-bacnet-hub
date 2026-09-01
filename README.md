@@ -4,6 +4,22 @@ Expose Home Assistant entities as BACnet objects on a local BACnet/IP device and
 
 Built with `bacpypes3`.
 
+> [!IMPORTANT]
+> **Breaking change in 2.0:** the per-point **Release** `button` entities
+> (`button.bacnet_doi_..._release`) were removed and replaced by the
+> [`bacnet_hub.release` service](#bacnet_hubrelease) plus a bundled
+> [tile feature](#lovelace-tile-feature).
+>
+> How to migrate:
+> - **Automations/scripts** that pressed a release button now call the
+>   `bacnet_hub.release` service with the point's entity as target
+>   (optional `priority`, default `8`).
+> - **Dashboards**: edit the point's Tile card and add
+>   **BACnet: Release manual override** under **Features** —
+>   see [Setting it up on a tile](#setting-it-up-on-a-tile).
+> - Orphaned button entries in the entity registry disappear after the next
+>   reload of the integration.
+
 ## What This Integration Does
 
 This integration has two roles:
@@ -25,9 +41,9 @@ This integration has two roles:
 - Event-driven sync with debounce on registry/label/area changes.
 - Deterministic entity IDs and stable unique IDs.
 - Configurable BACnet write priority (8..16) per discovered client device.
-- Release button per commandable point to relinquish the commanded value.
+- `bacnet_hub.release` service plus a bundled tile feature to relinquish the commanded value.
 - Built-in diagnostics for hub and discovered clients.
-- Integration service: `bacnet_hub.reload`.
+- Integration services: `bacnet_hub.reload`, `bacnet_hub.release`.
 
 ## Requirements
 
@@ -167,13 +183,17 @@ Implementation detail:
 
 Commandable points (`ao`, `bo`, `av`, `bv`, `mv` with a `priorityArray`) are written at a configurable BACnet priority:
 
-- Each discovered client device gets a **Write priority** `select` entity (options `8..16`, default `16`, category *Configuration*, disabled by default).
-  - `16` is the lowest priority and matches the behavior of a priority-less write, so nothing changes until you actively pick another level.
-  - `8` is *Manual Operator* — useful to override a controller's own program.
+- Each discovered client device gets a **Write priority** `select` entity (options `8..16`, default `8`, category *Configuration*, disabled by default).
+  - `8` is *Manual Operator* — writes from HA override a controller's own program until the slot is released.
+  - `16` is the lowest priority and matches the behavior of a priority-less write.
   - The chosen priority survives restarts.
-- Each commandable point gets a **Release** `button` entity (category *Configuration*, disabled by default).
-  - Pressing it writes BACnet `Null` at the configured priority, clearing that slot in the point's `priorityArray` so the remote controller takes over again with its own value.
+- Releasing a slot is done with the `bacnet_hub.release` service (see [Services](#services)) or the bundled tile feature (see [Lovelace tile feature](#lovelace-tile-feature)).
+  - **Breaking change (2.0):** the former per-point **Release** `button` entities (`button.bacnet_doi_<client>_<type>_<instance>_release`) were removed. Automations or dashboards that pressed them must call the service (or use the tile feature) instead. Orphaned button entries in the entity registry are not deleted actively; they disappear after the next reload of the integration.
+  - The release writes BACnet `Null` at the chosen priority, clearing that slot in the point's `priorityArray` so the remote controller takes over again with its own value.
   - Without a release, a value written from HA stays latched in the priority array indefinitely.
+- Writable client point entities expose extra state attributes:
+  - `priority_array`: all 16 slots, `null` for free slots. Excluded from the recorder so the database is not flooded on every state change.
+  - `relinquish_default`: the value that applies when no slot is occupied.
 
 ## Synchronization Model
 
@@ -214,7 +234,6 @@ Published mirror entities use deterministic IDs based on hub instance + BACnet o
 Client point entities:
 
 - `<platform>.bacnet_doi_<client_instance>_<type_slug>_<object_instance>`
-- Release buttons: `button.bacnet_doi_<client_instance>_<type_slug>_<object_instance>_release`
 - Write priority: `select.bacnet_doi_<client_instance>_write_priority`
 
 Published unique IDs are stable and hub-scoped:
@@ -231,12 +250,62 @@ Fields:
 - `entry_id` (optional)
   - If omitted and exactly one BACnet Hub entry exists, that entry is reloaded.
 
+### `bacnet_hub.release`
+
+Release a priority array slot on one or more commandable client points (targeted by entity).
+
+Fields:
+- `priority` (optional, `1..16`, default `8` = *Manual Operator*)
+  - The slot that is cleared by writing BACnet `Null`.
+
+Behavior:
+- Only points that support `priorityArray` are accepted; other targets raise a validation error.
+- After the write the point is re-read immediately, so the HA state updates without waiting for the next COV notification.
+- With multiple targets, errors are collected per entity and reported bundled at the end instead of aborting on the first failure.
+
+Example:
+
+```yaml
+service: bacnet_hub.release
+target:
+  entity_id: number.bacnet_doi_1234_ao_1
+data:
+  priority: 8
+```
+
+## Lovelace tile feature
+
+The integration ships a tile feature (`custom:bacnet-release-feature`) and serves it automatically — no manual dashboard resource setup is needed. It replaces the removed release button entities and offers itself on every entity that exposes a `priority_array` attribute, i.e. the writable client points (`number`, `switch`, `select`) of commandable objects.
+
+### Setting it up on a tile
+
+1. Open the dashboard editor and edit (or add) a **Tile** card for the point, e.g. `switch.bacnet_doi_1234_bo_1`.
+2. Under **Features** click **Add feature** and pick **BACnet: Release manual override** (on a German frontend: **BACnet: Handbedienung aufheben**). The entry only shows up for entities that carry `priority_array`; for sensors or published mirrors it is not offered.
+3. Optionally set the `priority` (1–16) in the card's YAML. It defaults to `8` and must match the slot your writes land in — with the default **Write priority** of `8` nothing needs to be changed. The feature has no visual editor beyond that single option.
+
+```yaml
+type: tile
+entity: switch.bacnet_doi_1234_bo_1
+features:
+  - type: toggle
+  - type: custom:bacnet-release-feature
+    priority: 8
+```
+
+### Behavior
+
+- Full-width **Release** button (German frontend: **Aufheben**); only enabled while the configured slot is occupied, greyed out otherwise.
+- Warning-colored while active — a manual override is a state the operator is supposed to notice.
+- Releases immediately on click (no confirmation dialog) by calling `bacnet_hub.release` for the tile's entity.
+- The module registers itself once HA's frontend is ready and repairs any tile that rendered before that; a one-line version stamp appears in the browser console on load, and `window.__bacnetReleaseFeature.heal()` can be run from the console for support.
+
 ## Limitations
 
 - BACnet/IP focus (`IPv4/prefix:port` bind format).
 - Single config entry (`single_config_entry: true`).
 - Labels-first auto model; legacy/manual mappings are removed during sync.
 - Published `multiStateValue` currently has no dedicated HA mirror platform entity.
+- BACnet sends no COV for `priorityArray`/`relinquishDefault`; besides updating on writes/releases from HA and after COV `presentValue` changes, commandable points poll these properties every 30 seconds, so external changes appear with up to that much delay.
 
 ## Troubleshooting
 
