@@ -7,6 +7,10 @@
   "codeowners": [
     "@magliaral"
   ],
+  "dependencies": [
+    "http",
+    "frontend"
+  ],
   "iot_class": "local_push",
   "integration_type": "hub",
   "config_flow": true,
