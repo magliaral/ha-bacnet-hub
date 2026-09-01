@@ -189,7 +189,9 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          # 3.13 so pip resolves a current homeassistant release; older
+          # interpreters silently pin the tests to HA 2025.1.
+          python-version: '3.13'
 
       - name: Install test dependencies
         run: pip install -r requirements_test.txt
