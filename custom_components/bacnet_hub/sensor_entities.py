@@ -16,7 +16,6 @@ from homeassistant.helpers.typing import StateType
 from .const import (
     CONF_INSTANCE,
     DOMAIN,
-    client_display_name,
     hub_display_name,
     mirrored_state_attributes,
     published_entity_id,
@@ -28,6 +27,7 @@ from .client_runtime import (
     NETWORK_DIAGNOSTIC_KEYS,
     _client_cache_get,
     _client_cov_signal,
+    _client_device_info,
     _client_diag_signal,
     _client_points_get,
     _client_points_set,
@@ -318,10 +318,8 @@ class BacnetClientDetailSensor(SensorEntity):
         )
         self._attr_native_value: StateType = None
         self._unsub_dispatcher: Callable[[], None] | None = None
-        self._device_info_cache = DeviceInfo(
-            identifiers={(DOMAIN, client_id)},
-            via_device=(DOMAIN, entry_id),
-            name=client_display_name(self._client_instance),
+        self._device_info_cache = _client_device_info(
+            hass, entry_id, client_id, self._client_instance
         )
 
     @property
@@ -346,18 +344,10 @@ class BacnetClientDetailSensor(SensorEntity):
     def _handle_client_update(self) -> None:
         cache = _client_cache_get(self.hass, self._entry_id, self._client_id)
         data = dict(cache.get(self._source, {}) or {})
-        device_data = dict(cache.get("device", {}) or {})
         self._attr_native_value = _to_state(data.get(self._key))
 
-        self._device_info_cache = DeviceInfo(
-            identifiers={(DOMAIN, self._client_id)},
-            via_device=(DOMAIN, self._entry_id),
-            name=str(cache.get("name") or client_display_name(self._client_instance)),
-            manufacturer=_safe_text(device_data.get("vendor_name")),
-            model=_safe_text(device_data.get("model_name")),
-            sw_version=_safe_text(device_data.get("firmware_revision")),
-            hw_version=_safe_text(device_data.get("hardware_revision")),
-            serial_number=_safe_text(device_data.get("serial_number")),
+        self._device_info_cache = _client_device_info(
+            self.hass, self._entry_id, self._client_id, self._client_instance
         )
         self.async_write_ha_state()
 
@@ -408,17 +398,8 @@ class BacnetClientPointSensor(SensorEntity):
 
     @property
     def device_info(self) -> DeviceInfo:
-        diag_cache = _client_cache_get(self.hass, self._entry_id, self._client_id)
-        device_data = dict(diag_cache.get("device", {}) or {})
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._client_id)},
-            via_device=(DOMAIN, self._entry_id),
-            name=str(diag_cache.get("name") or client_display_name(self._client_instance)),
-            manufacturer=_safe_text(device_data.get("vendor_name")),
-            model=_safe_text(device_data.get("model_name")),
-            sw_version=_safe_text(device_data.get("firmware_revision")),
-            hw_version=_safe_text(device_data.get("hardware_revision")),
-            serial_number=_safe_text(device_data.get("serial_number")),
+        return _client_device_info(
+            self.hass, self._entry_id, self._client_id, self._client_instance
         )
 
     async def async_added_to_hass(self) -> None:

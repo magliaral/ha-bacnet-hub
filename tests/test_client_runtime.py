@@ -213,3 +213,89 @@ async def test_readback_returns_device_value_not_written_value() -> None:
     )
     assert value == "active"
     assert app.read_calls == [("192.168.1.10", "binaryOutput,2", "presentValue")]
+
+
+class FakeHass:
+    def __init__(self) -> None:
+        self.data: dict[str, Any] = {}
+
+
+def test_client_device_info_links_hub_by_registry_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    from custom_components.bacnet_hub import client_runtime as rt
+
+    hass = FakeHass()
+    monkeypatch.setattr(rt, "_SUPPORTS_VIA_DEVICE_ID", True)
+    rt._hub_device_id_set(hass, "entry-1", "hub-device-id")
+    rt._client_cache_set(
+        hass,
+        "entry-1",
+        "client-1",
+        {"name": "Controller", "device": {"vendor_name": "ACME", "model_name": "X1"}},
+    )
+
+    info = rt._client_device_info(hass, "entry-1", "client-1", 1031010)
+
+    assert info["identifiers"] == {("bacnet_hub", "client-1")}
+    assert info["name"] == "Controller"
+    assert info["manufacturer"] == "ACME"
+    assert info["model"] == "X1"
+    # HA 2026.9 rejects the deprecated via_device key for every entity after
+    # the first one; only via_device_id (registry id) is allowed.
+    assert "via_device" not in info
+    assert info["via_device_id"] == "hub-device-id"
+
+
+def test_client_device_info_resolves_hub_from_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    from custom_components.bacnet_hub import client_runtime as rt
+
+    hass = FakeHass()
+    monkeypatch.setattr(rt, "_SUPPORTS_VIA_DEVICE_ID", True)
+    lookups: list[tuple[Any, ...]] = []
+
+    class FakeRegistry:
+        def async_get_device_by_identifier(self, identifier: Any, config_entry_id: str) -> Any:
+            lookups.append((identifier, config_entry_id))
+            return SimpleNamespace(id="resolved-hub-id")
+
+    monkeypatch.setattr(rt.dr, "async_get", lambda _hass: FakeRegistry())
+
+    info = rt._client_device_info(hass, "entry-2", "client-9", 7)
+    assert info["via_device_id"] == "resolved-hub-id"
+    assert lookups == [(("bacnet_hub", "entry-2"), "entry-2")]
+    assert "via_device" not in info
+
+    # Second call is served from the cache, no further registry lookups.
+    rt._client_device_info(hass, "entry-2", "client-9", 7)
+    assert len(lookups) == 1
+
+
+def test_client_device_info_without_hub_device_omits_link(monkeypatch: pytest.MonkeyPatch) -> None:
+    from custom_components.bacnet_hub import client_runtime as rt
+
+    hass = FakeHass()
+    monkeypatch.setattr(rt, "_SUPPORTS_VIA_DEVICE_ID", True)
+
+    class FakeRegistry:
+        def async_get_device_by_identifier(self, identifier: Any, config_entry_id: str) -> Any:
+            return None
+
+    monkeypatch.setattr(rt.dr, "async_get", lambda _hass: FakeRegistry())
+
+    info = rt._client_device_info(hass, "entry-3", "client-1", 3)
+    assert info["identifiers"] == {("bacnet_hub", "client-1")}
+    assert "via_device_id" not in info
+    assert "via_device" not in info
+
+
+def test_client_device_info_legacy_core_uses_via_device(monkeypatch: pytest.MonkeyPatch) -> None:
+    from custom_components.bacnet_hub import client_runtime as rt
+
+    hass = FakeHass()
+    monkeypatch.setattr(rt, "_SUPPORTS_VIA_DEVICE_ID", False)
+    rt._hub_device_id_set(hass, "entry-4", "hub-device-id")
+
+    info = rt._client_device_info(hass, "entry-4", "client-1", 3)
+    assert info["via_device"] == ("bacnet_hub", "entry-4")
+    assert "via_device_id" not in info
