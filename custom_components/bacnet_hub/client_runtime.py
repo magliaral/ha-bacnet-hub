@@ -11,7 +11,9 @@ from bacpypes3.pdu import Address
 from bacpypes3.primitivedata import Null, ObjectIdentifier
 from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
+from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.typing import StateType
 
 from .const import CONF_INSTANCE, DOMAIN, client_display_name
@@ -288,6 +290,68 @@ def _cov_process_identifier(entry_id: str, client_id: str, point_key: str) -> in
 def _client_cache_root(hass: HomeAssistant) -> dict[str, dict[str, dict[str, Any]]]:
     root = hass.data.setdefault(DOMAIN, {})
     return root.setdefault("client_diag_cache", {})
+
+
+# HA 2026.9 deprecated DeviceInfo(via_device=<identifier>) in favour of
+# via_device_id=<registry id>. Passing the old key is reported once as a
+# warning and then raises for every further entity, so only the first entity
+# per platform was added. Older cores do not know via_device_id at all, so
+# the key is chosen from what the running core's DeviceInfo declares.
+_SUPPORTS_VIA_DEVICE_ID = "via_device_id" in getattr(DeviceInfo, "__annotations__", {})
+
+
+def _hub_device_ids(hass: HomeAssistant) -> dict[str, str]:
+    root = hass.data.setdefault(DOMAIN, {})
+    return root.setdefault("hub_device_ids", {})
+
+
+def _hub_device_id_set(hass: HomeAssistant, entry_id: str, device_id: str) -> None:
+    _hub_device_ids(hass)[entry_id] = str(device_id)
+
+
+def _hub_device_id(hass: HomeAssistant, entry_id: str) -> str | None:
+    """Registry id of the hub device that represents this config entry."""
+    cached = _hub_device_ids(hass).get(entry_id)
+    if cached:
+        return cached
+    try:
+        registry = dr.async_get(hass)
+    except Exception:
+        return None
+    identifier = (DOMAIN, entry_id)
+    lookup = getattr(registry, "async_get_device_by_identifier", None)
+    if lookup is not None:
+        device = lookup(identifier, entry_id)
+    else:
+        device = registry.async_get_device(identifiers={identifier})
+    if device is None:
+        return None
+    _hub_device_id_set(hass, entry_id, device.id)
+    return device.id
+
+
+def _client_device_info(
+    hass: HomeAssistant, entry_id: str, client_id: str, client_instance: int
+) -> DeviceInfo:
+    """DeviceInfo for a discovered BACnet client, linked to the hub device."""
+    diag_cache = _client_cache_get(hass, entry_id, client_id)
+    device_data = dict(diag_cache.get("device", {}) or {})
+    info = DeviceInfo(
+        identifiers={(DOMAIN, client_id)},
+        name=str(diag_cache.get("name") or client_display_name(client_instance)),
+        manufacturer=_safe_text(device_data.get("vendor_name")),
+        model=_safe_text(device_data.get("model_name")),
+        sw_version=_safe_text(device_data.get("firmware_revision")),
+        hw_version=_safe_text(device_data.get("hardware_revision")),
+        serial_number=_safe_text(device_data.get("serial_number")),
+    )
+    if _SUPPORTS_VIA_DEVICE_ID:
+        hub_device_id = _hub_device_id(hass, entry_id)
+        if hub_device_id:
+            info["via_device_id"] = hub_device_id
+    else:
+        info["via_device"] = (DOMAIN, entry_id)
+    return info
 
 
 def _client_cache_get(hass: HomeAssistant, entry_id: str, client_id: str) -> dict[str, Any]:

@@ -19,7 +19,7 @@ from homeassistant.helpers.event import async_call_later, async_track_time_inter
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.typing import StateType
 
-from .const import DOMAIN, KEY_CLIENT_POINT_ENTITIES, client_display_name
+from .const import DOMAIN, KEY_CLIENT_POINT_ENTITIES
 from .helpers.tasks import create_logged_task
 from .client_runtime import (
     CLIENT_COV_LEASE_SECONDS,
@@ -27,8 +27,8 @@ from .client_runtime import (
     CLIENT_PRIORITY_POLL_INTERVAL,
     CLIENT_WRITE_READBACK_DELAY_SECONDS,
     WRITE_PRIORITY_OPTIONS,
-    _client_cache_get,
     _client_cov_signal,
+    _client_device_info,
     _client_points_get,
     _client_points_set,
     _client_points_signal,
@@ -76,23 +76,6 @@ def _point_is_on(point: dict[str, Any]) -> bool | None:
         return bool(int(text))
     except Exception:
         return None
-
-
-def _client_device_info(
-    hass: HomeAssistant, entry_id: str, client_id: str, client_instance: int
-) -> DeviceInfo:
-    diag_cache = _client_cache_get(hass, entry_id, client_id)
-    device_data = dict(diag_cache.get("device", {}) or {})
-    return DeviceInfo(
-        identifiers={(DOMAIN, client_id)},
-        via_device=(DOMAIN, entry_id),
-        name=str(diag_cache.get("name") or client_display_name(client_instance)),
-        manufacturer=_safe_text(device_data.get("vendor_name")),
-        model=_safe_text(device_data.get("model_name")),
-        sw_version=_safe_text(device_data.get("firmware_revision")),
-        hw_version=_safe_text(device_data.get("hardware_revision")),
-        serial_number=_safe_text(device_data.get("serial_number")),
-    )
 
 
 class BacnetClientPointBase:

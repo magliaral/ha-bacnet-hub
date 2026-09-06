@@ -45,6 +45,7 @@ from .const import (
     published_observer_platform,
     published_observer_unique_id,
 )
+from .client_runtime import _hub_device_id_set
 from .discovery import (
     entity_mapping_candidates,
     entity_exists,
@@ -1109,6 +1110,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         device_kwargs["connections"] = {(dr.CONNECTION_NETWORK_MAC, server.mac_address)}
 
     device_entry = dev_reg.async_get_or_create(**device_kwargs)
+    # Client devices link to the hub via via_device_id (registry id), so the
+    # id must be known before any client entity builds its DeviceInfo.
+    _hub_device_id_set(hass, entry.entry_id, device_entry.id)
     try:
         dev_reg.async_update_device(
             device_entry.id,
