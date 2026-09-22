@@ -9,10 +9,12 @@ from bacpypes3.basetypes import PriorityValue
 from bacpypes3.primitivedata import Null
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
+import custom_components.bacnet_hub as bacnet_hub_init
 from custom_components.bacnet_hub import (
     ATTR_PRIORITY,
     DEFAULT_RELEASE_PRIORITY,
     SERVICE_RELEASE_SCHEMA,
+    _async_extract_target_entity_ids,
     _async_release_targets,
 )
 from custom_components.bacnet_hub.client_point_entities import (
@@ -159,3 +161,33 @@ async def test_release_targets_default_priority_flows_through() -> None:
     data = SERVICE_RELEASE_SCHEMA({"entity_id": "switch.a"})
     await _async_release_targets(hass, {"switch.a"}, int(data[ATTR_PRIORITY]))
     assert entity.released_at == [8]
+
+
+class _Selection:
+    """Stand-in for helpers.target.TargetSelection."""
+
+    def __init__(self, config: dict[str, Any]) -> None:
+        self.config = dict(config)
+
+
+async def test_extract_targets_uses_target_selection(monkeypatch) -> None:
+    calls: list[Any] = []
+
+    def _extract(hass: Any, selection: Any) -> SimpleNamespace:
+        calls.append(selection)
+        return SimpleNamespace(
+            referenced={"number.a"}, indirectly_referenced={"switch.b"}
+        )
+
+    helper = SimpleNamespace(
+        TargetSelection=_Selection, async_extract_referenced_entity_ids=_extract
+    )
+    monkeypatch.setattr(bacnet_hub_init, "target_helper", helper)
+    call = SimpleNamespace(data={"entity_id": ["number.a"], "device_id": "dev1"})
+
+    result = await _async_extract_target_entity_ids(_fake_hass(), call)
+
+    assert result == {"number.a", "switch.b"}
+    assert len(calls) == 1
+    assert type(calls[0]) is _Selection
+    assert calls[0].config == call.data

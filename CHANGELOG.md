@@ -33,6 +33,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - Default write priority is now `8` (Manual Operator) instead of `16`.
+- Home Assistant 2026.3.0 (the first release on Python 3.14, which is also
+  what the test suite runs on) is now the minimum supported version, declared
+  in `hacs.json`; the compatibility fallbacks for older target-resolution
+  helpers were removed.
 - SubscribeCOV requests are capped at 4 concurrent calls per client device.
   Registration now runs in background tasks and lease renewals fire almost
   simultaneously, so the cap keeps devices with many points from receiving a
@@ -40,6 +44,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The `bacnet_hub.release` service resolved its targets with the deprecated
+  `TargetSelectorData` helper, which HA 2026.9 reports at startup and removes
+  in 2026.12.0. It now uses `TargetSelection`.
 - The periodic client rediscovery timer ran its handler in an executor thread
   and called `hass.async_create_task` from there, causing
   `RuntimeError: ... calls hass.async_create_task from a thread other than the
