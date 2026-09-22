@@ -28,6 +28,7 @@ from .client_runtime import (
     CLIENT_WRITE_READBACK_DELAY_SECONDS,
     WRITE_PRIORITY_OPTIONS,
     _client_cov_signal,
+    _client_cov_subscribe_semaphore,
     _client_device_info,
     _client_points_get,
     _client_points_set,
@@ -364,7 +365,9 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
                 self._handle_priority_poll,
                 CLIENT_PRIORITY_POLL_INTERVAL,
             )
-        await self._async_register_cov()
+        # Subscribe in the background: a network round trip per entity must
+        # not delay platform setup (and thereby the HA bootstrap).
+        self._start_cov_reregister_task()
         self._handle_points_update()
 
     async def async_will_remove_from_hass(self) -> None:
@@ -501,7 +504,9 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
         except asyncio.CancelledError:
             raise
         except Exception:
-            _LOGGER.debug("COV re-register failed for %s", self._point_key, exc_info=True)
+            # Subscribe failures are handled with backoff inside
+            # _async_register_cov; anything reaching here is unexpected.
+            _LOGGER.warning("COV registration failed for %s", self._point_key, exc_info=True)
 
     async def _async_stop_cov_runtime(self) -> None:
         if self._cov_lease_unsub is not None:
@@ -589,15 +594,19 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
             async def _cleanup_failed_context(context_obj: Any) -> None:
                 await self._async_cleanup_cov_context(context_obj, call_aexit=False)
 
-            opened_context, last_err = await _open_cov_subscription_context(
-                app,
-                address=address,
-                object_identifier=object_identifier,
-                process_id=process_id,
-                lifetime=CLIENT_COV_LEASE_SECONDS,
-                cleanup_context=_cleanup_failed_context,
-                max_offset_attempts=3,
+            subscribe_sem = _client_cov_subscribe_semaphore(
+                self.hass, self._entry_id, self._client_id
             )
+            async with subscribe_sem:
+                opened_context, last_err = await _open_cov_subscription_context(
+                    app,
+                    address=address,
+                    object_identifier=object_identifier,
+                    process_id=process_id,
+                    lifetime=CLIENT_COV_LEASE_SECONDS,
+                    cleanup_context=_cleanup_failed_context,
+                    max_offset_attempts=3,
+                )
             self._cov_context = opened_context
             self._cov_registered = False
             if last_err is not None:
@@ -629,7 +638,12 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
             self._cov_retry_not_before_ts = 0.0
             self._cov_retry_delay_seconds = 10.0
             self._set_client_points_unavailable(False)
-            self._cov_task = self.hass.async_create_task(self._async_cov_receive_loop())
+            self._cov_task = create_logged_task(
+                self.hass,
+                self._async_cov_receive_loop(),
+                logger=_LOGGER,
+                message=f"COV receive loop for {self._point_key}",
+            )
             self._schedule_cov_lease_reregister()
 
     def _schedule_cov_lease_reregister(self) -> None:
