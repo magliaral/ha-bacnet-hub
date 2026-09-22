@@ -21,7 +21,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import service as service_helper
 from homeassistant.loader import async_get_integration
 
-# HA 2025.6 moved target extraction to helpers.target and later removed the
+# HA 2025.8 moved target extraction to helpers.target and later removed the
 # helpers.service variant; support both so the release service works across
 # versions.
 try:
@@ -895,8 +895,14 @@ async def _async_extract_target_entity_ids(hass: HomeAssistant, call: ServiceCal
     if target_helper is not None and hasattr(
         target_helper, "async_extract_referenced_entity_ids"
     ):
+        # HA 2026.1 renamed TargetSelectorData to TargetSelection (same
+        # constructor and attributes); the old name is deprecated and removed
+        # in 2026.12. Prefer the new class, fall back for older cores.
+        selection_cls = getattr(target_helper, "TargetSelection", None) or getattr(
+            target_helper, "TargetSelectorData"
+        )
         selected = target_helper.async_extract_referenced_entity_ids(
-            hass, target_helper.TargetSelectorData(call.data)
+            hass, selection_cls(call.data)
         )
     else:
         selected = service_helper.async_extract_referenced_entity_ids(hass, call)

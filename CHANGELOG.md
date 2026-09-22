@@ -40,6 +40,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The `bacnet_hub.release` service resolved its targets with the deprecated
+  `TargetSelectorData` helper, which HA 2026.9 reports at startup and removes
+  in 2026.12. It now uses `TargetSelection` and falls back to the old name on
+  cores older than 2026.1.
 - The periodic client rediscovery timer ran its handler in an executor thread
   and called `hass.async_create_task` from there, causing
   `RuntimeError: ... calls hass.async_create_task from a thread other than the
