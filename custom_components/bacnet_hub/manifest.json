@@ -1,7 +1,7 @@
 {
   "domain": "bacnet_hub",
   "name": "BACnet Hub",
-  "version": "2.0.1-beta.162",
+  "version": "2.0.2-beta.164",
   "documentation": "https://github.com/magliaral/ha-bacnet-hub",
   "issue_tracker": "https://github.com/magliaral/ha-bacnet-hub/issues",
   "codeowners": [
