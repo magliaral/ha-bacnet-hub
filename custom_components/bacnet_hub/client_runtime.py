@@ -16,7 +16,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dis
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.typing import StateType
 
-from .const import CONF_INSTANCE, DOMAIN, client_display_name
+from .const import CONF_INSTANCE, DOMAIN, KEY_CLIENT_COV_SUBSCRIBE_SEM, client_display_name
 from .helpers.bacnet import device_instance_from_identifier as _device_instance_from_identifier
 
 HUB_DIAGNOSTIC_FIELDS: list[tuple[str, str]] = [
@@ -46,6 +46,10 @@ CLIENT_COV_LEASE_SECONDS = 600
 # old subscription is still valid, so entities never drop to unavailable
 # between renewals.
 CLIENT_COV_RENEW_FACTOR = 0.8
+# Cap concurrent SubscribeCOV requests per client device. Registration runs
+# in background tasks (and lease renewals fire almost simultaneously), so
+# without a cap a device with many points would see a burst of requests.
+CLIENT_COV_SUBSCRIBE_MAX_PARALLEL = 4
 
 # Delay before reading back presentValue after a write/relinquish. A write
 # below the highest active priority slot does not change presentValue and
@@ -248,6 +252,19 @@ def _client_cov_signal(entry_id: str, client_id: str) -> str:
 
 def _client_rescan_signal(entry_id: str) -> str:
     return f"{DOMAIN}_client_rescan_{entry_id}"
+
+
+def _client_cov_subscribe_semaphore(
+    hass: HomeAssistant, entry_id: str, client_id: str
+) -> asyncio.Semaphore:
+    """Return the per-client semaphore limiting concurrent SubscribeCOV calls."""
+    store = hass.data.setdefault(DOMAIN, {}).setdefault(KEY_CLIENT_COV_SUBSCRIBE_SEM, {})
+    per_entry = store.setdefault(entry_id, {})
+    sem = per_entry.get(client_id)
+    if sem is None:
+        sem = asyncio.Semaphore(CLIENT_COV_SUBSCRIBE_MAX_PARALLEL)
+        per_entry[client_id] = sem
+    return sem
 
 
 def _diag_field_slug(key: str) -> str:

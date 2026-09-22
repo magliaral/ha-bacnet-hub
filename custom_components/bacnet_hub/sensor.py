@@ -107,6 +107,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             logger=_LOGGER,
             message="Client discovery background task",
             task_set=bg_tasks,
+            entry=entry,
         )
 
     @callback
@@ -267,15 +268,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             return point_key, point
 
         if reads_to_run:
-            read_tasks = [
-                hass.async_create_task(_read_one(obj_type, obj_inst, default_key))
-                for obj_type, obj_inst, default_key in reads_to_run
-            ]
-            read_results = await asyncio.gather(*read_tasks, return_exceptions=True)
+            # Plain gather over coroutines: awaited right here, so these must
+            # not land in HA's setup-tracked task set.
+            read_results = await asyncio.gather(
+                *(
+                    _read_one(obj_type, obj_inst, default_key)
+                    for obj_type, obj_inst, default_key in reads_to_run
+                ),
+                return_exceptions=True,
+            )
             for result in read_results:
                 if isinstance(result, asyncio.CancelledError):
                     raise result
                 if isinstance(result, BaseException):
+                    _LOGGER.debug(
+                        "Client point read failed for %s (%s)",
+                        instance,
+                        address,
+                        exc_info=result,
+                    )
                     continue
                 if result is None:
                     continue
@@ -532,21 +543,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                         exc_info=True,
                     )
 
-        tasks: list[asyncio.Task] = []
-        for client_instance, client_address in discovered_map.items():
-            if target_instance is not None and int(client_instance) != int(target_instance):
-                continue
-            tasks.append(
-                hass.async_create_task(
-                    _process_one(int(client_instance), str(client_address))
-                )
-            )
-        if tasks:
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+        coros = [
+            _process_one(int(client_instance), str(client_address))
+            for client_instance, client_address in discovered_map.items()
+            if target_instance is None or int(client_instance) == int(target_instance)
+        ]
+        if coros:
+            results = await asyncio.gather(*coros, return_exceptions=True)
             for result in results:
                 if isinstance(result, asyncio.CancelledError):
                     raise result
+                if isinstance(result, BaseException):
+                    _LOGGER.debug("Periodic client scan task failed", exc_info=result)
 
+    @callback
     def _schedule_rescan(_now) -> None:
         _start_bg_task(_scan_and_add_new_clients())
 
@@ -585,8 +595,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     if published_entities:
         async_add_entities(published_entities)
 
+    @callback
     def _schedule_hub_diag_refresh(_now) -> None:
-        hass.add_job(async_dispatcher_send, hass, _hub_diag_signal(entry.entry_id))
+        async_dispatcher_send(hass, _hub_diag_signal(entry.entry_id))
 
     unsub_hub_diag = async_track_time_interval(
         hass,

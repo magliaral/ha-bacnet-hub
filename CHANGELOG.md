@@ -33,3 +33,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - Default write priority is now `8` (Manual Operator) instead of `16`.
+- SubscribeCOV requests are capped at 4 concurrent calls per client device.
+  Registration now runs in background tasks and lease renewals fire almost
+  simultaneously, so the cap keeps devices with many points from receiving a
+  burst of requests.
+
+### Fixed
+
+- The periodic client rediscovery timer ran its handler in an executor thread
+  and called `hass.async_create_task` from there, causing
+  `RuntimeError: ... calls hass.async_create_task from a thread other than the
+  event loop` and `coroutine ... was never awaited` warnings every interval.
+  Timer handlers are now event-loop callbacks.
+- COV receive loops, client discovery, read-back and event-sync tasks were
+  created as setup-tracked tasks, which held up the Home Assistant bootstrap
+  (`Setup timed out for bootstrap waiting on ... _async_cov_receive_loop`).
+  They are now Home Assistant background tasks and the COV subscription no
+  longer blocks platform setup with one network round trip per entity.

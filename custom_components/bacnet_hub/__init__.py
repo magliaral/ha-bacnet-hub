@@ -38,6 +38,7 @@ from .const import (
     CONF_PUBLISH_MODE,
     DEFAULT_PUBLISH_MODE,
     DOMAIN,
+    KEY_CLIENT_COV_SUBSCRIBE_SEM,
     KEY_CLIENT_POINT_ENTITIES,
     hub_display_name,
     PUBLISH_MODE_LABELS,
@@ -778,7 +779,9 @@ def _schedule_event_sync(
             if tasks.get(entry_id) is task:
                 tasks.pop(entry_id, None)
 
-    task = hass.async_create_task(_run())
+    task = hass.async_create_background_task(
+        _run(), name=f"{DOMAIN} event sync {entry_id}"
+    )
     tasks[entry_id] = task
 
 
@@ -1199,6 +1202,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     data.setdefault("client_point_cache", {}).pop(entry.entry_id, None)
     data.setdefault("client_write_priority", {}).pop(entry.entry_id, None)
     data[KEY_CLIENT_IAM_CACHE].pop(entry.entry_id, None)
+    data.setdefault(KEY_CLIENT_COV_SUBSCRIBE_SEM, {}).pop(entry.entry_id, None)
     pending = event_sync_tasks.pop(entry.entry_id, None)
     if pending and not pending.done():
         pending.cancel()
