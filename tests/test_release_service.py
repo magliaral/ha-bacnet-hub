@@ -164,13 +164,13 @@ async def test_release_targets_default_priority_flows_through() -> None:
 
 
 class _Selection:
-    """Stand-in for helpers.target.TargetSelection / TargetSelectorData."""
+    """Stand-in for helpers.target.TargetSelection."""
 
     def __init__(self, config: dict[str, Any]) -> None:
         self.config = dict(config)
 
 
-def _fake_target_helper(**classes: type) -> SimpleNamespace:
+async def test_extract_targets_uses_target_selection(monkeypatch) -> None:
     calls: list[Any] = []
 
     def _extract(hass: Any, selection: Any) -> SimpleNamespace:
@@ -179,33 +179,15 @@ def _fake_target_helper(**classes: type) -> SimpleNamespace:
             referenced={"number.a"}, indirectly_referenced={"switch.b"}
         )
 
-    return SimpleNamespace(
-        async_extract_referenced_entity_ids=_extract, calls=calls, **classes
+    helper = SimpleNamespace(
+        TargetSelection=_Selection, async_extract_referenced_entity_ids=_extract
     )
-
-
-async def test_extract_targets_prefers_target_selection(monkeypatch) -> None:
-    class Deprecated(_Selection):
-        pass
-
-    helper = _fake_target_helper(TargetSelection=_Selection, TargetSelectorData=Deprecated)
     monkeypatch.setattr(bacnet_hub_init, "target_helper", helper)
     call = SimpleNamespace(data={"entity_id": ["number.a"], "device_id": "dev1"})
 
     result = await _async_extract_target_entity_ids(_fake_hass(), call)
 
     assert result == {"number.a", "switch.b"}
-    assert len(helper.calls) == 1
-    assert type(helper.calls[0]) is _Selection
-    assert helper.calls[0].config == call.data
-
-
-async def test_extract_targets_falls_back_to_target_selector_data(monkeypatch) -> None:
-    helper = _fake_target_helper(TargetSelectorData=_Selection)
-    monkeypatch.setattr(bacnet_hub_init, "target_helper", helper)
-    call = SimpleNamespace(data={"entity_id": "number.a"})
-
-    result = await _async_extract_target_entity_ids(_fake_hass(), call)
-
-    assert result == {"number.a", "switch.b"}
-    assert type(helper.calls[0]) is _Selection
+    assert len(calls) == 1
+    assert type(calls[0]) is _Selection
+    assert calls[0].config == call.data

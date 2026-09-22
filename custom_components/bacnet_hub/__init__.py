@@ -18,16 +18,9 @@ from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers import service as service_helper
 from homeassistant.loader import async_get_integration
 
-# HA 2025.8 moved target extraction to helpers.target and later removed the
-# helpers.service variant; support both so the release service works across
-# versions.
-try:
-    from homeassistant.helpers import target as target_helper
-except ImportError:
-    target_helper = None
+from homeassistant.helpers import target as target_helper
 
 from .helpers.bacnet import prefix_to_netmask as _prefix_to_netmask
 from .const import (
@@ -892,23 +885,9 @@ def _start_sync_triggers(hass: HomeAssistant, entry_id: str):
 
 async def _async_extract_target_entity_ids(hass: HomeAssistant, call: ServiceCall) -> set[str]:
     """Resolve a service call's entity/device/area/label targets to entity ids."""
-    if target_helper is not None and hasattr(
-        target_helper, "async_extract_referenced_entity_ids"
-    ):
-        # HA 2026.1 renamed TargetSelectorData to TargetSelection (same
-        # constructor and attributes); the old name is deprecated and removed
-        # in 2026.12. Prefer the new class, fall back for older cores.
-        selection_cls = getattr(target_helper, "TargetSelection", None) or getattr(
-            target_helper, "TargetSelectorData"
-        )
-        selected = target_helper.async_extract_referenced_entity_ids(
-            hass, selection_cls(call.data)
-        )
-    else:
-        selected = service_helper.async_extract_referenced_entity_ids(hass, call)
-    # Very old HA versions expose the helper as a coroutine.
-    if asyncio.iscoroutine(selected):
-        selected = await selected
+    selected = target_helper.async_extract_referenced_entity_ids(
+        hass, target_helper.TargetSelection(call.data)
+    )
     return set(selected.referenced) | set(selected.indirectly_referenced)
 
 
