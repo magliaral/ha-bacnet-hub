@@ -33,8 +33,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - Default write priority is now `8` (Manual Operator) instead of `16`.
-- Home Assistant 2026.1.0 is now the minimum supported version (declared in
-  `hacs.json`); the compatibility fallbacks for older target-resolution
+- Home Assistant 2026.3.0 (the first release on Python 3.14, which is also
+  what the test suite runs on) is now the minimum supported version, declared
+  in `hacs.json`; the compatibility fallbacks for older target-resolution
   helpers were removed.
 - SubscribeCOV requests are capped at 4 concurrent calls per client device.
   Registration now runs in background tasks and lease renewals fire almost
