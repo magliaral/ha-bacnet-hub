@@ -16,7 +16,6 @@ from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
-from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.typing import StateType
 
 from .const import DOMAIN, KEY_CLIENT_POINT_ENTITIES
@@ -26,7 +25,6 @@ from .client_runtime import (
     CLIENT_COV_RENEW_FACTOR,
     CLIENT_PRIORITY_POLL_INTERVAL,
     CLIENT_WRITE_READBACK_DELAY_SECONDS,
-    WRITE_PRIORITY_OPTIONS,
     _client_cov_signal,
     _client_cov_subscribe_semaphore,
     _client_device_info,
@@ -34,10 +32,9 @@ from .client_runtime import (
     _client_points_set,
     _client_points_signal,
     _client_rescan_signal,
-    _client_write_priority_get,
-    _client_write_priority_set,
     _cov_process_identifier,
     _entry_points_signal,
+    _entry_write_priority,
     _normalize_bacnet_unit,
     _normalize_priority_array,
     _normalize_priority_slot,
@@ -203,7 +200,7 @@ class BacnetClientPointBase:
         app, address, object_type, object_instance = self._resolve_write_target(point)
 
         write_priority = (
-            _client_write_priority_get(self.hass, self._entry_id, self._client_id)
+            _entry_write_priority(self.hass, self._entry_id)
             if _point_is_commandable(point)
             else None
         )
@@ -1062,60 +1059,3 @@ class BacnetClientPointText(BacnetClientPointEntityBase, TextEntity):
             raise HomeAssistantError("Point is read-only")
         await self._async_write_present_value(str(value))
 
-
-class BacnetClientWritePrioritySelect(SelectEntity, RestoreEntity):
-    """Per-client BACnet write priority (8..16) applied to commandable writes."""
-
-    _attr_should_poll = False
-    _attr_has_entity_name = True
-    _attr_entity_registry_enabled_default = False
-    _attr_entity_category = EntityCategory.CONFIG
-    _attr_icon = "mdi:priority-high"
-    _attr_name = "Write priority"
-    _attr_options = [str(priority) for priority in WRITE_PRIORITY_OPTIONS]
-
-    def __init__(
-        self,
-        hass: HomeAssistant,
-        entry_id: str,
-        client_id: str,
-        client_instance: int,
-    ) -> None:
-        self.hass = hass
-        self._entry_id = str(entry_id)
-        self._client_id = str(client_id)
-        self._client_instance = int(client_instance)
-
-        self._attr_unique_id = f"{self._entry_id}-{self._client_id}-write-priority"
-        self.entity_id = f"select.bacnet_doi_{self._client_instance}_write_priority"
-        self._attr_current_option = str(
-            _client_write_priority_get(hass, self._entry_id, self._client_id)
-        )
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        return _client_device_info(
-            self.hass, self._entry_id, self._client_id, self._client_instance
-        )
-
-    async def async_added_to_hass(self) -> None:
-        await super().async_added_to_hass()
-        last_state = await self.async_get_last_state()
-        value = (
-            last_state.state
-            if last_state is not None and last_state.state in self._attr_options
-            else self._attr_current_option
-        )
-        self._attr_current_option = str(
-            _client_write_priority_set(self.hass, self._entry_id, self._client_id, value)
-        )
-
-    async def async_select_option(self, option: str) -> None:
-        validated = _client_write_priority_set(
-            self.hass, self._entry_id, self._client_id, option
-        )
-        self._attr_current_option = str(validated)
-        self.async_write_ha_state()
-        _LOGGER.debug(
-            "Write priority for client %s set to %s", self._client_id, validated
-        )

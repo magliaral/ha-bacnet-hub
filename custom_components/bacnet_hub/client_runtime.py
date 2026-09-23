@@ -23,7 +23,15 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dis
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.typing import StateType
 
-from .const import CONF_INSTANCE, DOMAIN, KEY_CLIENT_COV_SUBSCRIBE_SEM, client_display_name
+from .const import (
+    CONF_INSTANCE,
+    CONF_WRITE_PRIORITY,
+    DEFAULT_WRITE_PRIORITY,
+    DOMAIN,
+    KEY_CLIENT_COV_SUBSCRIBE_SEM,
+    WRITE_PRIORITY_OPTIONS,
+    client_display_name,
+)
 from .helpers.bacnet import device_instance_from_identifier as _device_instance_from_identifier
 
 HUB_DIAGNOSTIC_FIELDS: list[tuple[str, str]] = [
@@ -85,12 +93,6 @@ CLIENT_WRITE_READBACK_DELAY_SECONDS = 1.0
 # BACnet sends no COV for these properties, so external writes that leave
 # presentValue unchanged are only visible through polling.
 CLIENT_PRIORITY_POLL_INTERVAL = timedelta(seconds=30)
-
-# BACnet write priority used for commandable objects. 8 is "Manual Operator"
-# per the BACnet priority table — writes from HA override the controller's
-# own program until the slot is released again.
-DEFAULT_WRITE_PRIORITY = 8
-WRITE_PRIORITY_OPTIONS: list[int] = list(range(8, 17))
 
 CLIENT_DIAGNOSTIC_FIELDS: list[tuple[str, str]] = list(HUB_DIAGNOSTIC_FIELDS)
 NETWORK_DIAGNOSTIC_KEYS = {"ip_address", "ip_subnet_mask", "mac_address_raw"}
@@ -439,29 +441,22 @@ def _client_points_set(
     cache.update(payload or {})
 
 
-def _client_write_priority_root(hass: HomeAssistant) -> dict[str, dict[str, int]]:
-    root = hass.data.setdefault(DOMAIN, {})
-    return root.setdefault("client_write_priority", {})
-
-
-def _client_write_priority_get(hass: HomeAssistant, entry_id: str, client_id: str) -> int:
-    # Values are validated by _client_write_priority_set, the only writer.
-    per_entry = _client_write_priority_root(hass).get(str(entry_id), {})
-    return per_entry.get(str(client_id), DEFAULT_WRITE_PRIORITY)
-
-
-def _client_write_priority_set(
-    hass: HomeAssistant, entry_id: str, client_id: str, value: Any
-) -> int:
+def _normalize_write_priority(value: Any) -> int:
+    """Coerce a configured write priority; anything invalid becomes the default."""
     try:
         priority = int(value)
     except (TypeError, ValueError):
-        priority = DEFAULT_WRITE_PRIORITY
-    if priority not in WRITE_PRIORITY_OPTIONS:
-        priority = DEFAULT_WRITE_PRIORITY
-    per_entry = _client_write_priority_root(hass).setdefault(str(entry_id), {})
-    per_entry[str(client_id)] = priority
-    return priority
+        return DEFAULT_WRITE_PRIORITY
+    return priority if priority in WRITE_PRIORITY_OPTIONS else DEFAULT_WRITE_PRIORITY
+
+
+def _entry_write_priority(hass: HomeAssistant, entry_id: str) -> int:
+    """Global BACnet write priority from the hub's device settings (default 8)."""
+    entry = hass.config_entries.async_get_entry(str(entry_id))
+    if entry is None:
+        return DEFAULT_WRITE_PRIORITY
+    merged = {**(entry.data or {}), **(entry.options or {})}
+    return _normalize_write_priority(merged.get(CONF_WRITE_PRIORITY, DEFAULT_WRITE_PRIORITY))
 
 
 def _client_locks_root(hass: HomeAssistant) -> dict[str, dict[str, asyncio.Lock]]:
@@ -792,17 +787,13 @@ def _setup_client_point_platform(
     *,
     match: Callable[[dict[str, Any]], bool],
     build: Callable[[str, int, str, dict[str, Any]], Any],
-    client_match: Callable[[dict[str, Any]], bool] | None = None,
-    client_build: Callable[[str, int], Any] | None = None,
 ) -> None:
     """Create client point entities now and whenever new points are imported.
 
     match/build run per point: build(client_id, client_instance, point_key,
-    point) returns the entity. client_match/client_build optionally create one
-    additional entity per client device, triggered by its first matching point.
+    point) returns the entity.
     """
     added: set[tuple[str, str]] = set()
-    added_clients: set[str] = set()
 
     @callback
     def _add_missing(_payload=None) -> None:
@@ -811,13 +802,6 @@ def _setup_client_point_platform(
             cid = str(client_id)
             for point_key, point in point_cache.items():
                 point = point or {}
-                if (
-                    client_build is not None
-                    and cid not in added_clients
-                    and (client_match is None or client_match(point))
-                ):
-                    entities.append(client_build(cid, _client_instance_for(point, cid)))
-                    added_clients.add(cid)
                 key = (cid, str(point_key))
                 if key in added or not match(point):
                     continue

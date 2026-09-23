@@ -24,6 +24,14 @@ CONF_OBJECTS_YAML = "objects_yaml"
 
 CONF_DEBUG_BACPYPES = "debug_bacpypes"
 
+# BACnet write priority used for commandable client points, configured once
+# in the hub's device settings. 8 is "Manual Operator" per the BACnet
+# priority table: writes from HA override the controller's own program until
+# the slot is released again; 16 is the lowest priority.
+CONF_WRITE_PRIORITY = "write_priority"
+DEFAULT_WRITE_PRIORITY = 8
+WRITE_PRIORITY_OPTIONS: list[int] = list(range(8, 17))
+
 CONF_PUBLISH_MODE = "publish_mode"
 CONF_IMPORT_LABEL = "import_label"
 CONF_IMPORT_LABELS = "import_labels"

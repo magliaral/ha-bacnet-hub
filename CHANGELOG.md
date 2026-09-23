@@ -10,9 +10,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Removed the per-point release button entities (`button.bacnet_doi_*_release`).
   Use the new `bacnet_hub.release` service or the bundled
-  `custom:bacnet-release-feature` tile feature instead. Existing registry
-  entries for the buttons are not deleted actively; they become orphaned and
-  disappear on the next reload of the integration.
+  `custom:bacnet-release-feature` tile feature instead. Their registry
+  entries are removed automatically at the next start of the integration.
+- Removed the per-device **Write priority** select entities
+  (`select.bacnet_doi_<client>_write_priority`). The write priority is now a
+  single option in the hub's device settings (default `8`, Manual Operator)
+  that applies to all client devices; stale select entries are removed at the
+  next start.
 
 ### Added
 
