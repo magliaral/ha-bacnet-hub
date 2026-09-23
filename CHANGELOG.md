@@ -33,6 +33,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - Default write priority is now `8` (Manual Operator) instead of `16`.
+- COV subscriptions ask for confirmed (acknowledged) notifications first and
+  fall back to unconfirmed ones when a device rejects the request.
+- All COV subscriptions of the hub use its own device instance (default
+  `8123`) as subscriber process identifier, so entries in a device's
+  `active_cov_subscriptions` list are recognisable as this hub.
 - Home Assistant 2026.3.0 (the first release on Python 3.14, which is also
   what the test suite runs on) is now the minimum supported version, declared
   in `hacs.json`; the compatibility fallbacks for older target-resolution
@@ -44,6 +49,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- COV subscriptions used a random subscriber process identifier per point
+  that changed on every restart, so devices accumulated duplicate entries
+  until the old leases expired; the identifier is now stable.
+- COV leases were renewed by cancelling and re-subscribing; they are now
+  renewed in place with the same process identifier and object, as the
+  standard defines. A declined renewal falls back to a full re-subscribe.
+- A subscription that collided with a stale context was left behind on the
+  device without a cancel request; failed cancel requests are now logged.
+- Undecodable COV values are skipped instead of being cached as state.
 - The `bacnet_hub.release` service resolved its targets with the deprecated
   `TargetSelectorData` helper, which HA 2026.9 reports at startup and removes
   in 2026.12.0. It now uses `TargetSelection`.

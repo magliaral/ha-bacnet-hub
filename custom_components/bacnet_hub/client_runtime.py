@@ -5,10 +5,12 @@ import logging
 import re
 import time
 from datetime import timedelta
-from typing import Any, Awaitable, Callable, Dict
+from typing import Any, Callable, Dict
 
+from bacpypes3.apdu import ErrorRejectAbortNack, SubscribeCOVRequest
 from bacpypes3.pdu import Address
 from bacpypes3.primitivedata import Null, ObjectIdentifier
+from bacpypes3.service.cov import SubscriptionContextManager
 from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
@@ -42,10 +44,19 @@ CLIENT_POINT_SCAN_LIMIT = 128
 CLIENT_REDISCOVERY_INTERVAL = timedelta(minutes=15)
 CLIENT_REFRESH_MIN_SECONDS = 55.0
 CLIENT_COV_LEASE_SECONDS = 600
-# Renew the COV subscription at this fraction of the lease lifetime, while the
-# old subscription is still valid, so entities never drop to unavailable
-# between renewals.
+# Renew the COV subscription in place (same process id and monitored object,
+# ASHRAE 135 clause 13.14) at this fraction of the lease lifetime, so the
+# device never sees the subscription lapse between renewals.
 CLIENT_COV_RENEW_FACTOR = 0.8
+# Ask for confirmed (acknowledged) COV notifications first; a device that
+# rejects the request is retried with unconfirmed notifications.
+CLIENT_COV_CONFIRMED_NOTIFICATIONS = True
+# The hub uses one subscriber process identifier for all of its COV
+# subscriptions: its own device instance, so entries in a device's
+# active_cov_subscriptions are recognisable as this hub. Fallback when the
+# instance is unknown or out of range (BACnet allows 1..4194303).
+DEFAULT_COV_PROCESS_IDENTIFIER = 8123
+COV_PROCESS_IDENTIFIER_MAX = 4194303
 # Cap concurrent SubscribeCOV requests per client device. Registration runs
 # in background tasks (and lease renewals fire almost simultaneously), so
 # without a cap a device with many points would see a burst of requests.
@@ -299,9 +310,18 @@ def _point_unique_id(entry_id: str, client_id: str, type_slug: str, object_insta
     return f"{entry_id}-{client_id}-point-{type_slug}-{int(object_instance)}"
 
 
-def _cov_process_identifier(entry_id: str, client_id: str, point_key: str) -> int:
-    seed = f"{entry_id}:{client_id}:{point_key}"
-    return (abs(hash(seed)) % 4194303) + 1
+def _cov_process_identifier(hub_instance: Any) -> int:
+    """Subscriber process identifier shared by all COV subscriptions of the hub.
+
+    A device identifies a subscription by (process id, subscriber address,
+    monitored object), so every point can share the hub's device instance as
+    process id. Re-subscribing after a restart then renews the existing entry
+    on the device instead of adding a second one.
+    """
+    value = _to_int(hub_instance)
+    if value is None or value < 1 or value > COV_PROCESS_IDENTIFIER_MAX:
+        return DEFAULT_COV_PROCESS_IDENTIFIER
+    return int(value)
 
 
 def _client_cache_root(hass: HomeAssistant) -> dict[str, dict[str, dict[str, Any]]]:
@@ -999,6 +1019,74 @@ async def _async_release_point(
     return updates
 
 
+def _hub_cov_registry(app: Any) -> dict[tuple[Any, int, Any], Any] | None:
+    """Return the app's registry of hub COV contexts, or None if unsupported."""
+    registry = getattr(app, "_hub_cov_contexts", None)
+    return registry if isinstance(registry, dict) else None
+
+
+class CovObjectSubscription(SubscriptionContextManager):
+    """SubscribeCOV context keyed by (address, process id, monitored object).
+
+    bacpypes3 keys its contexts by (address, process id) only, which would
+    force a distinct process id per monitored object. The hub shares one
+    process id across all of its subscriptions, so contexts are registered in
+    the app's ``_hub_cov_contexts`` instead and HubApp dispatches incoming
+    notifications by the full triple. Renewal (``refresh_subscription``) and
+    value decoding (``get_value``) are inherited from bacpypes3.
+    """
+
+    @property
+    def registry_key(self) -> tuple[Any, int, Any]:
+        return (
+            self.address,
+            self.subscriber_process_identifier,
+            self.monitored_object_identifier,
+        )
+
+    async def __aenter__(self) -> "CovObjectSubscription":
+        registry = _hub_cov_registry(self.app)
+        if registry is None:
+            raise RuntimeError("cov_not_supported")
+        existing = registry.get(self.registry_key)
+        if existing is not None and existing is not self:
+            # Leftover of an abandoned run for the same object: close it first
+            # so the device holds a single subscription per object.
+            try:
+                await existing.__aexit__(None, None, None)
+            except Exception:
+                _LOGGER.debug(
+                    "Closing stale COV context %s failed", self.registry_key, exc_info=True
+                )
+        # The subscribe request goes out before the context is registered;
+        # on failure nothing is left behind (no handle, no registry entry).
+        await self.refresh_subscription()
+        registry[self.registry_key] = self
+        return self
+
+    async def __aexit__(self, *exc_details: Any) -> ErrorRejectAbortNack | None:
+        """Cancel the subscription; returns the device's error response, if any."""
+        if self.refresh_subscription_handle:
+            self.refresh_subscription_handle.cancel()
+            self.refresh_subscription_handle = None
+        registry = _hub_cov_registry(self.app)
+        if registry is not None and registry.get(self.registry_key) is self:
+            del registry[self.registry_key]
+        if exc_details and exc_details != (None, None, None):
+            return None
+        # No lifetime and no issueConfirmedNotifications = cancellation
+        # (ASHRAE 135 clause 13.14.1).
+        cancel_request = SubscribeCOVRequest(
+            subscriberProcessIdentifier=self.subscriber_process_identifier,
+            monitoredObjectIdentifier=self.monitored_object_identifier,
+            destination=self.address,
+        )
+        response = await self.app.request(cancel_request)
+        if isinstance(response, ErrorRejectAbortNack):
+            return response
+        return None
+
+
 async def _open_cov_subscription_context(
     app: Any,
     *,
@@ -1006,39 +1094,64 @@ async def _open_cov_subscription_context(
     object_identifier: str,
     process_id: int,
     lifetime: int | float,
-    cleanup_context: Callable[[Any], Awaitable[None]] | None = None,
-    max_offset_attempts: int = 3,
-) -> tuple[Any | None, BaseException | None]:
-    cov_factory = getattr(app, "change_of_value", None)
-    if not callable(cov_factory):
+    issue_confirmed_notifications: bool = CLIENT_COV_CONFIRMED_NOTIFICATIONS,
+) -> tuple[CovObjectSubscription | None, BaseException | None]:
+    """Open a COV subscription, falling back to unconfirmed notifications."""
+    if _hub_cov_registry(app) is None:
         return None, RuntimeError("cov_not_supported")
 
+    modes = [True, False] if issue_confirmed_notifications else [False]
     last_err: BaseException | None = None
-    attempts = max(1, int(max_offset_attempts))
-    for offset in range(0, attempts):
-        context_obj: Any | None = None
+    for confirmed in modes:
+        context = CovObjectSubscription(
+            app,
+            Address(address),
+            ObjectIdentifier(object_identifier),
+            int(process_id),
+            confirmed,
+            int(lifetime),
+        )
         try:
-            context_obj = cov_factory(
-                Address(address),
-                ObjectIdentifier(object_identifier),
-                subscriber_process_identifier=((int(process_id) + offset - 1) % 4194303) + 1,
-                issue_confirmed_notifications=False,
-                lifetime=int(lifetime),
-            )
-            opened_context = await context_obj.__aenter__()
-            return opened_context, None
+            await context.__aenter__()
+            return context, None
+        except asyncio.CancelledError:
+            raise
+        except ErrorRejectAbortNack as err:
+            last_err = err
+            if confirmed:
+                _LOGGER.debug(
+                    "Device %s rejected confirmed COV for %s (%s); retrying unconfirmed",
+                    address,
+                    object_identifier,
+                    err,
+                )
+                continue
+            break
         except BaseException as err:
             last_err = err
-            if context_obj is not None and cleanup_context is not None:
-                try:
-                    await cleanup_context(context_obj)
-                except BaseException:
-                    pass
-            if isinstance(err, ValueError) and "existing context" in str(err).lower():
-                continue
             break
 
     return None, last_err
+
+
+async def _async_refresh_cov_subscription(context: Any) -> None:
+    """Renew a subscription in place (same process id and monitored object).
+
+    bacpypes3 arms its own refresh timer after every successful request
+    without cancelling the previous one and never reports a failed refresh.
+    The hub owns the schedule instead: both the old and the newly armed
+    handle are cancelled here. Raises ErrorRejectAbortNack (or the request's
+    timeout error) when the device declines the renewal.
+    """
+    handle = getattr(context, "refresh_subscription_handle", None)
+    if handle is not None:
+        handle.cancel()
+        context.refresh_subscription_handle = None
+    await context.refresh_subscription()
+    handle = getattr(context, "refresh_subscription_handle", None)
+    if handle is not None:
+        handle.cancel()
+        context.refresh_subscription_handle = None
 
 
 async def _read_client_object_list(

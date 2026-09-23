@@ -12,7 +12,13 @@ from bacpypes3.errors import ExecutionError
 from bacpypes3.vendor import get_vendor_info
 from bacpypes3.object import ObjectType, PropertyIdentifier
 from bacpypes3.basetypes import IPMode, HostNPort, BDTEntry
-from bacpypes3.apdu import IAmRequest, WritePropertyRequest
+from bacpypes3.apdu import (
+    ConfirmedCOVNotificationRequest,
+    IAmRequest,
+    SimpleAckPDU,
+    UnconfirmedCOVNotificationRequest,
+    WritePropertyRequest,
+)
 from bacpypes3.pdu import Address
 
 # Service mixins (enable standard services including COV)
@@ -193,6 +199,10 @@ class HubApp(
         self.on_i_am: Any = None
         self.local_device_instance: int | None = None
         self._bg_tasks: set[asyncio.Task] = set()
+        # COV subscriptions the hub holds on remote devices, keyed by
+        # (address, subscriber process id, monitored object). See
+        # client_runtime.CovObjectSubscription.
+        self._hub_cov_contexts: dict[tuple[Any, int, Any], Any] = {}
 
     def close(self) -> None:
         cancel_tasks(self._bg_tasks)
@@ -231,6 +241,38 @@ class HubApp(
             raise
         except Exception:
             _LOGGER.debug("I-Am hook failed", exc_info=True)
+
+    def _hub_cov_context(self, apdu: Any) -> Any | None:
+        key = (
+            apdu.pduSource,
+            apdu.subscriberProcessIdentifier,
+            apdu.monitoredObjectIdentifier,
+        )
+        return self._hub_cov_contexts.get(key)
+
+    async def do_ConfirmedCOVNotificationRequest(
+        self, apdu: ConfirmedCOVNotificationRequest
+    ) -> None:
+        # The hub shares one subscriber process id across all of its
+        # subscriptions, so notifications are matched on the monitored object
+        # as well; bacpypes3's own lookup only knows (address, process id).
+        context = self._hub_cov_context(apdu)
+        if context is None:
+            await super().do_ConfirmedCOVNotificationRequest(apdu)
+            return
+        for property_value in apdu.listOfValues or ():
+            await context.put(property_value)
+        await self.response(SimpleAckPDU(context=apdu))
+
+    async def do_UnconfirmedCOVNotificationRequest(
+        self, apdu: UnconfirmedCOVNotificationRequest
+    ) -> None:
+        context = self._hub_cov_context(apdu)
+        if context is None:
+            await super().do_UnconfirmedCOVNotificationRequest(apdu)
+            return
+        for property_value in apdu.listOfValues or ():
+            await context.put(property_value)
 
     async def do_WritePropertyRequest(self, apdu: WritePropertyRequest):
         """

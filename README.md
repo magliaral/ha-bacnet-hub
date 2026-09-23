@@ -32,7 +32,9 @@ This integration has two roles:
 2. BACnet -> Home Assistant (remote BACnet clients)
 - Discovers remote BACnet devices via `Who-Is/I-Am`.
 - Imports supported remote points as HA entities.
-- Uses BACnet COV subscriptions for event-driven updates.
+- Uses BACnet COV subscriptions for event-driven updates (confirmed
+  notifications when the device supports them; the hub's device instance is
+  the subscriber process identifier).
 
 ## Key Features
 
