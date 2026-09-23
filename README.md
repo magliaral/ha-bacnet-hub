@@ -52,7 +52,7 @@ This integration has two roles:
 - Home Assistant with custom integrations enabled.
 - Network access to BACnet/IP segment.
 - Dependency (from `manifest.json`):
-  - `bacpypes3==0.0.106`
+  - `bacpypes3==0.0.108`
 
 ## Installation
 

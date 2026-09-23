@@ -16,7 +16,7 @@
   "config_flow": true,
   "single_config_entry": true,
   "requirements": [
-    "bacpypes3==0.0.106",
+    "bacpypes3==0.0.108",
     "PyYAML>=6.0.1"
   ],
   "loggers": [

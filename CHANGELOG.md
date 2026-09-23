@@ -33,6 +33,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - Default write priority is now `8` (Manual Operator) instead of `16`.
+- bacpypes3 is pinned to 0.0.108 (was 0.0.106): fixes an Error-PDU crash on
+  unconfirmed requests and a Who-Is future race, adds the source address to
+  error responses. The COV client API the hub relies on is unchanged.
 - COV subscriptions ask for confirmed (acknowledged) notifications first and
   fall back to unconfirmed ones when a device rejects the request.
 - All COV subscriptions of the hub use its own device instance (default
