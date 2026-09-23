@@ -16,6 +16,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Client points additionally subscribe per property with SubscribeCOVProperty:
+  `outOfService` on all points, `priorityArray` and `relinquishDefault` on
+  commandable points. External changes to the priority array now arrive as
+  COV notifications; the 30-second poll only remains for points whose device
+  declines the property subscription.
 - Service `bacnet_hub.release`: releases a priority array slot (default 8,
   Manual Operator) of one or more commandable client points and re-reads the
   point immediately so the state updates without waiting for COV. Errors are
@@ -36,6 +41,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - bacpypes3 is pinned to 0.0.108 (was 0.0.106): fixes an Error-PDU crash on
   unconfirmed requests and a Who-Is future race, adds the source address to
   error responses. The COV client API the hub relies on is unchanged.
+- A periodic client rescan no longer tears down and re-creates healthy COV
+  subscriptions; they are only rebuilt when the target changed or the
+  receive loop failed.
 - COV subscriptions ask for confirmed (acknowledged) notifications first and
   fall back to unconfirmed ones when a device rejects the request.
 - All COV subscriptions of the hub use its own device instance (default

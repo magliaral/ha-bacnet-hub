@@ -345,3 +345,104 @@ async def test_queued_value_decodes_to_present_value() -> None:
 
 async def _no_device_info(_address: Any) -> None:
     return None
+
+
+# --- SubscribeCOVProperty (Phase B) ------------------------------------------
+
+from bacpypes3.apdu import SubscribeCOVPropertyRequest  # noqa: E402
+
+from custom_components.bacnet_hub.client_runtime import (  # noqa: E402
+    _open_cov_property_subscription,
+)
+
+
+def _property_requests(app: FakeApp) -> list[SubscribeCOVPropertyRequest]:
+    return [r for r in app.requests if isinstance(r, SubscribeCOVPropertyRequest)]
+
+
+async def _object_context(app: FakeApp) -> CovObjectSubscription:
+    context, err = await _open_cov_subscription_context(
+        app, address=ADDRESS, object_identifier="binary-output,3", process_id=8123, lifetime=600
+    )
+    assert err is None and context is not None
+    context.refresh_subscription_handle.cancel()
+    return context
+
+
+async def test_property_subscription_shares_pid_and_object() -> None:
+    app = FakeApp()
+    context = await _object_context(app)
+
+    err = await _open_cov_property_subscription(context, "priorityArray")
+
+    assert err is None
+    assert len(context.property_subscriptions) == 1
+    req = _property_requests(app)[0]
+    assert req.subscriberProcessIdentifier == 8123
+    assert req.monitoredObjectIdentifier == ObjectIdentifier("binary-output,3")
+    assert req.monitoredPropertyIdentifier.propertyIdentifier == PropertyIdentifier.priorityArray
+    assert req.monitoredPropertyIdentifier.propertyArrayIndex is None
+    assert bool(req.issueConfirmedNotifications) is True
+    assert req.lifetime == 600
+    assert req.covIncrement is None
+    # not registered on its own: notifications go to the object context
+    assert list(app._hub_cov_contexts.values()) == [context]
+
+
+async def test_property_subscription_inherits_unconfirmed_mode() -> None:
+    app = FakeApp(responses=[_Rejected(), None])
+    context, _ = await _open_cov_subscription_context(
+        app, address=ADDRESS, object_identifier=OID, process_id=8123, lifetime=600
+    )
+    assert context is not None and context.issue_confirmed_notifications is False
+    context.refresh_subscription_handle.cancel()
+
+    assert await _open_cov_property_subscription(context, "outOfService") is None
+    assert bool(_property_requests(app)[0].issueConfirmedNotifications) is False
+
+
+async def test_declined_property_subscription_is_reported_not_kept() -> None:
+    app = FakeApp()
+    context = await _object_context(app)
+    app.responses = [_Rejected()]
+
+    err = await _open_cov_property_subscription(context, "relinquishDefault")
+
+    assert isinstance(err, ErrorRejectAbortNack)
+    assert context.property_subscriptions == []
+
+
+async def test_object_aexit_cancels_property_subscriptions_first() -> None:
+    app = FakeApp()
+    context = await _object_context(app)
+    assert await _open_cov_property_subscription(context, "priorityArray") is None
+    assert await _open_cov_property_subscription(context, "relinquishDefault") is None
+    app.requests.clear()
+
+    outcome = await context.__aexit__(None, None, None)
+
+    assert outcome is None
+    assert context.property_subscriptions == []
+    assert app._hub_cov_contexts == {}
+    kinds = [type(r).__name__ for r in app.requests]
+    assert kinds == [
+        "SubscribeCOVPropertyRequest",
+        "SubscribeCOVPropertyRequest",
+        "SubscribeCOVRequest",
+    ]
+    for req in app.requests[:2]:
+        assert req.lifetime is None and req.issueConfirmedNotifications is None
+        assert req.monitoredPropertyIdentifier is not None
+
+
+async def test_refresh_renews_property_subscriptions_too() -> None:
+    app = FakeApp()
+    context = await _object_context(app)
+    assert await _open_cov_property_subscription(context, "outOfService") is None
+    app.requests.clear()
+
+    await _async_refresh_cov_subscription(context)
+
+    kinds = [type(r).__name__ for r in app.requests]
+    assert kinds == ["SubscribeCOVRequest", "SubscribeCOVPropertyRequest"]
+    assert all(r.lifetime == 600 for r in app.requests)

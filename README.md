@@ -32,9 +32,11 @@ This integration has two roles:
 2. BACnet -> Home Assistant (remote BACnet clients)
 - Discovers remote BACnet devices via `Who-Is/I-Am`.
 - Imports supported remote points as HA entities.
-- Uses BACnet COV subscriptions for event-driven updates (confirmed
-  notifications when the device supports them; the hub's device instance is
-  the subscriber process identifier).
+- Uses BACnet COV subscriptions for event-driven updates: one object-wide
+  SubscribeCOV per point plus SubscribeCOVProperty for `outOfService`,
+  `priorityArray` and `relinquishDefault`; confirmed notifications when the
+  device supports them; the hub's device instance is the subscriber
+  process identifier.
 
 ## Key Features
 
@@ -307,7 +309,7 @@ features:
 - Single config entry (`single_config_entry: true`).
 - Labels-first auto model; legacy/manual mappings are removed during sync.
 - Published `multiStateValue` currently has no dedicated HA mirror platform entity.
-- BACnet sends no COV for `priorityArray`/`relinquishDefault`; besides updating on writes/releases from HA and after COV `presentValue` changes, commandable points poll these properties every 30 seconds, so external changes appear with up to that much delay.
+- `priorityArray`/`relinquishDefault` are subscribed per property (SubscribeCOVProperty). On devices that decline that request, commandable points fall back to polling these properties every 30 seconds, so external changes appear with up to that much delay.
 
 ## Troubleshooting
 

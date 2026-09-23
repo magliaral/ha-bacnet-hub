@@ -7,7 +7,12 @@ import time
 from datetime import timedelta
 from typing import Any, Callable, Dict
 
-from bacpypes3.apdu import ErrorRejectAbortNack, SubscribeCOVRequest
+from bacpypes3.apdu import (
+    ErrorRejectAbortNack,
+    SubscribeCOVPropertyRequest,
+    SubscribeCOVRequest,
+)
+from bacpypes3.basetypes import PropertyIdentifier, PropertyReference
 from bacpypes3.pdu import Address
 from bacpypes3.primitivedata import Null, ObjectIdentifier
 from bacpypes3.service.cov import SubscriptionContextManager
@@ -57,6 +62,15 @@ CLIENT_COV_CONFIRMED_NOTIFICATIONS = True
 # instance is unknown or out of range (BACnet allows 1..4194303).
 DEFAULT_COV_PROCESS_IDENTIFIER = 8123
 COV_PROCESS_IDENTIFIER_MAX = 4194303
+# Properties subscribed per point with SubscribeCOVProperty (ASHRAE 135
+# clause 13.15) in addition to the object-wide SubscribeCOV, which delivers
+# presentValue and statusFlags. Devices that decline a property fall back
+# to polling for it.
+CLIENT_COV_PROPERTY_SUBSCRIPTIONS_ALL: tuple[str, ...] = ("outOfService",)
+CLIENT_COV_PROPERTY_SUBSCRIPTIONS_COMMANDABLE: tuple[str, ...] = (
+    "priorityArray",
+    "relinquishDefault",
+)
 # Cap concurrent SubscribeCOV requests per client device. Registration runs
 # in background tasks (and lease renewals fire almost simultaneously), so
 # without a cap a device with many points would see a burst of requests.
@@ -1036,6 +1050,12 @@ class CovObjectSubscription(SubscriptionContextManager):
     value decoding (``get_value``) are inherited from bacpypes3.
     """
 
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        # SubscribeCOVProperty subscriptions on the same object; their
+        # notifications arrive through this context's queue.
+        self.property_subscriptions: list[CovPropertySubscription] = []
+
     @property
     def registry_key(self) -> tuple[Any, int, Any]:
         return (
@@ -1072,6 +1092,12 @@ class CovObjectSubscription(SubscriptionContextManager):
         registry = _hub_cov_registry(self.app)
         if registry is not None and registry.get(self.registry_key) is self:
             del registry[self.registry_key]
+        first_error: ErrorRejectAbortNack | None = None
+        for property_subscription in list(self.property_subscriptions):
+            outcome = await property_subscription.__aexit__(*exc_details)
+            if outcome is not None and first_error is None:
+                first_error = outcome
+        self.property_subscriptions = []
         if exc_details and exc_details != (None, None, None):
             return None
         # No lifetime and no issueConfirmedNotifications = cancellation
@@ -1084,7 +1110,103 @@ class CovObjectSubscription(SubscriptionContextManager):
         response = await self.app.request(cancel_request)
         if isinstance(response, ErrorRejectAbortNack):
             return response
+        return first_error
+
+
+class CovPropertySubscription(SubscriptionContextManager):
+    """SubscribeCOVProperty for one property of an already subscribed object.
+
+    Shares process id, address and object with its CovObjectSubscription and
+    is not registered on its own: COV notifications carry no property at the
+    request level, so HubApp delivers them to the object context's queue.
+    The hub owns the renewal schedule, so no refresh timer is armed here.
+    """
+
+    def __init__(
+        self,
+        app: Any,
+        address: Address,
+        monitored_object_identifier: ObjectIdentifier,
+        subscriber_process_identifier: int,
+        issue_confirmed_notifications: bool,
+        lifetime: int,
+        property_identifier: str,
+    ) -> None:
+        super().__init__(
+            app,
+            address,
+            monitored_object_identifier,
+            subscriber_process_identifier,
+            issue_confirmed_notifications,
+            lifetime,
+        )
+        self.property_identifier = PropertyIdentifier(property_identifier)
+
+    def _property_reference(self) -> PropertyReference:
+        # bacpypes3's Sequence type check wants the element's own (context
+        # tagged) subclass; a plain PropertyReference instance is rejected.
+        reference_cls = SubscribeCOVPropertyRequest._elements["monitoredPropertyIdentifier"]
+        return reference_cls(propertyIdentifier=self.property_identifier)
+
+    async def __aenter__(self) -> "CovPropertySubscription":
+        await self.refresh_subscription()
+        return self
+
+    async def refresh_subscription(self) -> None:
+        request = SubscribeCOVPropertyRequest(
+            subscriberProcessIdentifier=self.subscriber_process_identifier,
+            monitoredObjectIdentifier=self.monitored_object_identifier,
+            issueConfirmedNotifications=self.issue_confirmed_notifications,
+            lifetime=self.lifetime,
+            monitoredPropertyIdentifier=self._property_reference(),
+            destination=self.address,
+        )
+        response = await self.app.request(request)
+        if isinstance(response, ErrorRejectAbortNack):
+            raise response
+
+    async def __aexit__(self, *exc_details: Any) -> ErrorRejectAbortNack | None:
+        if exc_details and exc_details != (None, None, None):
+            return None
+        # Cancellation form (clause 13.15.1): no lifetime, no
+        # issueConfirmedNotifications, but the property reference is required.
+        cancel_request = SubscribeCOVPropertyRequest(
+            subscriberProcessIdentifier=self.subscriber_process_identifier,
+            monitoredObjectIdentifier=self.monitored_object_identifier,
+            monitoredPropertyIdentifier=self._property_reference(),
+            destination=self.address,
+        )
+        response = await self.app.request(cancel_request)
+        if isinstance(response, ErrorRejectAbortNack):
+            return response
         return None
+
+
+async def _open_cov_property_subscription(
+    context: CovObjectSubscription, property_identifier: str
+) -> BaseException | None:
+    """Add a SubscribeCOVProperty for one property to an object context.
+
+    Returns None on success (the subscription is appended to the context's
+    property list) or the error the device answered with.
+    """
+    subscription = CovPropertySubscription(
+        context.app,
+        context.address,
+        context.monitored_object_identifier,
+        context.subscriber_process_identifier,
+        context.issue_confirmed_notifications,
+        context.lifetime,
+        property_identifier,
+    )
+    try:
+        await subscription.__aenter__()
+    except asyncio.CancelledError:
+        raise
+    except BaseException as err:  # ErrorRejectAbortNack is a BaseException
+        return err
+    context.property_subscriptions.append(subscription)
+    return None
 
 
 async def _open_cov_subscription_context(
@@ -1152,6 +1274,8 @@ async def _async_refresh_cov_subscription(context: Any) -> None:
     if handle is not None:
         handle.cancel()
         context.refresh_subscription_handle = None
+    for property_subscription in list(getattr(context, "property_subscriptions", ())):
+        await property_subscription.refresh_subscription()
 
 
 async def _read_client_object_list(
