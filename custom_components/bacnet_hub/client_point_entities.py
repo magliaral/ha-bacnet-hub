@@ -27,12 +27,14 @@ from .client_runtime import (
     CLIENT_WRITE_READBACK_DELAY_SECONDS,
     _client_cov_signal,
     _client_cov_subscribe_semaphore,
+    _client_cov_unsupported,
     _client_device_info,
     _client_points_get,
     _client_points_set,
     _client_points_signal,
     _client_rescan_signal,
     _cov_process_identifier,
+    _cov_unsupported_key,
     _entry_points_signal,
     _entry_write_priority,
     _normalize_bacnet_unit,
@@ -671,26 +673,41 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
             self._cov_retry_delay_seconds = 10.0
             self._set_client_points_unavailable(False)
 
+            # Consume notifications from now on: the object subscription is
+            # live, and the property subscriptions below must not delay it.
+            self._cov_task = create_logged_task(
+                self.hass,
+                self._async_cov_receive_loop(),
+                logger=_LOGGER,
+                message=f"COV receive loop for {self._point_key}",
+            )
+
             wanted = list(CLIENT_COV_PROPERTY_SUBSCRIPTIONS_ALL)
             if _point_has_priority_array(point):
                 wanted.extend(CLIENT_COV_PROPERTY_SUBSCRIPTIONS_COMMANDABLE)
+            unsupported = _client_cov_unsupported(self.hass, self._entry_id, self._client_id)
             active: set[str] = set()
             async with subscribe_sem:
                 for property_name in wanted:
+                    key = _cov_unsupported_key(object_identifier, property_name)
+                    if key in unsupported:
+                        continue
                     err = await _open_cov_property_subscription(
                         self._cov_context, property_name
                     )
                     if err is None:
                         active.add(property_name)
-                    else:
-                        _LOGGER.debug(
-                            "Device %s declined SubscribeCOVProperty %s for %s (%s); "
-                            "falling back to polling",
-                            address,
-                            property_name,
-                            object_identifier,
-                            err,
-                        )
+                        continue
+                    unsupported.add(key)
+                    _LOGGER.info(
+                        "Device %s %s SubscribeCOVProperty %s for %s objects (%s); "
+                        "falling back to polling for it",
+                        address,
+                        "did not answer" if isinstance(err, TimeoutError) else "declined",
+                        property_name,
+                        key.split(":", 1)[0],
+                        err if not isinstance(err, TimeoutError) else "no response",
+                    )
             self._cov_property_active = active
             _LOGGER.debug(
                 "COV subscribed for %s (%s): %s, properties %s",
@@ -698,13 +715,6 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
                 address,
                 "confirmed" if self._cov_context.issue_confirmed_notifications else "unconfirmed",
                 sorted(active) or "none",
-            )
-
-            self._cov_task = create_logged_task(
-                self.hass,
-                self._async_cov_receive_loop(),
-                logger=_LOGGER,
-                message=f"COV receive loop for {self._point_key}",
             )
             self._schedule_cov_lease_refresh()
 

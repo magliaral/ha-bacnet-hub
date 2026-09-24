@@ -308,7 +308,7 @@ features:
 - Single config entry (`single_config_entry: true`).
 - Labels-first auto model; legacy/manual mappings are removed during sync.
 - Published `multiStateValue` currently has no dedicated HA mirror platform entity.
-- `priorityArray`/`relinquishDefault` are subscribed per property (SubscribeCOVProperty). On devices that decline that request, commandable points fall back to polling these properties every 30 seconds, so external changes appear with up to that much delay.
+- `priorityArray`/`relinquishDefault` are subscribed per property (SubscribeCOVProperty). On devices that decline or do not answer that request, commandable points fall back to polling these properties every 30 seconds, so external changes appear with up to that much delay.
 
 ## Troubleshooting
 

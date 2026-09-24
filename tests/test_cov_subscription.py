@@ -96,10 +96,8 @@ async def test_open_subscribes_confirmed_and_registers_by_object() -> None:
     assert req.lifetime == 600
     assert app._hub_cov_contexts[_key()] is context
     assert context.issue_confirmed_notifications is True
-    # the hub owns the renewal schedule; bacpypes3's timer is left armed
-    # until the refresh helper or cleanup cancels it
-    assert context.refresh_subscription_handle is not None
-    context.refresh_subscription_handle.cancel()
+    # the hub owns the renewal schedule; bacpypes3's timer is never armed
+    assert context.refresh_subscription_handle is None
 
 
 async def test_two_objects_share_the_process_id() -> None:
@@ -114,8 +112,6 @@ async def test_two_objects_share_the_process_id() -> None:
 
     assert ctx_a is not None and ctx_b is not None
     assert set(app._hub_cov_contexts) == {_key(oid="analog-input,0"), _key(oid="binary-output,3")}
-    for ctx in (ctx_a, ctx_b):
-        ctx.refresh_subscription_handle.cancel()
 
 
 async def test_open_falls_back_to_unconfirmed_when_rejected() -> None:
@@ -131,7 +127,6 @@ async def test_open_falls_back_to_unconfirmed_when_rejected() -> None:
     assert {r.subscriberProcessIdentifier for r in requests} == {8123}
     assert context.issue_confirmed_notifications is False
     assert app._hub_cov_contexts[_key()] is context
-    context.refresh_subscription_handle.cancel()
 
 
 async def test_open_reports_error_when_both_modes_rejected() -> None:
@@ -206,7 +201,6 @@ async def test_reopening_same_object_closes_stale_context() -> None:
     # subscribe, cancel(stale), subscribe
     assert kinds == [False, True, False]
     assert stale.refresh_subscription_handle is None
-    fresh.refresh_subscription_handle.cancel()
 
 
 # --- renewal -----------------------------------------------------------------
@@ -218,12 +212,11 @@ async def test_refresh_renews_in_place_and_owns_the_timer() -> None:
         app, address=ADDRESS, object_identifier=OID, process_id=8123, lifetime=600
     )
     assert context is not None
-    first_handle = context.refresh_subscription_handle
-    assert first_handle is not None
+    # The hub owns the renewal schedule: no bacpypes3 timer is armed.
+    assert context.refresh_subscription_handle is None
 
     await _async_refresh_cov_subscription(context)
 
-    assert first_handle.cancelled()
     assert context.refresh_subscription_handle is None
     requests = _subscribe_requests(app)
     assert len(requests) == 2
@@ -365,7 +358,6 @@ async def _object_context(app: FakeApp) -> CovObjectSubscription:
         app, address=ADDRESS, object_identifier="binary-output,3", process_id=8123, lifetime=600
     )
     assert err is None and context is not None
-    context.refresh_subscription_handle.cancel()
     return context
 
 
@@ -395,7 +387,6 @@ async def test_property_subscription_inherits_unconfirmed_mode() -> None:
         app, address=ADDRESS, object_identifier=OID, process_id=8123, lifetime=600
     )
     assert context is not None and context.issue_confirmed_notifications is False
-    context.refresh_subscription_handle.cancel()
 
     assert await _open_cov_property_subscription(context, "outOfService") is None
     assert bool(_property_requests(app)[0].issueConfirmedNotifications) is False
@@ -471,3 +462,69 @@ def test_set_bacpypes_debug_toggles_module_flags() -> None:
     finally:
         cov_module._debug = before
         logger.setLevel(logging.NOTSET)
+
+
+# --- silent devices ---------------------------------------------------------
+
+
+class SilentApp(FakeApp):
+    """Never answers: models a device that drops SubscribeCOVProperty."""
+
+    async def request(self, apdu: Any) -> Any:
+        self.requests.append(apdu)
+        await asyncio.Event().wait()
+
+
+async def test_object_subscribe_times_out_on_silent_device(monkeypatch) -> None:
+    import custom_components.bacnet_hub.client_runtime as runtime
+
+    monkeypatch.setattr(runtime, "CLIENT_COV_REQUEST_TIMEOUT_SECONDS", 0.05)
+    app = SilentApp()
+
+    context, err = await _open_cov_subscription_context(
+        app, address=ADDRESS, object_identifier=OID, process_id=8123, lifetime=600
+    )
+
+    assert context is None
+    assert isinstance(err, TimeoutError)
+    assert app._hub_cov_contexts == {}
+    # confirmed attempt only: a timeout is not a rejection, so no unconfirmed retry
+    assert len(app.requests) == 1
+
+
+async def test_property_subscribe_times_out_and_is_not_kept(monkeypatch) -> None:
+    import custom_components.bacnet_hub.client_runtime as runtime
+
+    app = FakeApp()
+    context, _ = await _open_cov_subscription_context(
+        app, address=ADDRESS, object_identifier=OID, process_id=8123, lifetime=600
+    )
+    assert context is not None
+
+    async def _silent(apdu: Any) -> Any:
+        app.requests.append(apdu)
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(runtime, "CLIENT_COV_REQUEST_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(app, "request", _silent)
+
+    err = await _open_cov_property_subscription(context, "priorityArray")
+
+    assert isinstance(err, TimeoutError)
+    assert context.property_subscriptions == []
+
+
+def test_unsupported_cov_property_cache_is_per_client_and_object_type() -> None:
+    from custom_components.bacnet_hub.client_runtime import (
+        _client_cov_unsupported,
+        _cov_unsupported_key,
+    )
+
+    hass = SimpleNamespace(data={})
+    cache = _client_cov_unsupported(hass, "entry", "client_1")
+    cache.add(_cov_unsupported_key("binary-output,3", "priorityArray"))
+
+    assert _cov_unsupported_key("binary-output,0", "priorityArray") in cache
+    assert _cov_unsupported_key("analog-output,0", "priorityArray") not in cache
+    assert _client_cov_unsupported(hass, "entry", "client_2") == set()
+    assert _client_cov_unsupported(hass, "entry", "client_1") is cache

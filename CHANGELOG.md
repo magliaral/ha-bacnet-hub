@@ -64,6 +64,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A device that never answers a SubscribeCOVProperty request (seen on a
+  bacnet-stack based controller for `priorityArray`) blocked the point's
+  registration forever: bacpypes3 leaves the timeout to the caller, so the
+  COV receive loop was never started, the point's notifications were never
+  consumed and the per-device subscribe slots stayed occupied, leaving other
+  points of the same device without any subscription. Every COV request is
+  now bounded to 10 seconds, the receive loop starts as soon as the object
+  subscription is accepted, and a property a device declines or ignores is
+  remembered per device and object type instead of being requested again on
+  every renewal.
 - The `debug_bacpypes` option only raised logger levels, which bacpypes3
   ignores; it now sets bacpypes3's module debug flags, so application,
   COV and Who-Is/I-Am handling are actually logged. Each COV registration

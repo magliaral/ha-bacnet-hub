@@ -29,6 +29,7 @@ from .const import (
     DEFAULT_WRITE_PRIORITY,
     DOMAIN,
     KEY_CLIENT_COV_SUBSCRIBE_SEM,
+    KEY_CLIENT_COV_UNSUPPORTED,
     WRITE_PRIORITY_OPTIONS,
     client_display_name,
 )
@@ -83,6 +84,11 @@ CLIENT_COV_PROPERTY_SUBSCRIPTIONS_COMMANDABLE: tuple[str, ...] = (
 # in background tasks (and lease renewals fire almost simultaneously), so
 # without a cap a device with many points would see a burst of requests.
 CLIENT_COV_SUBSCRIBE_MAX_PARALLEL = 4
+# Upper bound for one SubscribeCOV / SubscribeCOVProperty / cancel request.
+# bacpypes3 leaves the timeout to the caller: a device that never answers
+# (seen with SubscribeCOVProperty for priorityArray on a bacnet-stack based
+# controller) would otherwise block the registration forever.
+CLIENT_COV_REQUEST_TIMEOUT_SECONDS = 10.0
 
 # Delay before reading back presentValue after a write/relinquish. A write
 # below the highest active priority slot does not change presentValue and
@@ -324,6 +330,29 @@ def _point_entity_id(
 
 def _point_unique_id(entry_id: str, client_id: str, type_slug: str, object_instance: int) -> str:
     return f"{entry_id}-{client_id}-point-{type_slug}-{int(object_instance)}"
+
+
+def _client_cov_unsupported(hass: HomeAssistant, entry_id: str, client_id: str) -> set[str]:
+    """Return the mutable set of "<object-type>:<property>" pairs a device
+    declined or never answered for SubscribeCOVProperty."""
+    store = hass.data.setdefault(DOMAIN, {}).setdefault(KEY_CLIENT_COV_UNSUPPORTED, {})
+    return store.setdefault(entry_id, {}).setdefault(client_id, set())
+
+
+def _cov_unsupported_key(object_identifier: Any, property_identifier: str) -> str:
+    object_type = str(object_identifier).split(",", 1)[0].strip()
+    return f"{object_type}:{property_identifier}"
+
+
+async def _cov_request(app: Any, request: Any, timeout: float | None = None) -> Any:
+    """Send a confirmed COV request with an upper bound on the wait.
+
+    Raises ``TimeoutError`` when the device does not answer in time; the
+    pending bacpypes3 request is cancelled and dropped from its queue.
+    """
+    if timeout is None:
+        timeout = CLIENT_COV_REQUEST_TIMEOUT_SECONDS
+    return await asyncio.wait_for(app.request(request), timeout=timeout)
 
 
 def _cov_process_identifier(hub_instance: Any) -> int:
@@ -1068,6 +1097,23 @@ class CovObjectSubscription(SubscriptionContextManager):
         registry[self.registry_key] = self
         return self
 
+    async def refresh_subscription(self) -> None:
+        """Subscribe or renew with a bounded wait; no bacpypes3 timer is armed.
+
+        The hub owns the renewal schedule (see the entity's lease refresh),
+        so bacpypes3's own ``call_later`` refresh is deliberately not set up.
+        """
+        request = SubscribeCOVRequest(
+            subscriberProcessIdentifier=self.subscriber_process_identifier,
+            monitoredObjectIdentifier=self.monitored_object_identifier,
+            issueConfirmedNotifications=self.issue_confirmed_notifications,
+            lifetime=self.lifetime,
+            destination=self.address,
+        )
+        response = await _cov_request(self.app, request)
+        if isinstance(response, ErrorRejectAbortNack):
+            raise response
+
     async def __aexit__(self, *exc_details: Any) -> ErrorRejectAbortNack | None:
         """Cancel the subscription; returns the device's error response, if any."""
         if self.refresh_subscription_handle:
@@ -1091,7 +1137,7 @@ class CovObjectSubscription(SubscriptionContextManager):
             monitoredObjectIdentifier=self.monitored_object_identifier,
             destination=self.address,
         )
-        response = await self.app.request(cancel_request)
+        response = await _cov_request(self.app, cancel_request)
         if isinstance(response, ErrorRejectAbortNack):
             return response
         return first_error
@@ -1145,7 +1191,7 @@ class CovPropertySubscription(SubscriptionContextManager):
             monitoredPropertyIdentifier=self._property_reference(),
             destination=self.address,
         )
-        response = await self.app.request(request)
+        response = await _cov_request(self.app, request)
         if isinstance(response, ErrorRejectAbortNack):
             raise response
 
@@ -1160,7 +1206,7 @@ class CovPropertySubscription(SubscriptionContextManager):
             monitoredPropertyIdentifier=self._property_reference(),
             destination=self.address,
         )
-        response = await self.app.request(cancel_request)
+        response = await _cov_request(self.app, cancel_request)
         if isinstance(response, ErrorRejectAbortNack):
             return response
         return None

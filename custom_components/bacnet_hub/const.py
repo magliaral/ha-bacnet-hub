@@ -12,6 +12,10 @@ KEY_CLIENT_POINT_ENTITIES = "client_point_entities"
 # hass.data[DOMAIN] key holding per-entry, per-client semaphores that cap
 # concurrent SubscribeCOV requests.
 KEY_CLIENT_COV_SUBSCRIBE_SEM = "client_cov_subscribe_sem"
+# hass.data[DOMAIN] key holding, per entry and client, the
+# "<object-type>:<property>" pairs a device declined or never answered for
+# SubscribeCOVProperty; they are not requested again until the next start.
+KEY_CLIENT_COV_UNSUPPORTED = "client_cov_unsupported"
 DEFAULT_BACNET_OBJECT_NAME = "HA-BACnet-Hub"
 DEFAULT_BACNET_DEVICE_DESCRIPTION = "BACnet Hub - Home Assistant Custom Integration"
 
