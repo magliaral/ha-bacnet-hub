@@ -45,6 +45,41 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+# bacpypes3 modules whose debug output is useful for protocol diagnostics:
+# application-level request/indication/response/confirmation, the COV
+# client/server handlers and Who-Is/I-Am processing.
+BACPYPES_DEBUG_MODULES: tuple[str, ...] = (
+    "bacpypes3.app",
+    "bacpypes3.service.cov",
+    "bacpypes3.service.device",
+)
+
+
+def set_bacpypes_debug(enabled: bool, modules: Iterable[str] = BACPYPES_DEBUG_MODULES) -> list[str]:
+    """Switch bacpypes3's module debug output on or off.
+
+    bacpypes3 guards every debug statement with a module-global ``_debug``
+    flag that only its own argparse helper sets; raising the logger level
+    alone produces no output. The flag lives in ``bacpypes3.debugging
+    .module_loggers`` keyed by the module's logger. Records propagate to
+    Home Assistant's handlers, so no stream handler is added. Returns the
+    module names that were switched.
+    """
+    try:
+        from bacpypes3.debugging import module_loggers
+    except Exception:  # pragma: no cover - bacpypes3 without the helper
+        return []
+    switched: list[str] = []
+    for name in modules:
+        logger = logging.getLogger(name)
+        globs = module_loggers.get(logger)
+        if globs is None:
+            continue
+        globs["_debug"] = 1 if enabled else 0
+        logger.setLevel(logging.DEBUG if enabled else logging.NOTSET)
+        switched.append(name)
+    return switched
+
 _DEFAULT_PREFIX = 24
 _DEFAULT_PORT = 47808
 
@@ -441,12 +476,9 @@ class BacnetHubServer:
         self._iam_last_seen: dict[tuple[int, str], float] = {}
 
     async def start(self) -> None:
+        switched = set_bacpypes_debug(self.debug_bacpypes)
         if self.debug_bacpypes:
-            for name in (
-                "bacpypes3", "bacpypes3.app", "bacpypes3.apdu",
-                "bacpypes3.pdu", "bacpypes3.service.cov"
-            ):
-                logging.getLogger(name).setLevel(logging.DEBUG)
+            _LOGGER.info("bacpypes3 debug output enabled for %s", ", ".join(switched))
 
         # Version info from manifest/installation
         try:

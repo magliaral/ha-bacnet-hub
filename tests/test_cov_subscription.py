@@ -446,3 +446,28 @@ async def test_refresh_renews_property_subscriptions_too() -> None:
     kinds = [type(r).__name__ for r in app.requests]
     assert kinds == ["SubscribeCOVRequest", "SubscribeCOVPropertyRequest"]
     assert all(r.lifetime == 600 for r in app.requests)
+
+
+def test_set_bacpypes_debug_toggles_module_flags() -> None:
+    import logging
+
+    import bacpypes3.service.cov as cov_module
+    from bacpypes3.debugging import module_loggers
+
+    from custom_components.bacnet_hub.server import set_bacpypes_debug
+
+    logger = logging.getLogger("bacpypes3.service.cov")
+    assert module_loggers[logger] is vars(cov_module)
+    before = cov_module._debug
+    try:
+        assert "bacpypes3.service.cov" in set_bacpypes_debug(True)
+        assert cov_module._debug == 1
+        assert logger.level == logging.DEBUG
+        assert "bacpypes3.service.cov" in set_bacpypes_debug(False)
+        assert cov_module._debug == 0
+        assert logger.level == logging.NOTSET
+        # Unknown modules are skipped, not created.
+        assert set_bacpypes_debug(True, ["bacpypes3.does_not_exist"]) == []
+    finally:
+        cov_module._debug = before
+        logger.setLevel(logging.NOTSET)

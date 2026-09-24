@@ -692,6 +692,13 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
                             err,
                         )
             self._cov_property_active = active
+            _LOGGER.debug(
+                "COV subscribed for %s (%s): %s, properties %s",
+                object_identifier,
+                address,
+                "confirmed" if self._cov_context.issue_confirmed_notifications else "unconfirmed",
+                sorted(active) or "none",
+            )
 
             self._cov_task = create_logged_task(
                 self.hass,

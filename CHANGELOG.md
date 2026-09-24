@@ -64,6 +64,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The `debug_bacpypes` option only raised logger levels, which bacpypes3
+  ignores; it now sets bacpypes3's module debug flags, so application,
+  COV and Who-Is/I-Am handling are actually logged. Each COV registration
+  also logs the accepted property subscriptions at debug level.
 - COV subscriptions used a random subscriber process identifier per point
   that changed on every restart, so devices accumulated duplicate entries
   until the old leases expired; the identifier is now stable.
