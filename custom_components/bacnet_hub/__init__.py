@@ -5,7 +5,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Awaitable, Callable, Dict, List
 
 import voluptuous as vol
 
@@ -74,6 +74,18 @@ SERVICE_RELEASE_SCHEMA = cv.make_entity_service_schema(
             vol.Coerce(int), vol.Range(min=1, max=16)
         )
     }
+)
+SERVICE_SET_OUT_OF_SERVICE = "set_out_of_service"
+ATTR_OUT_OF_SERVICE = "out_of_service"
+SERVICE_SET_OUT_OF_SERVICE_SCHEMA = cv.make_entity_service_schema(
+    {vol.Required(ATTR_OUT_OF_SERVICE): cv.boolean}
+)
+SERVICE_SET_PRESENT_VALUE = "set_present_value"
+ATTR_VALUE = "value"
+# The value is interpreted per object type by the entity (number, on/off,
+# state number or text); accept the raw scalar here.
+SERVICE_SET_PRESENT_VALUE_SCHEMA = cv.make_entity_service_schema(
+    {vol.Required(ATTR_VALUE): vol.Any(bool, int, float, str)}
 )
 
 EVENT_ENTITY_REGISTRY_UPDATED = "entity_registry_updated"
@@ -936,10 +948,10 @@ async def _async_extract_target_entity_ids(hass: HomeAssistant, call: ServiceCal
     return set(selected.referenced) | set(selected.indirectly_referenced)
 
 
-async def _async_release_targets(
-    hass: HomeAssistant, entity_ids: set[str], priority: int
+async def _async_call_point_targets(
+    hass: HomeAssistant, entity_ids: set[str], action: Callable[[Any], Awaitable[None]]
 ) -> None:
-    """Release the priority slot on every target entity.
+    """Run an action on every target point entity.
 
     Errors are collected per entity and raised as one bundled exception at
     the end instead of aborting on the first failure.
@@ -960,7 +972,7 @@ async def _async_release_targets(
             messages.append(str(err))
             continue
         try:
-            await entity.async_release(priority)
+            await action(entity)
         except asyncio.CancelledError:
             raise
         except Exception as err:
@@ -973,6 +985,33 @@ async def _async_release_targets(
     if all(isinstance(err, ServiceValidationError) for err in errors):
         raise ServiceValidationError(bundled)
     raise HomeAssistantError(bundled)
+
+
+async def _async_release_targets(
+    hass: HomeAssistant, entity_ids: set[str], priority: int
+) -> None:
+    """Release the priority slot on every target entity."""
+    await _async_call_point_targets(
+        hass, entity_ids, lambda entity: entity.async_release(int(priority))
+    )
+
+
+async def _async_set_out_of_service_targets(
+    hass: HomeAssistant, entity_ids: set[str], enabled: bool
+) -> None:
+    """Write outOfService on every target entity."""
+    await _async_call_point_targets(
+        hass, entity_ids, lambda entity: entity.async_set_out_of_service(bool(enabled))
+    )
+
+
+async def _async_set_present_value_targets(
+    hass: HomeAssistant, entity_ids: set[str], value: Any
+) -> None:
+    """Write presentValue on every target entity."""
+    await _async_call_point_targets(
+        hass, entity_ids, lambda entity: entity.async_set_present_value(value)
+    )
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -996,9 +1035,32 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
         entity_ids = await _async_extract_target_entity_ids(hass, call)
         await _async_release_targets(hass, entity_ids, int(call.data[ATTR_PRIORITY]))
 
+    async def _svc_set_out_of_service(call: ServiceCall) -> None:
+        entity_ids = await _async_extract_target_entity_ids(hass, call)
+        await _async_set_out_of_service_targets(
+            hass, entity_ids, bool(call.data[ATTR_OUT_OF_SERVICE])
+        )
+
     hass.services.async_register(DOMAIN, "reload", _svc_reload)
     hass.services.async_register(
         DOMAIN, SERVICE_RELEASE, _svc_release, schema=SERVICE_RELEASE_SCHEMA
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SET_OUT_OF_SERVICE,
+        _svc_set_out_of_service,
+        schema=SERVICE_SET_OUT_OF_SERVICE_SCHEMA,
+    )
+
+    async def _svc_set_present_value(call: ServiceCall) -> None:
+        entity_ids = await _async_extract_target_entity_ids(hass, call)
+        await _async_set_present_value_targets(hass, entity_ids, call.data[ATTR_VALUE])
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SET_PRESENT_VALUE,
+        _svc_set_present_value,
+        schema=SERVICE_SET_PRESENT_VALUE_SCHEMA,
     )
 
     # Serve the bundled tile feature once per HA start (guarded for safety);

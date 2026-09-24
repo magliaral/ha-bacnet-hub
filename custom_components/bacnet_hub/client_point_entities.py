@@ -33,6 +33,7 @@ from .client_runtime import (
     _client_points_set,
     _client_points_signal,
     _client_rescan_signal,
+    _coerce_present_value,
     _cov_process_identifier,
     _cov_unsupported_key,
     _entry_points_signal,
@@ -41,22 +42,27 @@ from .client_runtime import (
     _normalize_priority_array,
     _normalize_priority_slot,
     _point_entity_id,
-    _point_extra_attributes,
     _point_has_priority_array,
     _point_is_commandable,
     _point_is_writable,
     _point_native_value_from_payload,
+    _point_state_attributes,
     _point_unique_id,
     _property_slug,
     _safe_text,
     _sensor_device_class_from_unit,
+    _status_flags_names,
+    _to_bool,
+    _to_float,
     _to_int,
 )
 from .client_runtime import (
     CLIENT_COV_PROPERTY_SUBSCRIPTIONS_ALL,
     CLIENT_COV_PROPERTY_SUBSCRIPTIONS_COMMANDABLE,
+    _async_read_point_status,
     _async_refresh_cov_subscription,
     _async_release_point,
+    _async_set_point_out_of_service,
     _hub_cov_registry,
     _open_cov_property_subscription,
     _open_cov_subscription_context,
@@ -117,6 +123,7 @@ class BacnetClientPointBase:
 
         self._unsub_points_dispatcher: Callable[[], None] | None = None
         self._readback_task: asyncio.Task | None = None
+        self._status_refresh_task: asyncio.Task | None = None
 
         cache = _client_points_get(hass, entry_id, client_id).get(self._point_key, {})
         type_slug = str(cache.get("type_slug") or "point")
@@ -157,6 +164,9 @@ class BacnetClientPointBase:
         if self._readback_task is not None and not self._readback_task.done():
             self._readback_task.cancel()
         self._readback_task = None
+        if self._status_refresh_task is not None and not self._status_refresh_task.done():
+            self._status_refresh_task.cancel()
+        self._status_refresh_task = None
 
     def _get_point(self) -> dict[str, Any]:
         return dict(
@@ -176,13 +186,9 @@ class BacnetClientPointBase:
             self._attr_name = base_name
 
         self._apply_point_state(point)
-
-        # Priority attributes only for writable points exposing a priorityArray.
-        if _point_is_writable(point):
-            attrs = _point_extra_attributes(point)
-            if attrs:
-                self._attr_extra_state_attributes = attrs
-
+        # Status attributes for every point; priority attributes only for
+        # writable points with a priorityArray (see _point_state_attributes).
+        self._attr_extra_state_attributes = _point_state_attributes(point)
         self.async_write_ha_state()
 
     def _apply_point_state(self, point: dict[str, Any]) -> None:
@@ -310,6 +316,86 @@ class BacnetClientPointBase:
 
     async def _async_write_present_value(self, value: Any) -> None:
         await self._async_write_point(value, optimistic=True)
+
+    async def async_set_out_of_service(self, enabled: bool) -> None:
+        """Write outOfService to the device and refresh the cached status.
+
+        Called by the bacnet_hub.set_out_of_service service. Inputs are the
+        main use case (their presentValue becomes writable while out of
+        service), so there is no commandability gate; a device that does not
+        allow the write answers with an error that is reported verbatim.
+        """
+        point = self._get_point()
+        if not point:
+            raise HomeAssistantError(f"{self.entity_id}: point payload unavailable")
+        app, address, object_type, object_instance = self._resolve_write_target(point)
+        try:
+            updates = await _async_set_point_out_of_service(
+                app, address, object_type, object_instance, bool(enabled)
+            )
+        except HomeAssistantError as err:
+            raise HomeAssistantError(f"{self.entity_id}: {err}") from err
+        if updates:
+            self._update_point_cache(updates)
+        _LOGGER.debug(
+            "Set outOfService=%s for %s", bool(enabled), self._point_key
+        )
+
+    async def async_set_present_value(self, value: Any) -> None:
+        """Write presentValue from the bacnet_hub.set_present_value service.
+
+        Works on every point type, including inputs: their presentValue is
+        writable while the object is out of service, which is the simulation
+        use case. Commandable points are written at the configured priority,
+        all others without one. The device's answer to a write it does not
+        allow is reported verbatim.
+        """
+        point = self._get_point()
+        if not point:
+            raise HomeAssistantError(f"{self.entity_id}: point payload unavailable")
+        try:
+            converted = _coerce_present_value(point, value)
+        except ServiceValidationError as err:
+            raise ServiceValidationError(f"{self.entity_id}: {err}") from err
+        try:
+            await self._async_write_point(converted, optimistic=True)
+        except HomeAssistantError as err:
+            raise HomeAssistantError(f"{self.entity_id}: {err}") from err
+        _LOGGER.debug("Wrote presentValue=%r for %s", converted, self._point_key)
+
+    def _schedule_status_refresh(self) -> None:
+        """Re-read reliability/eventState shortly after a status flag changed.
+
+        COV carries statusFlags but not the properties behind them.
+        """
+        point = self._get_point()
+        try:
+            app, address, object_type, object_instance = self._resolve_write_target(point)
+        except HomeAssistantError:
+            return
+        if self._status_refresh_task is not None and not self._status_refresh_task.done():
+            return
+
+        async def _refresh() -> None:
+            await asyncio.sleep(CLIENT_WRITE_READBACK_DELAY_SECONDS)
+            try:
+                updates = await _async_read_point_status(
+                    app, address, object_type, object_instance
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                _LOGGER.debug("Status re-read failed for %s", self._point_key, exc_info=True)
+                return
+            if updates:
+                self._update_point_cache(updates)
+
+        self._status_refresh_task = create_logged_task(
+            self.hass,
+            _refresh(),
+            logger=_LOGGER,
+            message=f"status re-read for {self._point_key}",
+        )
 
 
 class BacnetClientPointEntityBase(BacnetClientPointBase):
@@ -815,7 +901,13 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
             if key == "presentvalue":
                 point["present_value"] = value
             elif key == "statusflags":
-                point["status_flags"] = _safe_text(value)
+                names = _status_flags_names(value)
+                if names is None:
+                    continue
+                previous = set(_status_flags_names(point.get("status_flags")) or [])
+                point["status_flags"] = names
+                if (set(names) ^ previous) & {"in-alarm", "fault"}:
+                    self._schedule_status_refresh()
             elif key == "priorityarray":
                 priority_array = _normalize_priority_array(value)
                 if priority_array is None:
@@ -827,7 +919,10 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
                     continue
                 point["relinquish_default"] = relinquish_default
             elif key == "outofservice":
-                point["out_of_service"] = value
+                flag = _to_bool(value)
+                if flag is None:
+                    continue
+                point["out_of_service"] = flag
             elif key == "reliability":
                 point["reliability"] = _safe_text(value)
             elif key == "description":
@@ -895,7 +990,6 @@ class BacnetClientPointSensor(BacnetClientPointEntityBase, SensorEntity):
         if str(point.get("type_slug") or "") in {"ai", "ao", "av"} and isinstance(native_value, (int, float)):
             self._attr_state_class = SensorStateClass.MEASUREMENT
         self._attr_native_value = native_value
-        self._attr_extra_state_attributes = {}
 
 
 class BacnetClientPointBinarySensor(BacnetClientPointEntityBase, BinarySensorEntity):
@@ -920,7 +1014,6 @@ class BacnetClientPointBinarySensor(BacnetClientPointEntityBase, BinarySensorEnt
 
     def _apply_point_state(self, point: dict[str, Any]) -> None:
         self._attr_is_on = _point_is_on(point)
-        self._attr_extra_state_attributes = {}
 
 
 class BacnetClientPointNumber(BacnetClientPointEntityBase, NumberEntity):
@@ -955,6 +1048,15 @@ class BacnetClientPointNumber(BacnetClientPointEntityBase, NumberEntity):
             self._attr_native_value = round(float(value), 1) if value is not None else None
         except Exception:
             self._attr_native_value = None
+        # Limits and step from the device; HA's defaults (0..100, 0.1) apply
+        # when the object does not report them.
+        low = _to_float(point.get("min_pres_value"))
+        high = _to_float(point.get("max_pres_value"))
+        if low is not None and high is not None and low < high:
+            self._attr_native_min_value = low
+            self._attr_native_max_value = high
+        resolution = _to_float(point.get("resolution"))
+        self._attr_native_step = resolution if resolution and resolution > 0 else 0.1
 
     async def async_set_native_value(self, value: float) -> None:
         await self._async_write_present_value(round(float(value), 1))
