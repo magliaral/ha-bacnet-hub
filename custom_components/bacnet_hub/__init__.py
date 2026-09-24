@@ -1019,6 +1019,36 @@ def _remove_missing_points(hass: HomeAssistant) -> list[str]:
     loaded: dict = data.get(KEY_CLIENT_POINT_ENTITIES, {})
     removed: list[str] = []
     for entry_id, clients in list(data.get("client_point_cache", {}).items()):
+        # Registry entries of points that are not in the cache at all: left
+        # over from objects that vanished before a restart rebuilt the cache.
+        # Only clients with an imported cache are considered, so an offline
+        # device does not lose its entities.
+        known_unique_ids: set[str] = set()
+        client_prefixes: list[str] = []
+        for client_id, points in clients.items():
+            if not points:
+                continue
+            client_prefixes.append(f"{entry_id}-{client_id}-point-")
+            for point in points.values():
+                known_unique_ids.add(
+                    _point_unique_id(
+                        entry_id,
+                        client_id,
+                        str((point or {}).get("type_slug") or ""),
+                        int((point or {}).get("object_instance") or 0),
+                    )
+                )
+        for reg in list(er.async_entries_for_config_entry(registry, entry_id)):
+            unique_id = str(reg.unique_id or "")
+            if unique_id in known_unique_ids or not any(
+                unique_id.startswith(prefix) for prefix in client_prefixes
+            ):
+                continue
+            try:
+                registry.async_remove(reg.entity_id)
+                removed.append(reg.entity_id)
+            except Exception:
+                _LOGGER.debug("Could not remove %s", reg.entity_id, exc_info=True)
         for client_id, points in list(clients.items()):
             for point_key, point in list(points.items()):
                 if not (point or {}).get(POINT_MISSING_KEY):

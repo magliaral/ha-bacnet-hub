@@ -234,8 +234,9 @@ Assistant and never reaches the device; use this service instead.
 Removes the entities of points their controller no longer lists. A point is
 marked as missing when a rescan reads the device's object list without it, or
 when the device answers a subscription with *unknown object*; such points
-show as unavailable and are not subscribed again. The service takes no
-parameters and returns the number and ids of the removed entities. A point
+show as unavailable and are not subscribed again. Entities whose object is not in the device's imported point list at all,
+for example left over from before a restart, are removed as well. The service
+takes no parameters and returns the number and ids of the removed entities. A point
 that reappears on the device before the service runs is imported again
 automatically.
 
