@@ -5,6 +5,7 @@ import logging
 import time
 from typing import Any, Callable
 
+from bacpypes3.apdu import ErrorRejectAbortNack
 from homeassistant.components.binary_sensor import BinarySensorEntity
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.components.select import SelectEntity
@@ -18,7 +19,7 @@ from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.helpers.typing import StateType
 
-from .const import DOMAIN, KEY_CLIENT_POINT_ENTITIES
+from .const import DOMAIN, KEY_CLIENT_POINT_ENTITIES, POINT_MISSING_KEY
 from .helpers.tasks import create_logged_task
 from .client_runtime import (
     CLIENT_COV_IAM_REFRESH_MIN_SECONDS,
@@ -104,6 +105,7 @@ class BacnetClientPointBase:
     _attr_entity_registry_enabled_default = True
     _POINT_UNAVAILABLE_KEY = "_cov_unavailable"
     _POINT_UNAVAILABLE_REASON_KEY = "_cov_unavailable_reason"
+    _POINT_MISSING_KEY = POINT_MISSING_KEY
 
     def __init__(
         self,
@@ -552,14 +554,29 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
             message=f"priorityArray refresh for {self._point_key}",
         )
 
-    def _set_client_points_unavailable(self, unavailable: bool, *, reason: str | None = None) -> None:
+    def _set_client_points_unavailable(
+        self, unavailable: bool, *, reason: str | None = None, all_points: bool = False
+    ) -> None:
+        """Flag this point (or, for device-wide causes, every point of the
+        client) as unavailable in the cache and notify the entities.
+
+        Per point by default: one object that cannot be subscribed must not
+        take the whole device down.
+        """
         point_cache = _client_points_get(self.hass, self._entry_id, self._client_id)
         if not point_cache:
             return
+        if all_points:
+            selected = point_cache.items()
+        else:
+            raw = point_cache.get(self._point_key)
+            if raw is None:
+                return
+            selected = [(self._point_key, raw)]
 
         payload: dict[str, dict[str, Any]] = {}
         changed = False
-        for point_key, raw_point in point_cache.items():
+        for point_key, raw_point in selected:
             point = dict(raw_point or {})
             prev_unavailable = bool(point.get(self._POINT_UNAVAILABLE_KEY, False))
             if prev_unavailable != unavailable:
@@ -731,6 +748,14 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
         if not object_identifier or not address:
             self._set_client_points_unavailable(True, reason="cov_target_missing")
             return
+        if point.get(self._POINT_MISSING_KEY):
+            # The device no longer lists this object; do not keep subscribing
+            # and do not trigger rescans. bacnet_hub.remove_missing_points
+            # cleans such points up, a later import that lists the object
+            # again clears the flag.
+            self._cov_registered = False
+            self._set_client_points_unavailable(True, reason="object_missing")
+            return
         now = time.monotonic()
         target = (str(address), str(object_identifier))
         if self._cov_last_target != target:
@@ -747,12 +772,14 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
         server = self.hass.data.get(DOMAIN, {}).get("servers", {}).get(self._entry_id)
         app = getattr(server, "app", None) if server is not None else None
         if app is None:
-            self._set_client_points_unavailable(True, reason="bacnet_app_unavailable")
+            self._set_client_points_unavailable(
+                True, reason="bacnet_app_unavailable", all_points=True
+            )
             return
 
         if _hub_cov_registry(app) is None:
             self._cov_registered = False
-            self._set_client_points_unavailable(True, reason="cov_not_supported")
+            self._set_client_points_unavailable(True, reason="cov_not_supported", all_points=True)
             return
 
         process_id = _cov_process_identifier(getattr(server, "instance", None))
@@ -772,6 +799,20 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
                 )
             self._cov_context = opened_context
             self._cov_registered = False
+            if last_err is not None and "unknown-object" in str(last_err):
+                _LOGGER.info(
+                    "Device %s no longer has %s; marking the point as missing",
+                    address,
+                    object_identifier,
+                )
+                self._update_point_cache(
+                    {
+                        self._POINT_MISSING_KEY: True,
+                        self._POINT_UNAVAILABLE_KEY: True,
+                        self._POINT_UNAVAILABLE_REASON_KEY: "object_missing",
+                    }
+                )
+                return
             if last_err is not None:
                 exc_info = (type(last_err), last_err, last_err.__traceback__)
                 _LOGGER.debug(
@@ -832,7 +873,10 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
                     if err is None:
                         active.add(property_name)
                         continue
-                    unsupported.add(key)
+                    if isinstance(err, ErrorRejectAbortNack):
+                        # Only an explicit answer proves the device cannot do
+                        # it; a timeout is retried on the next registration.
+                        unsupported.add(key)
                     _LOGGER.info(
                         "Device %s %s SubscribeCOVProperty %s for %s objects (%s); "
                         "falling back to polling for it",

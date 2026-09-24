@@ -14,6 +14,7 @@ from .const import (
     CONF_ADDRESS,
     CONF_INSTANCE,
     DOMAIN,
+    POINT_MISSING_KEY,
     client_iam_signal,
     hub_display_name,
     published_observer_is_config,
@@ -29,6 +30,7 @@ from .sensor_entities import (
 from .client_runtime import (
     CLIENT_DIAGNOSTIC_FIELDS,
     CLIENT_DISCOVERY_TIMEOUT_SECONDS,
+    CLIENT_POINT_SCAN_LIMIT,
     CLIENT_REDISCOVERY_INTERVAL,
     HUB_DIAGNOSTIC_FIELDS,
     HUB_DIAGNOSTIC_SCAN_INTERVAL,
@@ -231,16 +233,43 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         per_type_counts: dict[str, int] = {}
         read_candidates = 0
         reads_to_run: list[tuple[str, int, str]] = []
+        listed_point_keys: set[str] = set()
         for object_type, object_instance in object_list:
             supported = _supported_point_type(object_type)
             if not supported:
                 continue
             type_slug, canonical_type = supported
             point_key = f"{type_slug}_{int(object_instance)}"
-            if only_new and point_key in existing_point_keys:
+            listed_point_keys.add(point_key)
+            was_missing = bool((point_cache.get(point_key) or {}).get(POINT_MISSING_KEY))
+            if only_new and point_key in existing_point_keys and not was_missing:
                 continue
             read_candidates += 1
             reads_to_run.append((canonical_type, int(object_instance), point_key))
+
+        # Objects the device no longer lists: flag them so their entities stop
+        # subscribing and bacnet_hub.remove_missing_points can drop them. A
+        # truncated object list (scan limit) proves nothing, so skip then.
+        if len(object_list) < CLIENT_POINT_SCAN_LIMIT:
+            missing_payload: dict[str, dict[str, Any]] = {}
+            for point_key, raw_point in point_cache.items():
+                if point_key in listed_point_keys or (raw_point or {}).get(POINT_MISSING_KEY):
+                    continue
+                point = dict(raw_point or {})
+                point[POINT_MISSING_KEY] = True
+                point["_cov_unavailable"] = True
+                point["_cov_unavailable_reason"] = "object_missing"
+                missing_payload[str(point_key)] = point
+            if missing_payload:
+                _LOGGER.info(
+                    "Client %s (%s) no longer lists %d imported point(s): %s",
+                    instance,
+                    address,
+                    len(missing_payload),
+                    sorted(missing_payload),
+                )
+                _client_points_set(hass, entry.entry_id, client_id, missing_payload)
+                async_dispatcher_send(hass, _client_points_signal(entry.entry_id, client_id))
 
         sem = asyncio.Semaphore(CLIENT_POINT_IMPORT_MAX_PARALLEL)
 

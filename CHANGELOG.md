@@ -20,6 +20,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Service `bacnet_hub.remove_missing_points` removes the entities of points
+  their controller no longer lists; such points are flagged during rescans or
+  when the device answers *unknown object*, shown as unavailable and no
+  longer subscribed.
 - Service `bacnet_hub.set_present_value` writes the present value of one or
   more points, including inputs that are out of service (sensor
   simulation); commandable points are written at the configured priority.
@@ -81,6 +85,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- One point that could not be subscribed marked every point of its device
+  unavailable, and one that succeeded marked all of them available again;
+  availability is now tracked per point.
+- A SubscribeCOVProperty request that timed out was remembered as
+  unsupported for the object type until the next start; only an explicit
+  error answer is remembered now, a timeout is retried on the next
+  registration.
 - A COV renewal the device did not answer (for example while it rebooted)
   left the point permanently without a subscription: the re-subscribe saw a
   registration it believed healthy and returned, and no further renewal was

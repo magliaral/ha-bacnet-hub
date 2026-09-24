@@ -57,3 +57,7 @@ set_present_value:
       example: 21.5
       selector:
         text:
+
+remove_missing_points:
+  name: Fehlende Punkte entfernen
+  description: Entfernt die Entities von Punkten, die ihr Controller nicht mehr in seiner Objektliste führt oder als unbekanntes Objekt gemeldet hat. Liefert die Anzahl und die entfernten Entity-IDs zurück.

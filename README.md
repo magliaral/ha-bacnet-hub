@@ -229,6 +229,16 @@ data: {value: 21.5}
 Note that Developer tools → *Set state* only changes the state inside Home
 Assistant and never reaches the device; use this service instead.
 
+### `bacnet_hub.remove_missing_points`
+
+Removes the entities of points their controller no longer lists. A point is
+marked as missing when a rescan reads the device's object list without it, or
+when the device answers a subscription with *unknown object*; such points
+show as unavailable and are not subscribed again. The service takes no
+parameters and returns the number and ids of the removed entities. A point
+that reappears on the device before the service runs is imported again
+automatically.
+
 ### `bacnet_hub.reload`
 
 Reloads the integration. `entry_id` is optional when only one BACnet Hub is

@@ -87,6 +87,10 @@
           "description": "Number for analog objects, on/off or true/false for binary objects, state number or state text for multi-state objects, text for string objects."
         }
       }
+    },
+    "remove_missing_points": {
+      "name": "Remove missing points",
+      "description": "Removes the entities of points their controller no longer lists in its object list or reported as unknown object. Returns the number and ids of the removed entities."
     }
   }
 }
