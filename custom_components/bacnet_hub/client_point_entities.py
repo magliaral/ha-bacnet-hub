@@ -92,7 +92,9 @@ class BacnetClientPointBase:
 
     _attr_should_poll = False
     _attr_has_entity_name = False
-    _attr_entity_registry_enabled_default = False
+    # Imported points are usable right away; enabling each one by hand per
+    # device was the main setup chore. Points a user disabled stay disabled.
+    _attr_entity_registry_enabled_default = True
     _POINT_UNAVAILABLE_KEY = "_cov_unavailable"
     _POINT_UNAVAILABLE_REASON_KEY = "_cov_unavailable_reason"
 

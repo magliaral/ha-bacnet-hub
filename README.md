@@ -57,9 +57,10 @@ that carries the label directly, through its device, or through the area the
 entity or device is assigned to, is published. A label `BACnet` is created for
 you if it does not exist yet.
 
-After setup the hub starts discovering BACnet devices on the network. Their
-points are imported **disabled by default**: open the device under Settings →
-Devices & services → BACnet Hub and enable the entities you want to use.
+After setup the hub starts discovering BACnet devices on the network. Every
+device appears under Settings → Devices & services → BACnet Hub with its
+points as entities, ready to use. Points you do not need can be disabled on
+the device page; they stay disabled across restarts.
 
 ## Options
 
@@ -238,8 +239,9 @@ address).
 
 - **No entities are published:** check that the label is selected in the
   options and attached to the entity, its device or its area.
-- **Imported points are missing:** they are disabled by default; enable them on
-  the device page.
+- **Imported points are missing:** check the device page for disabled
+  entities, and make sure the object type is in the list of supported point
+  types above.
 - **`address already in use` at startup:** another BACnet application on the
   same host uses the port. Change the port in the address field or stop the
   other application.
