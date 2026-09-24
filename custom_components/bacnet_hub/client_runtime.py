@@ -18,7 +18,7 @@ from bacpypes3.primitivedata import Boolean, Null, ObjectIdentifier
 from bacpypes3.service.cov import SubscriptionContextManager
 from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
 from homeassistant.helpers.entity import DeviceInfo
@@ -840,6 +840,42 @@ def _point_extra_attributes(point: dict[str, Any]) -> dict[str, Any]:
         "priority_array": list(priority_array),
         "relinquish_default": point.get("relinquish_default"),
     }
+
+
+def _coerce_present_value(point: dict[str, Any], value: Any) -> Any:
+    """Convert a service value into what the point's presentValue expects.
+
+    Analog objects take a float, binary objects 1/0 (from bool, 1/0, on/off,
+    active/inactive), multi-state objects the 1-based state number or one of
+    their state texts, string objects the text. Raises ServiceValidationError
+    for values that cannot be mapped.
+    """
+    type_slug = str(point.get("type_slug") or "").strip().lower()
+    if type_slug in {"ai", "ao", "av"}:
+        number = _to_float(value)
+        if number is None:
+            raise ServiceValidationError(f"{value!r} is not a number")
+        return number
+    if type_slug in {"bi", "bo", "bv"}:
+        flag = _to_bool(value)
+        if flag is None:
+            raise ServiceValidationError(f"{value!r} is not a binary value (on/off, true/false, 1/0)")
+        return 1 if flag else 0
+    if type_slug == "mv":
+        texts = point.get("state_text")
+        if isinstance(texts, (list, tuple)):
+            normalized = [str(item).strip().lower() for item in texts]
+            if str(value).strip().lower() in normalized:
+                return normalized.index(str(value).strip().lower()) + 1
+        index = _to_int(value) if not isinstance(value, bool) else None
+        if index is None or index < 1:
+            raise ServiceValidationError(
+                f"{value!r} is neither a state number (from 1) nor a known state text"
+            )
+        return index
+    if type_slug == "csv":
+        return str(value)
+    raise ServiceValidationError(f"presentValue of {type_slug or 'unknown'} objects cannot be written")
 
 
 def _point_status_attributes(point: dict[str, Any]) -> dict[str, Any]:

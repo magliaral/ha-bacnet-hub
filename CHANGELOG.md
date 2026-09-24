@@ -20,6 +20,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Service `bacnet_hub.set_present_value` writes the present value of one or
+  more points, including inputs that are out of service (sensor
+  simulation); commandable points are written at the configured priority.
 - Every imported client point exposes its BACnet status as attributes:
   `out_of_service`, `in_alarm`, `fault`, `overridden`, `reliability` and
   `event_state`, kept current through COV; `reliability` and `event_state`

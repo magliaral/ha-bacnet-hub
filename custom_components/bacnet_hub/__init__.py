@@ -80,6 +80,13 @@ ATTR_OUT_OF_SERVICE = "out_of_service"
 SERVICE_SET_OUT_OF_SERVICE_SCHEMA = cv.make_entity_service_schema(
     {vol.Required(ATTR_OUT_OF_SERVICE): cv.boolean}
 )
+SERVICE_SET_PRESENT_VALUE = "set_present_value"
+ATTR_VALUE = "value"
+# The value is interpreted per object type by the entity (number, on/off,
+# state number or text); accept the raw scalar here.
+SERVICE_SET_PRESENT_VALUE_SCHEMA = cv.make_entity_service_schema(
+    {vol.Required(ATTR_VALUE): vol.Any(bool, int, float, str)}
+)
 
 EVENT_ENTITY_REGISTRY_UPDATED = "entity_registry_updated"
 EVENT_DEVICE_REGISTRY_UPDATED = "device_registry_updated"
@@ -998,6 +1005,15 @@ async def _async_set_out_of_service_targets(
     )
 
 
+async def _async_set_present_value_targets(
+    hass: HomeAssistant, entity_ids: set[str], value: Any
+) -> None:
+    """Write presentValue on every target entity."""
+    await _async_call_point_targets(
+        hass, entity_ids, lambda entity: entity.async_set_present_value(value)
+    )
+
+
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     data = _ensure_domain(hass)
 
@@ -1034,6 +1050,17 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
         SERVICE_SET_OUT_OF_SERVICE,
         _svc_set_out_of_service,
         schema=SERVICE_SET_OUT_OF_SERVICE_SCHEMA,
+    )
+
+    async def _svc_set_present_value(call: ServiceCall) -> None:
+        entity_ids = await _async_extract_target_entity_ids(hass, call)
+        await _async_set_present_value_targets(hass, entity_ids, call.data[ATTR_VALUE])
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SET_PRESENT_VALUE,
+        _svc_set_present_value,
+        schema=SERVICE_SET_PRESENT_VALUE_SCHEMA,
     )
 
     # Serve the bundled tile feature once per HA start (guarded for safety);

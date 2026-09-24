@@ -77,6 +77,16 @@
           "description": "true takes the point out of service, false returns it to normal operation."
         }
       }
+    },
+    "set_present_value": {
+      "name": "Write present value",
+      "description": "Writes the present value of one or more BACnet points. Inputs accept the value only while out of service; commandable points are written at the configured write priority.",
+      "fields": {
+        "value": {
+          "name": "Value",
+          "description": "Number for analog objects, on/off or true/false for binary objects, state number or state text for multi-state objects, text for string objects."
+        }
+      }
     }
   }
 }

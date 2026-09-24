@@ -206,6 +206,29 @@ data:
   out_of_service: true
 ```
 
+### `bacnet_hub.set_present_value`
+
+Writes the present value of one or more points, including inputs: a BACnet
+input accepts a written value only while it is out of service, which is how
+a sensor is simulated for testing. Commandable points are written at the
+configured write priority, all others without one. `value` is a number for
+analog objects, `on`/`off` or `true`/`false` for binary objects, the state
+number or state text for multi-state objects, and text for string objects.
+
+```yaml
+# Simulate 21.5 V on an analog input
+service: bacnet_hub.set_out_of_service
+target: {entity_id: sensor.bacnet_doi_1031010_ai_0}
+data: {out_of_service: true}
+---
+service: bacnet_hub.set_present_value
+target: {entity_id: sensor.bacnet_doi_1031010_ai_0}
+data: {value: 21.5}
+```
+
+Note that Developer tools → *Set state* only changes the state inside Home
+Assistant and never reaches the device; use this service instead.
+
 ### `bacnet_hub.reload`
 
 Reloads the integration. `entry_id` is optional when only one BACnet Hub is

@@ -33,6 +33,7 @@ from .client_runtime import (
     _client_points_set,
     _client_points_signal,
     _client_rescan_signal,
+    _coerce_present_value,
     _cov_process_identifier,
     _cov_unsupported_key,
     _entry_points_signal,
@@ -339,6 +340,28 @@ class BacnetClientPointBase:
         _LOGGER.debug(
             "Set outOfService=%s for %s", bool(enabled), self._point_key
         )
+
+    async def async_set_present_value(self, value: Any) -> None:
+        """Write presentValue from the bacnet_hub.set_present_value service.
+
+        Works on every point type, including inputs: their presentValue is
+        writable while the object is out of service, which is the simulation
+        use case. Commandable points are written at the configured priority,
+        all others without one. The device's answer to a write it does not
+        allow is reported verbatim.
+        """
+        point = self._get_point()
+        if not point:
+            raise HomeAssistantError(f"{self.entity_id}: point payload unavailable")
+        try:
+            converted = _coerce_present_value(point, value)
+        except ServiceValidationError as err:
+            raise ServiceValidationError(f"{self.entity_id}: {err}") from err
+        try:
+            await self._async_write_point(converted, optimistic=True)
+        except HomeAssistantError as err:
+            raise HomeAssistantError(f"{self.entity_id}: {err}") from err
+        _LOGGER.debug("Wrote presentValue=%r for %s", converted, self._point_key)
 
     def _schedule_status_refresh(self) -> None:
         """Re-read reliability/eventState shortly after a status flag changed.

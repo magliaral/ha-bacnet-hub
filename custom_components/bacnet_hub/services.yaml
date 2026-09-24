@@ -42,3 +42,18 @@ set_out_of_service:
       example: true
       selector:
         boolean:
+
+set_present_value:
+  name: Wert schreiben
+  description: Schreibt den Present Value eines oder mehrerer BACnet-Punkte. Eingänge nehmen den Wert nur an, solange sie außer Betrieb sind; kommandierbare Punkte werden mit der konfigurierten Schreibpriorität geschrieben.
+  target:
+    entity:
+      integration: bacnet_hub
+  fields:
+    value:
+      name: Wert
+      description: Zahl für analoge Objekte, on/off bzw. true/false für binäre Objekte, Zustandsnummer oder Zustandstext für Multi-State-Objekte, Text für String-Objekte.
+      required: true
+      example: 21.5
+      selector:
+        text:

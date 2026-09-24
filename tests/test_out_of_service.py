@@ -283,3 +283,100 @@ def test_number_takes_limits_and_step_from_device() -> None:
     plain = BacnetClientPointNumber(hass, "entry1", "client_5", 5, "av_4")
     plain._apply_point_state(plain._get_point())
     assert (plain.native_min_value, plain.native_max_value, plain.native_step) == (0.0, 100.0, 0.1)
+
+
+# --- set_present_value ---------------------------------------------------------------
+
+
+from custom_components.bacnet_hub import (  # noqa: E402
+    ATTR_VALUE,
+    SERVICE_SET_PRESENT_VALUE_SCHEMA,
+)
+from custom_components.bacnet_hub.client_runtime import _coerce_present_value  # noqa: E402
+from homeassistant.exceptions import ServiceValidationError  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    ("point", "value", "expected"),
+    [
+        ({"type_slug": "ai"}, "21.5", 21.5),
+        ({"type_slug": "av"}, 3, 3.0),
+        ({"type_slug": "bi"}, "on", 1),
+        ({"type_slug": "bo"}, False, 0),
+        ({"type_slug": "bv"}, "inactive", 0),
+        ({"type_slug": "mv", "state_text": ["Auto", "Hand", "Aus"]}, "hand", 2),
+        ({"type_slug": "mv", "state_text": ["Auto", "Hand"]}, "2", 2),
+        ({"type_slug": "csv"}, 42, "42"),
+    ],
+)
+def test_coerce_present_value(point: dict[str, Any], value: Any, expected: Any) -> None:
+    assert _coerce_present_value(point, value) == expected
+
+
+@pytest.mark.parametrize(
+    ("point", "value"),
+    [
+        ({"type_slug": "ai"}, "warm"),
+        ({"type_slug": "bi"}, "maybe"),
+        ({"type_slug": "mv", "state_text": ["Auto"]}, "0"),
+        ({"type_slug": "mv"}, "Hand"),
+        ({"type_slug": "device"}, 1),
+    ],
+)
+def test_coerce_present_value_rejects(point: dict[str, Any], value: Any) -> None:
+    with pytest.raises(ServiceValidationError):
+        _coerce_present_value(point, value)
+
+
+def test_set_present_value_schema_accepts_scalars() -> None:
+    for raw in (21.5, 2, True, "on", "Hand"):
+        assert SERVICE_SET_PRESENT_VALUE_SCHEMA({"entity_id": "sensor.a", ATTR_VALUE: raw})[ATTR_VALUE] == raw
+    with pytest.raises(vol.Invalid):
+        SERVICE_SET_PRESENT_VALUE_SCHEMA({"entity_id": "sensor.a"})
+
+
+async def test_entity_set_present_value_on_input_writes_without_priority(monkeypatch) -> None:
+    import custom_components.bacnet_hub.client_point_entities as entities_module
+
+    app = FakeApp()
+    hass = _seed_hass(app, _AI_POINT)
+    monkeypatch.setattr(entities_module, "async_dispatcher_send", lambda *a, **k: None)
+    monkeypatch.setattr(entities_module, "create_logged_task", lambda hass, coro, **kw: coro.close())
+    entity = BacnetClientPointEntityBase(hass, "entry1", "client_5", 5, "ai_1", entity_domain="sensor")
+
+    await entity.async_set_present_value("2")
+
+    args, kwargs = app.calls[0]
+    assert args[:3] == ("192.168.1.10", "analog-input,1", "presentValue")
+    assert args[3] == 2.0
+    assert kwargs == {}
+    # optimistic cache update until the read-back confirms
+    assert _client_points_get(hass, "entry1", "client_5")["ai_1"]["present_value"] == 2.0
+
+
+async def test_entity_set_present_value_on_commandable_uses_write_priority(monkeypatch) -> None:
+    import custom_components.bacnet_hub.client_point_entities as entities_module
+
+    app = FakeApp()
+    bo_point = {
+        "point_key": "bo_2", "type_slug": "bo", "object_type": "binary-output", "object_instance": 2,
+        "client_address": "192.168.1.10", "has_priority_array": True, "present_value": 0,
+    }
+    hass = _seed_hass(app, bo_point)
+    monkeypatch.setattr(entities_module, "async_dispatcher_send", lambda *a, **k: None)
+    monkeypatch.setattr(entities_module, "create_logged_task", lambda hass, coro, **kw: coro.close())
+    monkeypatch.setattr(entities_module, "_entry_write_priority", lambda hass, entry_id: 8)
+    entity = BacnetClientPointEntityBase(hass, "entry1", "client_5", 5, "bo_2", entity_domain="switch")
+
+    await entity.async_set_present_value("on")
+
+    args, kwargs = app.calls[0]
+    assert args[:4] == ("192.168.1.10", "binary-output,2", "presentValue", 1)
+    assert kwargs == {"priority": 8}
+
+
+async def test_entity_set_present_value_invalid_value_is_validation_error() -> None:
+    hass = _seed_hass(FakeApp(), _AI_POINT)
+    entity = BacnetClientPointEntityBase(hass, "entry1", "client_5", 5, "ai_1", entity_domain="sensor")
+    with pytest.raises(ServiceValidationError, match="sensor.bacnet_doi_5_ai_1"):
+        await entity.async_set_present_value("warm")
