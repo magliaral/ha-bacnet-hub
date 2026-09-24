@@ -67,6 +67,16 @@
           "description": "BACnet priority (1-16) whose slot is released. Defaults to 8 (Manual Operator)."
         }
       }
+    },
+    "set_out_of_service": {
+      "name": "Set out of service",
+      "description": "Sets the outOfService property of one or more BACnet points. While out of service the present value is decoupled from the physical input/output and can be written directly.",
+      "fields": {
+        "out_of_service": {
+          "name": "Out of service",
+          "description": "true takes the point out of service, false returns it to normal operation."
+        }
+      }
     }
   }
 }

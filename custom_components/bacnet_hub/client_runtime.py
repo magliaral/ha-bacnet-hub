@@ -12,12 +12,13 @@ from bacpypes3.apdu import (
     SubscribeCOVPropertyRequest,
     SubscribeCOVRequest,
 )
-from bacpypes3.basetypes import PropertyIdentifier, PropertyReference
+from bacpypes3.basetypes import ErrorType, PropertyIdentifier, PropertyReference
 from bacpypes3.pdu import Address
-from bacpypes3.primitivedata import Null, ObjectIdentifier
+from bacpypes3.primitivedata import Boolean, Null, ObjectIdentifier
 from bacpypes3.service.cov import SubscriptionContextManager
 from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
 from homeassistant.helpers.entity import DeviceInfo
@@ -127,6 +128,61 @@ def _to_int(value: Any) -> int | None:
         return int(value)
     except Exception:
         return None
+
+
+def _to_float(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+_TRUE_TEXT = {"true", "1", "active", "on", "yes"}
+_FALSE_TEXT = {"false", "0", "inactive", "off", "no"}
+
+
+def _to_bool(value: Any) -> bool | None:
+    """Coerce BACnet booleans (bacpypes3 Boolean is an int subclass) and text."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(int(value))
+    text = str(value).strip().lower()
+    if text in _TRUE_TEXT:
+        return True
+    if text in _FALSE_TEXT:
+        return False
+    return None
+
+
+def _status_flags_names(raw: Any) -> list[str] | None:
+    """Active BACnet status flag names, e.g. ["fault", "out-of-service"].
+
+    ``str(StatusFlags)`` is a semicolon list of the active names and is empty
+    when no flag is set; an empty list therefore means "all clear", None
+    means "not read". A StatusFlags object must not be iterated directly:
+    that yields the raw bits.
+    """
+    if raw is None:
+        return None
+    if type(raw) in (list, tuple):
+        return [str(item).strip() for item in raw if str(item).strip()]
+    return [name.strip() for name in str(raw).split(";") if name.strip()]
+
+
+def _parse_status_flags(raw: Any) -> dict[str, bool] | None:
+    names = _status_flags_names(raw)
+    if names is None:
+        return None
+    return {
+        "in_alarm": "in-alarm" in names,
+        "fault": "fault" in names,
+        "overridden": "overridden" in names,
+    }
 
 
 def _object_identifier_text(value: Any) -> str | None:
@@ -786,6 +842,37 @@ def _point_extra_attributes(point: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _point_status_attributes(point: dict[str, Any]) -> dict[str, Any]:
+    """BACnet status attributes for every point; keys the device did not
+    report are omitted."""
+    attrs: dict[str, Any] = {}
+    out_of_service = _to_bool(point.get("out_of_service"))
+    if out_of_service is not None:
+        attrs["out_of_service"] = out_of_service
+    flags = _parse_status_flags(point.get("status_flags"))
+    if flags is not None:
+        attrs.update(flags)
+    reliability = _safe_text(point.get("reliability"))
+    if reliability:
+        attrs["reliability"] = reliability
+    event_state = _safe_text(point.get("event_state"))
+    if event_state:
+        attrs["event_state"] = event_state
+    return attrs
+
+
+def _point_state_attributes(point: dict[str, Any]) -> dict[str, Any]:
+    """All state attributes of a client point entity.
+
+    Priority attributes stay limited to writable points with a priorityArray;
+    the bundled tile feature keys on the presence of ``priority_array``.
+    """
+    attrs = _point_status_attributes(point)
+    if _point_is_writable(point):
+        attrs.update(_point_extra_attributes(point))
+    return attrs
+
+
 def _point_is_writable(point: dict[str, Any]) -> bool:
     type_slug = str(point.get("type_slug") or "").strip().lower()
     if type_slug in {"av", "bv", "mv", "csv"}:
@@ -891,6 +978,43 @@ async def _read_remote_property(
     )
 
 
+def _property_identifier_name(value: Any) -> str:
+    """Name of a bacpypes3 PropertyIdentifier (its str() is the number)."""
+    name = getattr(value, "attr", None)
+    if name:
+        return str(name)
+    try:
+        name = getattr(PropertyIdentifier(value), "attr", None)
+    except Exception:
+        name = None
+    return str(name or value)
+
+
+def _map_rpm_result(raw: Any, properties: list[str]) -> dict[str, Any] | None:
+    """Map a ReadPropertyMultiple result onto the requested property names.
+
+    bacpypes3 returns ``[(objid, propid, index, value), ...]`` with an
+    ``ErrorType`` as value for properties the device does not have; a dict
+    (test fakes, other wrappers) is accepted as is. Returns None when the
+    result has neither shape.
+    """
+    if isinstance(raw, dict):
+        return {prop: raw.get(prop) for prop in properties if prop in raw}
+    if not isinstance(raw, (list, tuple)):
+        return None
+    by_slug = {_property_slug(prop): prop for prop in properties}
+    mapped: dict[str, Any] = {}
+    for item in raw:
+        if not isinstance(item, (list, tuple)) or len(item) < 4:
+            continue
+        prop = by_slug.get(_property_slug(_property_identifier_name(item[1])))
+        if prop is None:
+            continue
+        value = item[3]
+        mapped[prop] = None if isinstance(value, ErrorType) else value
+    return mapped
+
+
 async def _read_remote_properties(
     app: Any,
     address: str,
@@ -916,16 +1040,16 @@ async def _read_remote_properties(
         ):
             try:
                 raw = await asyncio.wait_for(rpm(*args), timeout=timeout)
-                if isinstance(raw, dict):
-                    for prop in unique_props:
-                        if prop in raw:
-                            result[prop] = raw.get(prop)
-                    if all(prop in result for prop in unique_props):
-                        return result
             except asyncio.CancelledError:
                 raise
             except BaseException:
                 continue
+            mapped = _map_rpm_result(raw, unique_props)
+            if mapped is None:
+                continue
+            result.update(mapped)
+            if all(prop in result for prop in unique_props):
+                return result
 
     for prop in unique_props:
         if prop in result:
@@ -965,16 +1089,31 @@ async def _read_remote_property_any_objid(
     return None
 
 
-async def _write_client_point_present_value(
+_WRITE_FAILURE_TEXTS = ("-no object class-", "-no property type-")
+
+
+def _raise_if_write_rejected(objid: str, prop: str, result: Any) -> None:
+    """bacpypes3's write_property returns (rather than raises) the device's
+    Error/Reject/Abort or a marker string when it cannot encode the value."""
+    if isinstance(result, ErrorRejectAbortNack):
+        raise HomeAssistantError(f"{objid} {prop}: device rejected write ({result})")
+    if isinstance(result, str) and result in _WRITE_FAILURE_TEXTS:
+        raise HomeAssistantError(f"{objid} {prop}: {result}")
+
+
+async def _write_client_point_property(
     app: Any,
     address: str,
     object_type: str,
     object_instance: int,
+    prop: str,
     value: Any,
     *,
     priority: int | None = None,
     timeout: float = CLIENT_READ_TIMEOUT_SECONDS,
 ) -> Any:
+    """Write one property of a client point, trying the known write_property
+    signatures. A device rejection is raised as HomeAssistantError."""
     objid = f"{str(object_type)}{','}{int(object_instance)}"
     write_fn = getattr(app, "write_property", None)
     if not callable(write_fn):
@@ -982,15 +1121,15 @@ async def _write_client_point_present_value(
 
     attempts: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
     kwargs_with_priority = {"priority": int(priority)} if priority is not None else {}
-    attempts.append(((address, objid, "presentValue", value), kwargs_with_priority))
+    attempts.append(((address, objid, prop, value), kwargs_with_priority))
     if priority is not None:
-        attempts.append(((address, objid, "presentValue", value, int(priority)), {}))
-        attempts.append(((address, objid, "presentValue", value, None, int(priority)), {}))
+        attempts.append(((address, objid, prop, value, int(priority)), {}))
+        attempts.append(((address, objid, prop, value, None, int(priority)), {}))
 
     last_err: Exception | None = None
     for args, kwargs in attempts:
         try:
-            return await asyncio.wait_for(write_fn(*args, **kwargs), timeout=timeout)
+            result = await asyncio.wait_for(write_fn(*args, **kwargs), timeout=timeout)
         except asyncio.CancelledError:
             raise
         except Exception as err:
@@ -1004,9 +1143,34 @@ async def _write_client_point_present_value(
             )
             last_err = err
             continue
+        # Outside the try: a rejection must not trigger the next signature.
+        _raise_if_write_rejected(objid, prop, result)
+        return result
     if last_err is not None:
         raise last_err
-    raise RuntimeError("Unable to write presentValue")
+    raise RuntimeError(f"Unable to write {prop}")
+
+
+async def _write_client_point_present_value(
+    app: Any,
+    address: str,
+    object_type: str,
+    object_instance: int,
+    value: Any,
+    *,
+    priority: int | None = None,
+    timeout: float = CLIENT_READ_TIMEOUT_SECONDS,
+) -> Any:
+    return await _write_client_point_property(
+        app,
+        address,
+        object_type,
+        object_instance,
+        "presentValue",
+        value,
+        priority=priority,
+        timeout=timeout,
+    )
 
 
 async def _async_release_point(
@@ -1044,6 +1208,67 @@ async def _async_release_point(
     if relinquish_default is not None:
         updates["relinquish_default"] = relinquish_default
     return updates
+
+
+def _status_updates_from_values(values: dict[str, Any]) -> dict[str, Any]:
+    """Cache updates for the status properties; failed reads (None) are skipped."""
+    updates: dict[str, Any] = {}
+    out_of_service = _to_bool(values.get("outOfService"))
+    if out_of_service is not None:
+        updates["out_of_service"] = out_of_service
+    status_flags = _status_flags_names(values.get("statusFlags"))
+    if status_flags is not None:
+        updates["status_flags"] = status_flags
+    reliability = _safe_text(values.get("reliability"))
+    if reliability:
+        updates["reliability"] = reliability
+    event_state = _safe_text(values.get("eventState"))
+    if event_state:
+        updates["event_state"] = event_state
+    if values.get("presentValue") is not None:
+        updates["present_value"] = values["presentValue"]
+    return updates
+
+
+async def _async_read_point_status(
+    app: Any, address: str, object_type: str, object_instance: int
+) -> dict[str, Any]:
+    """Re-read reliability, eventState and statusFlags of a point."""
+    objid = f"{str(object_type)},{int(object_instance)}"
+    values = await _read_remote_properties(
+        app, address, objid, ["reliability", "eventState", "statusFlags"]
+    )
+    return _status_updates_from_values(values)
+
+
+async def _async_set_point_out_of_service(
+    app: Any,
+    address: str,
+    object_type: str,
+    object_instance: int,
+    enabled: bool,
+) -> dict[str, Any]:
+    """Write outOfService (a plain Boolean, no priority) and re-read the point.
+
+    Returns the cache updates so the caller can refresh the HA state without
+    waiting for the COV property notification.
+    """
+    await _write_client_point_property(
+        app,
+        address,
+        object_type,
+        int(object_instance),
+        "outOfService",
+        Boolean(bool(enabled)),
+    )
+    objid = f"{str(object_type)},{int(object_instance)}"
+    values = await _read_remote_properties(
+        app,
+        address,
+        objid,
+        ["outOfService", "statusFlags", "presentValue", "reliability", "eventState"],
+    )
+    return _status_updates_from_values(values)
 
 
 def _hub_cov_registry(app: Any) -> dict[tuple[Any, int, Any], Any] | None:
@@ -1647,7 +1872,10 @@ async def _read_client_point_payload(
         "inactiveText",
         "priorityArray",
         "relinquishDefault",
+        "eventState",
     ]
+    if type_slug in {"ai", "ao", "av"}:
+        props.extend(["minPresValue", "maxPresValue", "resolution"])
     values = await _read_remote_properties(app, address, objid, props)
     state_text_value = values.get("stateText")
     state_text: list[str] | None = None
@@ -1685,9 +1913,13 @@ async def _read_client_point_payload(
         "description": _safe_text(values.get("description")),
         "present_value": values.get("presentValue"),
         "unit": _normalize_bacnet_unit(values.get("units")),
-        "status_flags": _safe_text(values.get("statusFlags")),
-        "out_of_service": values.get("outOfService"),
+        "status_flags": _status_flags_names(values.get("statusFlags")),
+        "out_of_service": _to_bool(values.get("outOfService")),
         "reliability": _safe_text(values.get("reliability")),
+        "event_state": _safe_text(values.get("eventState")),
+        "min_pres_value": _to_float(values.get("minPresValue")),
+        "max_pres_value": _to_float(values.get("maxPresValue")),
+        "resolution": _to_float(values.get("resolution")),
         "state_text": state_text,
         "number_of_states": _to_int(values.get("numberOfStates")),
         "active_text": _safe_text(values.get("activeText")),

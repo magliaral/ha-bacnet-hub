@@ -145,6 +145,21 @@ do not, these two properties are re-read one second after every value change
 and polled every 30 seconds, so a change to the priority array that does not
 change the value itself can take up to 30 seconds to show.
 
+### Point status attributes
+
+Every imported point carries the BACnet status of its object as state
+attributes, kept current through COV:
+
+- `out_of_service`: the object's `outOfService` flag (see the
+  `bacnet_hub.set_out_of_service` service below).
+- `in_alarm`, `fault`, `overridden`: the object's status flags.
+- `reliability` and `event_state`: for example `no-fault-detected` and
+  `normal`; re-read whenever a status flag changes.
+
+Attributes the device does not report are omitted. Analog `number` entities
+take their minimum, maximum and step from the object's `minPresValue`,
+`maxPresValue` and `resolution` when the device provides them.
+
 ### Writing and releasing commandable points
 
 Writes from Home Assistant go to the configured **Write priority**. A value
@@ -174,6 +189,21 @@ target:
   entity_id: switch.bacnet_doi_1031010_bo_1
 data:
   priority: 8
+```
+
+### `bacnet_hub.set_out_of_service`
+
+Sets the `outOfService` property of one or more points. While a point is out
+of service its present value is decoupled from the physical input or output,
+so an input can be given a test value and an output no longer drives the
+hardware. Target the points by entity; `out_of_service` is required.
+
+```yaml
+service: bacnet_hub.set_out_of_service
+target:
+  entity_id: sensor.bacnet_doi_1031010_ai_0
+data:
+  out_of_service: true
 ```
 
 ### `bacnet_hub.reload`

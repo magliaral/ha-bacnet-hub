@@ -67,6 +67,16 @@
           "description": "BACnet-Priorität (1-16), deren Slot freigegeben wird. Standard ist 8 (Manual Operator)."
         }
       }
+    },
+    "set_out_of_service": {
+      "name": "Außer Betrieb setzen",
+      "description": "Setzt die Eigenschaft outOfService eines oder mehrerer BACnet-Punkte. Außer Betrieb ist der Present Value vom physischen Ein-/Ausgang entkoppelt und kann direkt geschrieben werden.",
+      "fields": {
+        "out_of_service": {
+          "name": "Außer Betrieb",
+          "description": "true setzt den Punkt außer Betrieb, false nimmt ihn wieder in Betrieb."
+        }
+      }
     }
   }
 }

@@ -20,6 +20,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Every imported client point exposes its BACnet status as attributes:
+  `out_of_service`, `in_alarm`, `fault`, `overridden`, `reliability` and
+  `event_state`, kept current through COV; `reliability` and `event_state`
+  are re-read whenever a status flag changes.
+- Service `bacnet_hub.set_out_of_service` writes the `outOfService` property
+  of one or more points (targeted by entity) and re-reads the point
+  immediately.
+- Analog `number` entities take minimum, maximum and step from the object's
+  `minPresValue`, `maxPresValue` and `resolution` instead of Home Assistant's
+  defaults of 0 to 100 and 0.1.
 - Client points additionally subscribe per property with SubscribeCOVProperty:
   `outOfService` on all points, `priorityArray` and `relinquishDefault` on
   commandable points. External changes to the priority array now arrive as
@@ -68,6 +78,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A write the device answered with an Error, Reject or Abort was treated as
+  success; it is now reported as an error with the device's reason.
+- Status flags with no active flag were cached as unknown.
+- The result of ReadPropertyMultiple was never used, so every property was
+  read with its own request; the response is now mapped, which makes the
+  point import and read-backs considerably cheaper on devices that support
+  it.
 - A device that never answers a SubscribeCOVProperty request (seen on a
   bacnet-stack based controller for `priorityArray`) blocked the point's
   registration forever: bacpypes3 leaves the timeout to the caller, so the
