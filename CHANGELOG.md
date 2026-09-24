@@ -81,6 +81,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A COV renewal the device did not answer (for example while it rebooted)
+  left the point permanently without a subscription: the re-subscribe saw a
+  registration it believed healthy and returned, and no further renewal was
+  scheduled. The failed renewal now clears the registration, a failed
+  re-subscribe retries on its own with the existing backoff, and a device
+  announcing itself with I-Am triggers an in-place renewal (at most every
+  30 seconds per point) because it may have lost its subscriptions.
 - A device's Error answer to SubscribeCOVProperty (and a few other confirmed
   services) was silently dropped, because bacpypes3 registers no Error type
   for those services and the request appeared unanswered until the 10-second

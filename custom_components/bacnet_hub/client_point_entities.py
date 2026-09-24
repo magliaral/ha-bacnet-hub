@@ -21,6 +21,7 @@ from homeassistant.helpers.typing import StateType
 from .const import DOMAIN, KEY_CLIENT_POINT_ENTITIES
 from .helpers.tasks import create_logged_task
 from .client_runtime import (
+    CLIENT_COV_IAM_REFRESH_MIN_SECONDS,
     CLIENT_COV_LEASE_SECONDS,
     CLIENT_COV_RENEW_FACTOR,
     CLIENT_PRIORITY_POLL_INTERVAL,
@@ -437,6 +438,8 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
         self._cov_last_target: tuple[str, str] | None = None
         self._cov_retry_delay_seconds: float = 10.0
         self._cov_retry_not_before_ts: float = 0.0
+        # monotonic time of the last accepted subscribe or renewal
+        self._cov_last_renewed_ts: float = 0.0
         self._cov_rescan_not_before_ts: float = 0.0
         self._priority_poll_unsub: Callable[[], None] | None = None
 
@@ -588,7 +591,45 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
 
     @callback
     def _handle_cov_reregister(self) -> None:
+        """Client signal (I-Am, rescan, address change).
+
+        A device that just announced itself may have rebooted and dropped
+        every subscription while the hub still holds a live context. Renew
+        in place instead of doing nothing; a renewal the device does not
+        answer falls back to the full re-subscribe.
+        """
+        if self._cov_registered and self._cov_context is not None:
+            if time.monotonic() - self._cov_last_renewed_ts < CLIENT_COV_IAM_REFRESH_MIN_SECONDS:
+                return
+            self._start_cov_refresh_task()
+            return
         self._start_cov_reregister_task()
+
+    def _start_cov_refresh_task(self) -> None:
+        if self._cov_refresh_task is not None and not self._cov_refresh_task.done():
+            return
+        self._cov_refresh_task = create_logged_task(
+            self.hass,
+            self._async_refresh_cov_lease(),
+            logger=_LOGGER,
+            message=f"COV lease refresh for {self._point_key}",
+        )
+
+    def _schedule_cov_retry(self, delay: float) -> None:
+        """Retry a failed registration after ``delay`` seconds."""
+        if self._cov_lease_unsub is not None:
+            try:
+                self._cov_lease_unsub()
+            except Exception:
+                pass
+            self._cov_lease_unsub = None
+
+        @callback
+        def _retry_due(_now) -> None:
+            self._cov_lease_unsub = None
+            self._start_cov_reregister_task()
+
+        self._cov_lease_unsub = async_call_later(self.hass, delay, _retry_due)
 
     def _start_cov_reregister_task(self) -> None:
         if self._cov_reregister_task is not None and not self._cov_reregister_task.done():
@@ -747,9 +788,13 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
                         _client_rescan_signal(self._entry_id),
                         {"instance": self._client_instance},
                     )
-                self._cov_retry_not_before_ts = time.monotonic() + self._cov_retry_delay_seconds
+                retry_delay = self._cov_retry_delay_seconds
+                self._cov_retry_not_before_ts = time.monotonic() + retry_delay
                 self._cov_retry_delay_seconds = min(self._cov_retry_delay_seconds * 2.0, 300.0)
                 self._set_client_points_unavailable(True, reason="cov_register_failed")
+                # Retry on our own instead of waiting for the next I-Am or
+                # the 15-minute rescan.
+                self._schedule_cov_retry(retry_delay + 0.5)
                 return
 
             if self._cov_context is None:
@@ -757,6 +802,7 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
                 return
 
             self._cov_registered = True
+            self._cov_last_renewed_ts = time.monotonic()
             self._cov_retry_not_before_ts = 0.0
             self._cov_retry_delay_seconds = 10.0
             self._set_client_points_unavailable(False)
@@ -822,14 +868,7 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
         @callback
         def _lease_due(_now) -> None:
             self._cov_lease_unsub = None
-            if self._cov_refresh_task is not None and not self._cov_refresh_task.done():
-                return
-            self._cov_refresh_task = create_logged_task(
-                self.hass,
-                self._async_refresh_cov_lease(),
-                logger=_LOGGER,
-                message=f"COV lease refresh for {self._point_key}",
-            )
+            self._start_cov_refresh_task()
 
         self._cov_lease_unsub = async_call_later(self.hass, delay, _lease_due)
 
@@ -844,12 +883,19 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
                 raise
             except BaseException as err:  # ErrorRejectAbortNack is a BaseException
                 _LOGGER.debug(
-                    "COV renewal for %s failed (%s); re-subscribing", self._point_key, err
+                    "COV renewal for %s failed (%s); re-subscribing",
+                    self._point_key,
+                    str(err) or type(err).__name__,
                 )
+                # The device may have rebooted and lost the subscription;
+                # without this the full re-subscribe would see a "healthy"
+                # registration and return early.
+                self._cov_registered = False
             else:
+                self._cov_last_renewed_ts = time.monotonic()
                 self._schedule_cov_lease_refresh()
                 return
-        # Renewal declined: fall back to a full re-subscribe with backoff.
+        # Renewal declined or unanswered: full re-subscribe with backoff.
         self._start_cov_reregister_task()
 
     async def _async_cov_receive_loop(self) -> None:

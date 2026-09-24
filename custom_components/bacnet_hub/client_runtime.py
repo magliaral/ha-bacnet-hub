@@ -88,6 +88,9 @@ CLIENT_COV_PROPERTY_SUBSCRIPTIONS_COMMANDABLE: tuple[str, ...] = (
 # in background tasks (and lease renewals fire almost simultaneously), so
 # without a cap a device with many points would see a burst of requests.
 CLIENT_COV_SUBSCRIBE_MAX_PARALLEL = 4
+# A device that announces itself with I-Am may have rebooted and lost its
+# subscriptions; the hub then renews in place, at most this often per point.
+CLIENT_COV_IAM_REFRESH_MIN_SECONDS = 30.0
 # Upper bound for one SubscribeCOV / SubscribeCOVProperty / cancel request.
 # bacpypes3 leaves the timeout to the caller: a device that never answers
 # (seen with SubscribeCOVProperty for priorityArray on a bacnet-stack based
