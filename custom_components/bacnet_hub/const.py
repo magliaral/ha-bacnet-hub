@@ -16,6 +16,9 @@ KEY_CLIENT_COV_SUBSCRIBE_SEM = "client_cov_subscribe_sem"
 # "<object-type>:<property>" pairs a device declined or never answered for
 # SubscribeCOVProperty; they are not requested again until the next start.
 KEY_CLIENT_COV_UNSUPPORTED = "client_cov_unsupported"
+# Point-cache flag: the device no longer lists the object (set by the import
+# and by an unknown-object answer; cleared when the object is listed again).
+POINT_MISSING_KEY = "_object_missing"
 DEFAULT_BACNET_OBJECT_NAME = "HA-BACnet-Hub"
 DEFAULT_BACNET_DEVICE_DESCRIPTION = "BACnet Hub - Home Assistant Custom Integration"
 

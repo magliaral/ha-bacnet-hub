@@ -5,6 +5,7 @@ import logging
 import time
 from typing import Any, Callable
 
+from bacpypes3.apdu import ErrorRejectAbortNack
 from homeassistant.components.binary_sensor import BinarySensorEntity
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.components.select import SelectEntity
@@ -18,9 +19,10 @@ from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.helpers.typing import StateType
 
-from .const import DOMAIN, KEY_CLIENT_POINT_ENTITIES
+from .const import DOMAIN, KEY_CLIENT_POINT_ENTITIES, POINT_MISSING_KEY
 from .helpers.tasks import create_logged_task
 from .client_runtime import (
+    CLIENT_COV_IAM_REFRESH_MIN_SECONDS,
     CLIENT_COV_LEASE_SECONDS,
     CLIENT_COV_RENEW_FACTOR,
     CLIENT_PRIORITY_POLL_INTERVAL,
@@ -103,6 +105,7 @@ class BacnetClientPointBase:
     _attr_entity_registry_enabled_default = True
     _POINT_UNAVAILABLE_KEY = "_cov_unavailable"
     _POINT_UNAVAILABLE_REASON_KEY = "_cov_unavailable_reason"
+    _POINT_MISSING_KEY = POINT_MISSING_KEY
 
     def __init__(
         self,
@@ -437,6 +440,8 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
         self._cov_last_target: tuple[str, str] | None = None
         self._cov_retry_delay_seconds: float = 10.0
         self._cov_retry_not_before_ts: float = 0.0
+        # monotonic time of the last accepted subscribe or renewal
+        self._cov_last_renewed_ts: float = 0.0
         self._cov_rescan_not_before_ts: float = 0.0
         self._priority_poll_unsub: Callable[[], None] | None = None
 
@@ -549,14 +554,29 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
             message=f"priorityArray refresh for {self._point_key}",
         )
 
-    def _set_client_points_unavailable(self, unavailable: bool, *, reason: str | None = None) -> None:
+    def _set_client_points_unavailable(
+        self, unavailable: bool, *, reason: str | None = None, all_points: bool = False
+    ) -> None:
+        """Flag this point (or, for device-wide causes, every point of the
+        client) as unavailable in the cache and notify the entities.
+
+        Per point by default: one object that cannot be subscribed must not
+        take the whole device down.
+        """
         point_cache = _client_points_get(self.hass, self._entry_id, self._client_id)
         if not point_cache:
             return
+        if all_points:
+            selected = point_cache.items()
+        else:
+            raw = point_cache.get(self._point_key)
+            if raw is None:
+                return
+            selected = [(self._point_key, raw)]
 
         payload: dict[str, dict[str, Any]] = {}
         changed = False
-        for point_key, raw_point in point_cache.items():
+        for point_key, raw_point in selected:
             point = dict(raw_point or {})
             prev_unavailable = bool(point.get(self._POINT_UNAVAILABLE_KEY, False))
             if prev_unavailable != unavailable:
@@ -588,7 +608,45 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
 
     @callback
     def _handle_cov_reregister(self) -> None:
+        """Client signal (I-Am, rescan, address change).
+
+        A device that just announced itself may have rebooted and dropped
+        every subscription while the hub still holds a live context. Renew
+        in place instead of doing nothing; a renewal the device does not
+        answer falls back to the full re-subscribe.
+        """
+        if self._cov_registered and self._cov_context is not None:
+            if time.monotonic() - self._cov_last_renewed_ts < CLIENT_COV_IAM_REFRESH_MIN_SECONDS:
+                return
+            self._start_cov_refresh_task()
+            return
         self._start_cov_reregister_task()
+
+    def _start_cov_refresh_task(self) -> None:
+        if self._cov_refresh_task is not None and not self._cov_refresh_task.done():
+            return
+        self._cov_refresh_task = create_logged_task(
+            self.hass,
+            self._async_refresh_cov_lease(),
+            logger=_LOGGER,
+            message=f"COV lease refresh for {self._point_key}",
+        )
+
+    def _schedule_cov_retry(self, delay: float) -> None:
+        """Retry a failed registration after ``delay`` seconds."""
+        if self._cov_lease_unsub is not None:
+            try:
+                self._cov_lease_unsub()
+            except Exception:
+                pass
+            self._cov_lease_unsub = None
+
+        @callback
+        def _retry_due(_now) -> None:
+            self._cov_lease_unsub = None
+            self._start_cov_reregister_task()
+
+        self._cov_lease_unsub = async_call_later(self.hass, delay, _retry_due)
 
     def _start_cov_reregister_task(self) -> None:
         if self._cov_reregister_task is not None and not self._cov_reregister_task.done():
@@ -690,6 +748,14 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
         if not object_identifier or not address:
             self._set_client_points_unavailable(True, reason="cov_target_missing")
             return
+        if point.get(self._POINT_MISSING_KEY):
+            # The device no longer lists this object; do not keep subscribing
+            # and do not trigger rescans. bacnet_hub.remove_missing_points
+            # cleans such points up, a later import that lists the object
+            # again clears the flag.
+            self._cov_registered = False
+            self._set_client_points_unavailable(True, reason="object_missing")
+            return
         now = time.monotonic()
         target = (str(address), str(object_identifier))
         if self._cov_last_target != target:
@@ -706,12 +772,14 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
         server = self.hass.data.get(DOMAIN, {}).get("servers", {}).get(self._entry_id)
         app = getattr(server, "app", None) if server is not None else None
         if app is None:
-            self._set_client_points_unavailable(True, reason="bacnet_app_unavailable")
+            self._set_client_points_unavailable(
+                True, reason="bacnet_app_unavailable", all_points=True
+            )
             return
 
         if _hub_cov_registry(app) is None:
             self._cov_registered = False
-            self._set_client_points_unavailable(True, reason="cov_not_supported")
+            self._set_client_points_unavailable(True, reason="cov_not_supported", all_points=True)
             return
 
         process_id = _cov_process_identifier(getattr(server, "instance", None))
@@ -731,6 +799,20 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
                 )
             self._cov_context = opened_context
             self._cov_registered = False
+            if last_err is not None and "unknown-object" in str(last_err):
+                _LOGGER.info(
+                    "Device %s no longer has %s; marking the point as missing",
+                    address,
+                    object_identifier,
+                )
+                self._update_point_cache(
+                    {
+                        self._POINT_MISSING_KEY: True,
+                        self._POINT_UNAVAILABLE_KEY: True,
+                        self._POINT_UNAVAILABLE_REASON_KEY: "object_missing",
+                    }
+                )
+                return
             if last_err is not None:
                 exc_info = (type(last_err), last_err, last_err.__traceback__)
                 _LOGGER.debug(
@@ -747,9 +829,13 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
                         _client_rescan_signal(self._entry_id),
                         {"instance": self._client_instance},
                     )
-                self._cov_retry_not_before_ts = time.monotonic() + self._cov_retry_delay_seconds
+                retry_delay = self._cov_retry_delay_seconds
+                self._cov_retry_not_before_ts = time.monotonic() + retry_delay
                 self._cov_retry_delay_seconds = min(self._cov_retry_delay_seconds * 2.0, 300.0)
                 self._set_client_points_unavailable(True, reason="cov_register_failed")
+                # Retry on our own instead of waiting for the next I-Am or
+                # the 15-minute rescan.
+                self._schedule_cov_retry(retry_delay + 0.5)
                 return
 
             if self._cov_context is None:
@@ -757,6 +843,7 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
                 return
 
             self._cov_registered = True
+            self._cov_last_renewed_ts = time.monotonic()
             self._cov_retry_not_before_ts = 0.0
             self._cov_retry_delay_seconds = 10.0
             self._set_client_points_unavailable(False)
@@ -786,7 +873,10 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
                     if err is None:
                         active.add(property_name)
                         continue
-                    unsupported.add(key)
+                    if isinstance(err, ErrorRejectAbortNack):
+                        # Only an explicit answer proves the device cannot do
+                        # it; a timeout is retried on the next registration.
+                        unsupported.add(key)
                     _LOGGER.info(
                         "Device %s %s SubscribeCOVProperty %s for %s objects (%s); "
                         "falling back to polling for it",
@@ -822,14 +912,7 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
         @callback
         def _lease_due(_now) -> None:
             self._cov_lease_unsub = None
-            if self._cov_refresh_task is not None and not self._cov_refresh_task.done():
-                return
-            self._cov_refresh_task = create_logged_task(
-                self.hass,
-                self._async_refresh_cov_lease(),
-                logger=_LOGGER,
-                message=f"COV lease refresh for {self._point_key}",
-            )
+            self._start_cov_refresh_task()
 
         self._cov_lease_unsub = async_call_later(self.hass, delay, _lease_due)
 
@@ -844,12 +927,19 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
                 raise
             except BaseException as err:  # ErrorRejectAbortNack is a BaseException
                 _LOGGER.debug(
-                    "COV renewal for %s failed (%s); re-subscribing", self._point_key, err
+                    "COV renewal for %s failed (%s); re-subscribing",
+                    self._point_key,
+                    str(err) or type(err).__name__,
                 )
+                # The device may have rebooted and lost the subscription;
+                # without this the full re-subscribe would see a "healthy"
+                # registration and return early.
+                self._cov_registered = False
             else:
+                self._cov_last_renewed_ts = time.monotonic()
                 self._schedule_cov_lease_refresh()
                 return
-        # Renewal declined: fall back to a full re-subscribe with backoff.
+        # Renewal declined or unanswered: full re-subscribe with backoff.
         self._start_cov_reregister_task()
 
     async def _async_cov_receive_loop(self) -> None:

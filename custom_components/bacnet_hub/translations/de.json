@@ -87,6 +87,10 @@
           "description": "Zahl für analoge Objekte, on/off bzw. true/false für binäre Objekte, Zustandsnummer oder Zustandstext für Multi-State-Objekte, Text für String-Objekte."
         }
       }
+    },
+    "remove_missing_points": {
+      "name": "Fehlende Punkte entfernen",
+      "description": "Entfernt die Entities von Punkten, die ihr Controller nicht mehr in seiner Objektliste führt oder als unbekanntes Objekt gemeldet hat. Liefert die Anzahl und die entfernten Entity-IDs zurück."
     }
   }
 }

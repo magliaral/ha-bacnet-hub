@@ -13,7 +13,7 @@ from homeassistant.components import frontend
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
-from homeassistant.core import HomeAssistant, ServiceCall, callback
+from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
@@ -34,13 +34,14 @@ from .const import (
     KEY_CLIENT_COV_SUBSCRIBE_SEM,
     KEY_CLIENT_COV_UNSUPPORTED,
     KEY_CLIENT_POINT_ENTITIES,
+    POINT_MISSING_KEY,
     hub_display_name,
     PUBLISH_MODE_LABELS,
     published_entity_id,
     published_observer_platform,
     published_observer_unique_id,
 )
-from .client_runtime import _hub_device_id_set
+from .client_runtime import _hub_device_id_set, _point_platform, _point_unique_id
 from .discovery import (
     entity_mapping_candidates,
     entity_exists,
@@ -81,6 +82,7 @@ SERVICE_SET_OUT_OF_SERVICE_SCHEMA = cv.make_entity_service_schema(
     {vol.Required(ATTR_OUT_OF_SERVICE): cv.boolean}
 )
 SERVICE_SET_PRESENT_VALUE = "set_present_value"
+SERVICE_REMOVE_MISSING_POINTS = "remove_missing_points"
 ATTR_VALUE = "value"
 # The value is interpreted per object type by the entity (number, on/off,
 # state number or text); accept the raw scalar here.
@@ -1005,6 +1007,94 @@ async def _async_set_out_of_service_targets(
     )
 
 
+def _remove_missing_points(hass: HomeAssistant) -> list[str]:
+    """Remove entities and cache entries of points their device no longer lists.
+
+    Only points flagged as missing (by the import or an unknown-object
+    answer) are touched. Returns the removed entity ids; registry entries of
+    points without a loaded entity are removed by unique id.
+    """
+    data = hass.data.get(DOMAIN, {})
+    registry = er.async_get(hass)
+    loaded: dict = data.get(KEY_CLIENT_POINT_ENTITIES, {})
+    removed: list[str] = []
+    for entry_id, clients in list(data.get("client_point_cache", {}).items()):
+        # Registry entries of points that are not in the cache at all: left
+        # over from objects that vanished before a restart rebuilt the cache.
+        # Only clients with an imported cache are considered, so an offline
+        # device does not lose its entities.
+        # Keyed by (platform, unique id): the same object may have been
+        # imported on another platform earlier (e.g. as binary_sensor while
+        # it had no priorityArray); that stale twin must go as well.
+        known: set[tuple[str, str]] = set()
+        client_prefixes: list[str] = []
+        for client_id, points in clients.items():
+            if not points:
+                continue
+            client_prefixes.append(f"{entry_id}-{client_id}-point-")
+            for point in points.values():
+                point = point or {}
+                known.add(
+                    (
+                        _point_platform(point),
+                        _point_unique_id(
+                            entry_id,
+                            client_id,
+                            str(point.get("type_slug") or ""),
+                            int(point.get("object_instance") or 0),
+                        ),
+                    )
+                )
+        for reg in list(er.async_entries_for_config_entry(registry, entry_id)):
+            unique_id = str(reg.unique_id or "")
+            if (reg.domain, unique_id) in known or not any(
+                unique_id.startswith(prefix) for prefix in client_prefixes
+            ):
+                continue
+            try:
+                registry.async_remove(reg.entity_id)
+                removed.append(reg.entity_id)
+            except Exception:
+                _LOGGER.debug("Could not remove %s", reg.entity_id, exc_info=True)
+        for client_id, points in list(clients.items()):
+            for point_key, point in list(points.items()):
+                if not (point or {}).get(POINT_MISSING_KEY):
+                    continue
+                entity_id = next(
+                    (
+                        eid
+                        for eid, entity in loaded.items()
+                        if getattr(entity, "_entry_id", None) == entry_id
+                        and getattr(entity, "_client_id", None) == client_id
+                        and getattr(entity, "_point_key", None) == point_key
+                    ),
+                    None,
+                )
+                if entity_id is None:
+                    unique_id = _point_unique_id(
+                        entry_id,
+                        client_id,
+                        str(point.get("type_slug") or ""),
+                        int(point.get("object_instance") or 0),
+                    )
+                    entity_id = next(
+                        (
+                            reg.entity_id
+                            for reg in er.async_entries_for_config_entry(registry, entry_id)
+                            if reg.unique_id == unique_id
+                        ),
+                        None,
+                    )
+                if entity_id is not None:
+                    try:
+                        registry.async_remove(entity_id)
+                        removed.append(entity_id)
+                    except Exception:
+                        _LOGGER.debug("Could not remove %s", entity_id, exc_info=True)
+                points.pop(point_key, None)
+    return removed
+
+
 async def _async_set_present_value_targets(
     hass: HomeAssistant, entity_ids: set[str], value: Any
 ) -> None:
@@ -1061,6 +1151,18 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
         SERVICE_SET_PRESENT_VALUE,
         _svc_set_present_value,
         schema=SERVICE_SET_PRESENT_VALUE_SCHEMA,
+    )
+
+    async def _svc_remove_missing_points(call: ServiceCall) -> ServiceResponse:
+        removed = _remove_missing_points(hass)
+        _LOGGER.info("Removed %d missing BACnet points: %s", len(removed), removed)
+        return {"removed": len(removed), "entity_ids": removed}
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_REMOVE_MISSING_POINTS,
+        _svc_remove_missing_points,
+        supports_response=SupportsResponse.OPTIONAL,
     )
 
     # Serve the bundled tile feature once per HA start (guarded for safety);
