@@ -41,7 +41,7 @@ from .const import (
     published_observer_platform,
     published_observer_unique_id,
 )
-from .client_runtime import _hub_device_id_set, _point_unique_id
+from .client_runtime import _hub_device_id_set, _point_platform, _point_unique_id
 from .discovery import (
     entity_mapping_candidates,
     entity_exists,
@@ -1023,24 +1023,31 @@ def _remove_missing_points(hass: HomeAssistant) -> list[str]:
         # over from objects that vanished before a restart rebuilt the cache.
         # Only clients with an imported cache are considered, so an offline
         # device does not lose its entities.
-        known_unique_ids: set[str] = set()
+        # Keyed by (platform, unique id): the same object may have been
+        # imported on another platform earlier (e.g. as binary_sensor while
+        # it had no priorityArray); that stale twin must go as well.
+        known: set[tuple[str, str]] = set()
         client_prefixes: list[str] = []
         for client_id, points in clients.items():
             if not points:
                 continue
             client_prefixes.append(f"{entry_id}-{client_id}-point-")
             for point in points.values():
-                known_unique_ids.add(
-                    _point_unique_id(
-                        entry_id,
-                        client_id,
-                        str((point or {}).get("type_slug") or ""),
-                        int((point or {}).get("object_instance") or 0),
+                point = point or {}
+                known.add(
+                    (
+                        _point_platform(point),
+                        _point_unique_id(
+                            entry_id,
+                            client_id,
+                            str(point.get("type_slug") or ""),
+                            int(point.get("object_instance") or 0),
+                        ),
                     )
                 )
         for reg in list(er.async_entries_for_config_entry(registry, entry_id)):
             unique_id = str(reg.unique_id or "")
-            if unique_id in known_unique_ids or not any(
+            if (reg.domain, unique_id) in known or not any(
                 unique_id.startswith(prefix) for prefix in client_prefixes
             ):
                 continue

@@ -53,14 +53,16 @@ def test_remove_missing_points_removes_flagged_entities_only(monkeypatch) -> Non
         bacnet_hub_init.er,
         "async_entries_for_config_entry",
         lambda reg, entry_id: [
-            SimpleNamespace(entity_id="binary_sensor.bacnet_doi_5_bi_9", unique_id="entry1-client_5-point-bi-9"),
+            SimpleNamespace(entity_id="binary_sensor.bacnet_doi_5_bi_9", unique_id="entry1-client_5-point-bi-9", domain="binary_sensor"),
             # orphan: object vanished before a restart rebuilt the cache
-            SimpleNamespace(entity_id="switch.bacnet_doi_5_bo_30", unique_id="entry1-client_5-point-bo-30"),
+            SimpleNamespace(entity_id="switch.bacnet_doi_5_bo_30", unique_id="entry1-client_5-point-bo-30", domain="switch"),
             # another client without cache: must be left alone
-            SimpleNamespace(entity_id="switch.bacnet_doi_7_bo_1", unique_id="entry1-client_7-point-bo-1"),
+            SimpleNamespace(entity_id="switch.bacnet_doi_7_bo_1", unique_id="entry1-client_7-point-bo-1", domain="switch"),
             # cached, present point and a non-point entry: left alone
-            SimpleNamespace(entity_id="sensor.bacnet_doi_5_ai_1", unique_id="entry1-client_5-point-ai-1"),
-            SimpleNamespace(entity_id="sensor.bacnet_doi_5_object_name", unique_id="entry1-client_5-diag-object_name"),
+            SimpleNamespace(entity_id="sensor.bacnet_doi_5_ai_1", unique_id="entry1-client_5-point-ai-1", domain="sensor"),
+            # same object imported earlier on another platform: stale twin
+            SimpleNamespace(entity_id="number.bacnet_doi_5_ai_1", unique_id="entry1-client_5-point-ai-1", domain="number"),
+            SimpleNamespace(entity_id="sensor.bacnet_doi_5_object_name", unique_id="entry1-client_5-diag-object_name", domain="sensor"),
         ],
     )
 
@@ -68,6 +70,7 @@ def test_remove_missing_points_removes_flagged_entities_only(monkeypatch) -> Non
 
     assert sorted(result) == [
         "binary_sensor.bacnet_doi_5_bi_9",
+        "number.bacnet_doi_5_ai_1",
         "sensor.bacnet_doi_5_ai_2",
         "switch.bacnet_doi_5_bo_30",
     ]
