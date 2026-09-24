@@ -369,6 +369,29 @@ def _cleanup_removed_entities(hass: HomeAssistant, entry: ConfigEntry) -> int:
     return removed
 
 
+def _enable_integration_disabled_points(hass: HomeAssistant, entry: ConfigEntry) -> int:
+    """Re-enable client point entities that only the integration had disabled.
+
+    Up to 2.0 imported points were registered disabled by default, so every
+    point had to be enabled by hand. Entries whose ``disabled_by`` is
+    ``integration`` are switched on here; points a user disabled deliberately
+    (``disabled_by == user``) are left alone.
+    """
+    registry = er.async_get(hass)
+    enabled = 0
+    for reg_entry in list(er.async_entries_for_config_entry(registry, entry.entry_id)):
+        if reg_entry.disabled_by != er.RegistryEntryDisabler.INTEGRATION:
+            continue
+        if "-point-" not in str(reg_entry.unique_id or ""):
+            continue
+        try:
+            registry.async_update_entity(reg_entry.entity_id, disabled_by=None)
+            enabled += 1
+        except Exception:
+            _LOGGER.debug("Could not enable %s", reg_entry.entity_id, exc_info=True)
+    return enabled
+
+
 def _cleanup_orphan_published_entities(
     hass: HomeAssistant, entry: ConfigEntry, published: List[Dict[str, Any]]
 ) -> int:
@@ -1044,6 +1067,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.info(
             "Removed %d stale BACnet entities for entry %s",
             removed_stale_entities,
+            entry.entry_id,
+        )
+    enabled_points = _enable_integration_disabled_points(hass, entry)
+    if enabled_points:
+        _LOGGER.info(
+            "Enabled %d imported BACnet points for entry %s that were disabled by default",
+            enabled_points,
             entry.entry_id,
         )
 

@@ -41,6 +41,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Imported client points are enabled as soon as they are discovered, on new
+  devices as well as for points that appear on a known controller later.
+  Points that earlier versions had registered disabled are enabled once at
+  the next start; points you disabled yourself stay disabled.
 - Default write priority is now `8` (Manual Operator) instead of `16`.
 - bacpypes3 is pinned to 0.0.108 (was 0.0.106): fixes an Error-PDU crash on
   unconfirmed requests and a Who-Is future race, adds the source address to

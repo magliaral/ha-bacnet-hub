@@ -76,3 +76,35 @@ def test_cleanup_removes_stale_select_and_button_entries(monkeypatch) -> None:
 
     assert count == 2
     assert removed == ["select.a", "button.b"]
+
+
+def test_enable_points_only_touches_integration_disabled_point_entries(monkeypatch) -> None:
+    from homeassistant.helpers.entity_registry import RegistryEntryDisabler
+
+    entries = [
+        SimpleNamespace(unique_id="e1-client_1-point-bo-1", entity_id="switch.a",
+                        disabled_by=RegistryEntryDisabler.INTEGRATION),
+        SimpleNamespace(unique_id="e1-client_1-point-ai-2", entity_id="sensor.b",
+                        disabled_by=RegistryEntryDisabler.USER),
+        SimpleNamespace(unique_id="e1-client_1-point-bi-3", entity_id="binary_sensor.c",
+                        disabled_by=None),
+        SimpleNamespace(unique_id="bacnet_hub:hub:k:analogValue:1", entity_id="sensor.d",
+                        disabled_by=RegistryEntryDisabler.INTEGRATION),
+    ]
+    updates: list[tuple[str, Any]] = []
+    registry = SimpleNamespace(
+        async_update_entity=lambda entity_id, **kw: updates.append((entity_id, kw))
+    )
+    monkeypatch.setattr(bacnet_hub_init.er, "async_get", lambda hass: registry)
+    monkeypatch.setattr(
+        bacnet_hub_init.er,
+        "async_entries_for_config_entry",
+        lambda reg, entry_id: list(entries),
+    )
+
+    count = bacnet_hub_init._enable_integration_disabled_points(
+        SimpleNamespace(), SimpleNamespace(entry_id="e1")
+    )
+
+    assert count == 1
+    assert updates == [("switch.a", {"disabled_by": None})]
