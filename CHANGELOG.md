@@ -10,12 +10,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Removed the per-point release button entities (`button.bacnet_doi_*_release`).
   Use the new `bacnet_hub.release` service or the bundled
-  `custom:bacnet-release-feature` tile feature instead. Existing registry
-  entries for the buttons are not deleted actively; they become orphaned and
-  disappear on the next reload of the integration.
+  `custom:bacnet-release-feature` tile feature instead. Their registry
+  entries are removed automatically at the next start of the integration.
+- Removed the per-device **Write priority** select entities
+  (`select.bacnet_doi_<client>_write_priority`). The write priority is now a
+  single option in the hub's device settings (default `8`, Manual Operator)
+  that applies to all client devices; stale select entries are removed at the
+  next start.
 
 ### Added
 
+- Client points additionally subscribe per property with SubscribeCOVProperty:
+  `outOfService` on all points, `priorityArray` and `relinquishDefault` on
+  commandable points. External changes to the priority array now arrive as
+  COV notifications; the 30-second poll only remains for points whose device
+  declines the property subscription.
 - Service `bacnet_hub.release`: releases a priority array slot (default 8,
   Manual Operator) of one or more commandable client points and re-reads the
   point immediately so the state updates without waiting for COV. Errors are
@@ -33,6 +42,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - Default write priority is now `8` (Manual Operator) instead of `16`.
+- bacpypes3 is pinned to 0.0.108 (was 0.0.106): fixes an Error-PDU crash on
+  unconfirmed requests and a Who-Is future race, adds the source address to
+  error responses. The COV client API the hub relies on is unchanged.
+- A periodic client rescan no longer tears down and re-creates healthy COV
+  subscriptions; they are only rebuilt when the target changed or the
+  receive loop failed.
+- COV subscriptions ask for confirmed (acknowledged) notifications first and
+  fall back to unconfirmed ones when a device rejects the request.
+- All COV subscriptions of the hub use its own device instance (default
+  `8123`) as subscriber process identifier, so entries in a device's
+  `active_cov_subscriptions` list are recognisable as this hub.
 - Home Assistant 2026.3.0 (the first release on Python 3.14, which is also
   what the test suite runs on) is now the minimum supported version, declared
   in `hacs.json`; the compatibility fallbacks for older target-resolution
@@ -44,6 +64,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A device that never answers a SubscribeCOVProperty request (seen on a
+  bacnet-stack based controller for `priorityArray`) blocked the point's
+  registration forever: bacpypes3 leaves the timeout to the caller, so the
+  COV receive loop was never started, the point's notifications were never
+  consumed and the per-device subscribe slots stayed occupied, leaving other
+  points of the same device without any subscription. Every COV request is
+  now bounded to 10 seconds, the receive loop starts as soon as the object
+  subscription is accepted, and a property a device declines or ignores is
+  remembered per device and object type instead of being requested again on
+  every renewal.
+- The `debug_bacpypes` option only raised logger levels, which bacpypes3
+  ignores; it now sets bacpypes3's module debug flags, so application,
+  COV and Who-Is/I-Am handling are actually logged. Each COV registration
+  also logs the accepted property subscriptions at debug level.
+- COV subscriptions used a random subscriber process identifier per point
+  that changed on every restart, so devices accumulated duplicate entries
+  until the old leases expired; the identifier is now stable.
+- COV leases were renewed by cancelling and re-subscribing; they are now
+  renewed in place with the same process identifier and object, as the
+  standard defines. A declined renewal falls back to a full re-subscribe.
+- A subscription that collided with a stale context was left behind on the
+  device without a cancel request; failed cancel requests are now logged.
+- Undecodable COV values are skipped instead of being cached as state.
 - The `bacnet_hub.release` service resolved its targets with the deprecated
   `TargetSelectorData` helper, which HA 2026.9 reports at startup and removes
   in 2026.12.0. It now uses `TargetSelection`.

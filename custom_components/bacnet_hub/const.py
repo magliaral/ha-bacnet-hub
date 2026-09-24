@@ -12,6 +12,10 @@ KEY_CLIENT_POINT_ENTITIES = "client_point_entities"
 # hass.data[DOMAIN] key holding per-entry, per-client semaphores that cap
 # concurrent SubscribeCOV requests.
 KEY_CLIENT_COV_SUBSCRIBE_SEM = "client_cov_subscribe_sem"
+# hass.data[DOMAIN] key holding, per entry and client, the
+# "<object-type>:<property>" pairs a device declined or never answered for
+# SubscribeCOVProperty; they are not requested again until the next start.
+KEY_CLIENT_COV_UNSUPPORTED = "client_cov_unsupported"
 DEFAULT_BACNET_OBJECT_NAME = "HA-BACnet-Hub"
 DEFAULT_BACNET_DEVICE_DESCRIPTION = "BACnet Hub - Home Assistant Custom Integration"
 
@@ -23,6 +27,14 @@ CONF_DEVICE_DESCRIPTION = "device_description"
 CONF_OBJECTS_YAML = "objects_yaml"
 
 CONF_DEBUG_BACPYPES = "debug_bacpypes"
+
+# BACnet write priority used for commandable client points, configured once
+# in the hub's device settings. 8 is "Manual Operator" per the BACnet
+# priority table: writes from HA override the controller's own program until
+# the slot is released again; 16 is the lowest priority.
+CONF_WRITE_PRIORITY = "write_priority"
+DEFAULT_WRITE_PRIORITY = 8
+WRITE_PRIORITY_OPTIONS: list[int] = list(range(8, 17))
 
 CONF_PUBLISH_MODE = "publish_mode"
 CONF_IMPORT_LABEL = "import_label"

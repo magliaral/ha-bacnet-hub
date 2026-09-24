@@ -1,5 +1,5 @@
 pytest
 pytest-asyncio
 homeassistant
-bacpypes3==0.0.106
+bacpypes3==0.0.108
 PyYAML>=6.0.1

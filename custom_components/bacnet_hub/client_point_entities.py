@@ -16,7 +16,6 @@ from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
-from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.typing import StateType
 
 from .const import DOMAIN, KEY_CLIENT_POINT_ENTITIES
@@ -26,18 +25,18 @@ from .client_runtime import (
     CLIENT_COV_RENEW_FACTOR,
     CLIENT_PRIORITY_POLL_INTERVAL,
     CLIENT_WRITE_READBACK_DELAY_SECONDS,
-    WRITE_PRIORITY_OPTIONS,
     _client_cov_signal,
     _client_cov_subscribe_semaphore,
+    _client_cov_unsupported,
     _client_device_info,
     _client_points_get,
     _client_points_set,
     _client_points_signal,
     _client_rescan_signal,
-    _client_write_priority_get,
-    _client_write_priority_set,
     _cov_process_identifier,
+    _cov_unsupported_key,
     _entry_points_signal,
+    _entry_write_priority,
     _normalize_bacnet_unit,
     _normalize_priority_array,
     _normalize_priority_slot,
@@ -54,7 +53,12 @@ from .client_runtime import (
     _to_int,
 )
 from .client_runtime import (
+    CLIENT_COV_PROPERTY_SUBSCRIPTIONS_ALL,
+    CLIENT_COV_PROPERTY_SUBSCRIPTIONS_COMMANDABLE,
+    _async_refresh_cov_subscription,
     _async_release_point,
+    _hub_cov_registry,
+    _open_cov_property_subscription,
     _open_cov_subscription_context,
     _read_remote_properties,
     _read_remote_property,
@@ -198,7 +202,7 @@ class BacnetClientPointBase:
         app, address, object_type, object_instance = self._resolve_write_target(point)
 
         write_priority = (
-            _client_write_priority_get(self.hass, self._entry_id, self._client_id)
+            _entry_write_priority(self.hass, self._entry_id)
             if _point_is_commandable(point)
             else None
         )
@@ -335,6 +339,10 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
         self._cov_context: Any | None = None
         self._cov_task: asyncio.Task | None = None
         self._cov_reregister_task: asyncio.Task | None = None
+        self._cov_refresh_task: asyncio.Task | None = None
+        # Properties covered by an accepted SubscribeCOVProperty; the others
+        # keep their polling fallback.
+        self._cov_property_active: set[str] = set()
         self._cov_lease_unsub: Callable[[], None] | None = None
         self._cov_lock = asyncio.Lock()
         self._cov_registered = False
@@ -357,8 +365,9 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
             cov_signal,
             self._handle_cov_reregister,
         )
-        # priorityArray/relinquishDefault send no COV, so external changes
-        # that leave presentValue untouched only surface through polling.
+        # Object-wide COV carries no priorityArray/relinquishDefault. They
+        # are subscribed per property; the poll stays as fallback for devices
+        # that decline SubscribeCOVProperty (see _handle_priority_poll).
         if _point_has_priority_array(self._get_point()):
             self._priority_poll_unsub = async_track_time_interval(
                 self.hass,
@@ -388,7 +397,7 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
             self._cov_reregister_task.cancel()
         self._cov_reregister_task = None
         async with self._cov_lock:
-            await self._async_stop_cov_runtime()
+            await self._async_stop_cov_runtime(final=True)
 
     async def async_release(self, priority: int) -> None:
         """Release the given priority slot: write Null to presentValue.
@@ -418,8 +427,13 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
             "Released %s at priority %s", self._point_key, int(priority)
         )
 
+    def _cov_covers_priority_properties(self) -> bool:
+        return set(CLIENT_COV_PROPERTY_SUBSCRIPTIONS_COMMANDABLE) <= self._cov_property_active
+
     @callback
     def _handle_priority_poll(self, _now: Any) -> None:
+        if self._cov_covers_priority_properties():
+            return
         self._schedule_priority_array_refresh()
 
     def _schedule_priority_array_refresh(self) -> None:
@@ -508,13 +522,17 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
             # _async_register_cov; anything reaching here is unexpected.
             _LOGGER.warning("COV registration failed for %s", self._point_key, exc_info=True)
 
-    async def _async_stop_cov_runtime(self) -> None:
+    async def _async_stop_cov_runtime(self, *, final: bool = False) -> None:
         if self._cov_lease_unsub is not None:
             try:
                 self._cov_lease_unsub()
             except Exception:
                 pass
             self._cov_lease_unsub = None
+        if self._cov_refresh_task is not None and not self._cov_refresh_task.done():
+            if self._cov_refresh_task is not asyncio.current_task():
+                self._cov_refresh_task.cancel()
+        self._cov_refresh_task = None
         if self._cov_task is not None and not self._cov_task.done():
             self._cov_task.cancel()
             try:
@@ -525,19 +543,37 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
                 pass
         self._cov_task = None
         if self._cov_context is not None:
-            await self._async_cleanup_cov_context(self._cov_context, call_aexit=True)
+            await self._async_cleanup_cov_context(
+                self._cov_context, call_aexit=True, final=final
+            )
         self._cov_context = None
+        self._cov_property_active = set()
         self._cov_registered = False
 
-    async def _async_cleanup_cov_context(self, context_obj: Any, *, call_aexit: bool) -> None:
+    async def _async_cleanup_cov_context(
+        self, context_obj: Any, *, call_aexit: bool, final: bool = False
+    ) -> None:
         if context_obj is None:
             return
 
         if call_aexit:
+            # __aexit__ sends the cancel request and returns the device's
+            # error response instead of raising.
+            outcome: Any = None
             try:
-                await context_obj.__aexit__(None, None, None)
-            except Exception:
-                pass
+                outcome = await context_obj.__aexit__(None, None, None)
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:
+                outcome = err
+            if outcome is not None:
+                log = _LOGGER.warning if final else _LOGGER.debug
+                log(
+                    "COV cancel for %s not accepted (%s); the device keeps the "
+                    "subscription until its lease expires",
+                    self._point_key,
+                    outcome,
+                )
 
         # bacpypes3 is pinned in manifest.json. Its SubscriptionContextManager
         # (bacpypes3.service.cov) keeps exactly these two refresh artifacts,
@@ -572,6 +608,10 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
             self._cov_last_target = target
             self._cov_retry_not_before_ts = 0.0
             self._cov_retry_delay_seconds = 10.0
+        elif self._cov_registered and self._cov_context is not None:
+            # Already subscribed to this target and the lease is renewed in
+            # place; a rescan must not tear the subscription down.
+            return
         if now < self._cov_retry_not_before_ts:
             return
 
@@ -581,18 +621,14 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
             self._set_client_points_unavailable(True, reason="bacnet_app_unavailable")
             return
 
-        cov_factory = getattr(app, "change_of_value", None)
-        if not callable(cov_factory):
+        if _hub_cov_registry(app) is None:
             self._cov_registered = False
             self._set_client_points_unavailable(True, reason="cov_not_supported")
             return
 
-        process_id = _cov_process_identifier(self._entry_id, self._client_id, self._point_key)
+        process_id = _cov_process_identifier(getattr(server, "instance", None))
         async with self._cov_lock:
             await self._async_stop_cov_runtime()
-
-            async def _cleanup_failed_context(context_obj: Any) -> None:
-                await self._async_cleanup_cov_context(context_obj, call_aexit=False)
 
             subscribe_sem = _client_cov_subscribe_semaphore(
                 self.hass, self._entry_id, self._client_id
@@ -604,8 +640,6 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
                     object_identifier=object_identifier,
                     process_id=process_id,
                     lifetime=CLIENT_COV_LEASE_SECONDS,
-                    cleanup_context=_cleanup_failed_context,
-                    max_offset_attempts=3,
                 )
             self._cov_context = opened_context
             self._cov_registered = False
@@ -638,15 +672,53 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
             self._cov_retry_not_before_ts = 0.0
             self._cov_retry_delay_seconds = 10.0
             self._set_client_points_unavailable(False)
+
+            # Consume notifications from now on: the object subscription is
+            # live, and the property subscriptions below must not delay it.
             self._cov_task = create_logged_task(
                 self.hass,
                 self._async_cov_receive_loop(),
                 logger=_LOGGER,
                 message=f"COV receive loop for {self._point_key}",
             )
-            self._schedule_cov_lease_reregister()
 
-    def _schedule_cov_lease_reregister(self) -> None:
+            wanted = list(CLIENT_COV_PROPERTY_SUBSCRIPTIONS_ALL)
+            if _point_has_priority_array(point):
+                wanted.extend(CLIENT_COV_PROPERTY_SUBSCRIPTIONS_COMMANDABLE)
+            unsupported = _client_cov_unsupported(self.hass, self._entry_id, self._client_id)
+            active: set[str] = set()
+            async with subscribe_sem:
+                for property_name in wanted:
+                    key = _cov_unsupported_key(object_identifier, property_name)
+                    if key in unsupported:
+                        continue
+                    err = await _open_cov_property_subscription(
+                        self._cov_context, property_name
+                    )
+                    if err is None:
+                        active.add(property_name)
+                        continue
+                    unsupported.add(key)
+                    _LOGGER.info(
+                        "Device %s %s SubscribeCOVProperty %s for %s objects (%s); "
+                        "falling back to polling for it",
+                        address,
+                        "did not answer" if isinstance(err, TimeoutError) else "declined",
+                        property_name,
+                        key.split(":", 1)[0],
+                        err if not isinstance(err, TimeoutError) else "no response",
+                    )
+            self._cov_property_active = active
+            _LOGGER.debug(
+                "COV subscribed for %s (%s): %s, properties %s",
+                object_identifier,
+                address,
+                "confirmed" if self._cov_context.issue_confirmed_notifications else "unconfirmed",
+                sorted(active) or "none",
+            )
+            self._schedule_cov_lease_refresh()
+
+    def _schedule_cov_lease_refresh(self) -> None:
         if self._cov_lease_unsub is not None:
             try:
                 self._cov_lease_unsub()
@@ -654,17 +726,43 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
                 pass
             self._cov_lease_unsub = None
 
-        # Renew before the lease expires (at CLIENT_COV_RENEW_FACTOR of the
-        # lifetime): the old subscription is still valid while the new one is
-        # opened, so entities never blip to unavailable on renewal.
+        # Renew in place before the lease expires (at CLIENT_COV_RENEW_FACTOR
+        # of the lifetime): the same process id and object are re-subscribed,
+        # which the device treats as a renewal of the existing entry.
         delay = max(30.0, float(CLIENT_COV_LEASE_SECONDS) * float(CLIENT_COV_RENEW_FACTOR))
 
         @callback
-        def _lease_expired(_now) -> None:
+        def _lease_due(_now) -> None:
             self._cov_lease_unsub = None
-            self._start_cov_reregister_task()
+            if self._cov_refresh_task is not None and not self._cov_refresh_task.done():
+                return
+            self._cov_refresh_task = create_logged_task(
+                self.hass,
+                self._async_refresh_cov_lease(),
+                logger=_LOGGER,
+                message=f"COV lease refresh for {self._point_key}",
+            )
 
-        self._cov_lease_unsub = async_call_later(self.hass, delay, _lease_expired)
+        self._cov_lease_unsub = async_call_later(self.hass, delay, _lease_due)
+
+    async def _async_refresh_cov_lease(self) -> None:
+        async with self._cov_lock:
+            context = self._cov_context
+            if context is None or not self._cov_registered:
+                return
+            try:
+                await _async_refresh_cov_subscription(context)
+            except asyncio.CancelledError:
+                raise
+            except BaseException as err:  # ErrorRejectAbortNack is a BaseException
+                _LOGGER.debug(
+                    "COV renewal for %s failed (%s); re-subscribing", self._point_key, err
+                )
+            else:
+                self._schedule_cov_lease_refresh()
+                return
+        # Renewal declined: fall back to a full re-subscribe with backoff.
+        self._start_cov_reregister_task()
 
     async def _async_cov_receive_loop(self) -> None:
         while True:
@@ -682,12 +780,22 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
                 _LOGGER.debug("COV receive loop failed for %s", self._point_key, exc_info=True)
                 return
 
+            if isinstance(value, Exception):
+                # bacpypes3 hands back a DecodingError instead of raising when
+                # it cannot resolve the property type; never cache that.
+                _LOGGER.debug(
+                    "Undecodable COV value for %s/%s: %s", self._point_key, prop, value
+                )
+                continue
+
             key = _property_slug(prop)
             if not key:
                 continue
             if key not in {
                 "presentvalue",
                 "statusflags",
+                "priorityarray",
+                "relinquishdefault",
                 "outofservice",
                 "reliability",
                 "description",
@@ -706,6 +814,16 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
                 point["present_value"] = value
             elif key == "statusflags":
                 point["status_flags"] = _safe_text(value)
+            elif key == "priorityarray":
+                priority_array = _normalize_priority_array(value)
+                if priority_array is None:
+                    continue
+                point["priority_array"] = priority_array
+            elif key == "relinquishdefault":
+                relinquish_default = _normalize_priority_slot(value)
+                if relinquish_default is None:
+                    continue
+                point["relinquish_default"] = relinquish_default
             elif key == "outofservice":
                 point["out_of_service"] = value
             elif key == "reliability":
@@ -740,7 +858,7 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
                 {"client_id": self._client_id},
             )
 
-            if key == "presentvalue":
+            if key == "presentvalue" and not self._cov_covers_priority_properties():
                 self._schedule_priority_array_refresh()
 
 
@@ -958,60 +1076,3 @@ class BacnetClientPointText(BacnetClientPointEntityBase, TextEntity):
             raise HomeAssistantError("Point is read-only")
         await self._async_write_present_value(str(value))
 
-
-class BacnetClientWritePrioritySelect(SelectEntity, RestoreEntity):
-    """Per-client BACnet write priority (8..16) applied to commandable writes."""
-
-    _attr_should_poll = False
-    _attr_has_entity_name = True
-    _attr_entity_registry_enabled_default = False
-    _attr_entity_category = EntityCategory.CONFIG
-    _attr_icon = "mdi:priority-high"
-    _attr_name = "Write priority"
-    _attr_options = [str(priority) for priority in WRITE_PRIORITY_OPTIONS]
-
-    def __init__(
-        self,
-        hass: HomeAssistant,
-        entry_id: str,
-        client_id: str,
-        client_instance: int,
-    ) -> None:
-        self.hass = hass
-        self._entry_id = str(entry_id)
-        self._client_id = str(client_id)
-        self._client_instance = int(client_instance)
-
-        self._attr_unique_id = f"{self._entry_id}-{self._client_id}-write-priority"
-        self.entity_id = f"select.bacnet_doi_{self._client_instance}_write_priority"
-        self._attr_current_option = str(
-            _client_write_priority_get(hass, self._entry_id, self._client_id)
-        )
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        return _client_device_info(
-            self.hass, self._entry_id, self._client_id, self._client_instance
-        )
-
-    async def async_added_to_hass(self) -> None:
-        await super().async_added_to_hass()
-        last_state = await self.async_get_last_state()
-        value = (
-            last_state.state
-            if last_state is not None and last_state.state in self._attr_options
-            else self._attr_current_option
-        )
-        self._attr_current_option = str(
-            _client_write_priority_set(self.hass, self._entry_id, self._client_id, value)
-        )
-
-    async def async_select_option(self, option: str) -> None:
-        validated = _client_write_priority_set(
-            self.hass, self._entry_id, self._client_id, option
-        )
-        self._attr_current_option = str(validated)
-        self.async_write_ha_state()
-        _LOGGER.debug(
-            "Write priority for client %s set to %s", self._client_id, validated
-        )

@@ -19,13 +19,16 @@ from .const import (
     CONF_IMPORT_LABEL,
     CONF_IMPORT_LABELS,
     CONF_PUBLISH_MODE,
+    CONF_WRITE_PRIORITY,
     DEFAULT_BACNET_DEVICE_DESCRIPTION,
     DEFAULT_BACNET_OBJECT_NAME,
     DEFAULT_IMPORT_LABEL_COLOR,
     DEFAULT_IMPORT_LABEL_ICON,
     DEFAULT_IMPORT_LABEL_NAME,
+    DEFAULT_WRITE_PRIORITY,
     DOMAIN,
     PUBLISH_MODE_LABELS,
+    WRITE_PRIORITY_OPTIONS,
 )
 from .discovery import label_choices
 
@@ -430,6 +433,11 @@ class BacnetHubOptionsFlow(OptionsFlow):
         current_device_description = _normalized_text(
             self._opts.get(CONF_DEVICE_DESCRIPTION), DEFAULT_BACNET_DEVICE_DESCRIPTION
         )
+        current_write_priority = _as_int(
+            self._opts.get(CONF_WRITE_PRIORITY, DEFAULT_WRITE_PRIORITY), DEFAULT_WRITE_PRIORITY
+        )
+        if current_write_priority not in WRITE_PRIORITY_OPTIONS:
+            current_write_priority = DEFAULT_WRITE_PRIORITY
 
         default_label_id = await _async_ensure_default_label(self.hass)
         label_options = label_choices(self.hass)
@@ -473,11 +481,16 @@ class BacnetHubOptionsFlow(OptionsFlow):
             if not selected_labels:
                 errors[CONF_IMPORT_LABELS] = "invalid_label_selection"
 
+            write_priority = _as_int(user_input.get(CONF_WRITE_PRIORITY), current_write_priority)
+            if write_priority not in WRITE_PRIORITY_OPTIONS:
+                errors[CONF_WRITE_PRIORITY] = "invalid_write_priority"
+
             if not errors:
                 self._opts["instance"] = inst
                 self._opts["address"] = addr
                 self._opts[CONF_DEVICE_NAME] = object_name
                 self._opts[CONF_DEVICE_DESCRIPTION] = device_description
+                self._opts[CONF_WRITE_PRIORITY] = write_priority
                 self._opts[CONF_DEBUG_BACPYPES] = bool(
                     user_input.get(CONF_DEBUG_BACPYPES, False)
                 )
@@ -503,6 +516,20 @@ class BacnetHubOptionsFlow(OptionsFlow):
                     CONF_DEVICE_DESCRIPTION, default=current_device_description
                 ): sel.TextSelector(
                     sel.TextSelectorConfig(multiline=False, type=sel.TextSelectorType.TEXT)
+                ),
+                vol.Required(
+                    CONF_WRITE_PRIORITY, default=str(current_write_priority)
+                ): sel.SelectSelector(
+                    sel.SelectSelectorConfig(
+                        options=[
+                            sel.SelectOptionDict(
+                                value=str(priority),
+                                label=f"{priority} (Manual Operator)" if priority == 8 else str(priority),
+                            )
+                            for priority in WRITE_PRIORITY_OPTIONS
+                        ],
+                        mode=sel.SelectSelectorMode.DROPDOWN,
+                    )
                 ),
                 vol.Required(CONF_IMPORT_LABELS, default=current_labels): sel.SelectSelector(
                     sel.SelectSelectorConfig(

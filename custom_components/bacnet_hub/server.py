@@ -12,7 +12,13 @@ from bacpypes3.errors import ExecutionError
 from bacpypes3.vendor import get_vendor_info
 from bacpypes3.object import ObjectType, PropertyIdentifier
 from bacpypes3.basetypes import IPMode, HostNPort, BDTEntry
-from bacpypes3.apdu import IAmRequest, WritePropertyRequest
+from bacpypes3.apdu import (
+    ConfirmedCOVNotificationRequest,
+    IAmRequest,
+    SimpleAckPDU,
+    UnconfirmedCOVNotificationRequest,
+    WritePropertyRequest,
+)
 from bacpypes3.pdu import Address
 
 # Service mixins (enable standard services including COV)
@@ -38,6 +44,41 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# bacpypes3 modules whose debug output is useful for protocol diagnostics:
+# application-level request/indication/response/confirmation, the COV
+# client/server handlers and Who-Is/I-Am processing.
+BACPYPES_DEBUG_MODULES: tuple[str, ...] = (
+    "bacpypes3.app",
+    "bacpypes3.service.cov",
+    "bacpypes3.service.device",
+)
+
+
+def set_bacpypes_debug(enabled: bool, modules: Iterable[str] = BACPYPES_DEBUG_MODULES) -> list[str]:
+    """Switch bacpypes3's module debug output on or off.
+
+    bacpypes3 guards every debug statement with a module-global ``_debug``
+    flag that only its own argparse helper sets; raising the logger level
+    alone produces no output. The flag lives in ``bacpypes3.debugging
+    .module_loggers`` keyed by the module's logger. Records propagate to
+    Home Assistant's handlers, so no stream handler is added. Returns the
+    module names that were switched.
+    """
+    try:
+        from bacpypes3.debugging import module_loggers
+    except Exception:  # pragma: no cover - bacpypes3 without the helper
+        return []
+    switched: list[str] = []
+    for name in modules:
+        logger = logging.getLogger(name)
+        globs = module_loggers.get(logger)
+        if globs is None:
+            continue
+        globs["_debug"] = 1 if enabled else 0
+        logger.setLevel(logging.DEBUG if enabled else logging.NOTSET)
+        switched.append(name)
+    return switched
 
 _DEFAULT_PREFIX = 24
 _DEFAULT_PORT = 47808
@@ -193,6 +234,10 @@ class HubApp(
         self.on_i_am: Any = None
         self.local_device_instance: int | None = None
         self._bg_tasks: set[asyncio.Task] = set()
+        # COV subscriptions the hub holds on remote devices, keyed by
+        # (address, subscriber process id, monitored object). See
+        # client_runtime.CovObjectSubscription.
+        self._hub_cov_contexts: dict[tuple[Any, int, Any], Any] = {}
 
     def close(self) -> None:
         cancel_tasks(self._bg_tasks)
@@ -231,6 +276,38 @@ class HubApp(
             raise
         except Exception:
             _LOGGER.debug("I-Am hook failed", exc_info=True)
+
+    def _hub_cov_context(self, apdu: Any) -> Any | None:
+        key = (
+            apdu.pduSource,
+            apdu.subscriberProcessIdentifier,
+            apdu.monitoredObjectIdentifier,
+        )
+        return self._hub_cov_contexts.get(key)
+
+    async def do_ConfirmedCOVNotificationRequest(
+        self, apdu: ConfirmedCOVNotificationRequest
+    ) -> None:
+        # The hub shares one subscriber process id across all of its
+        # subscriptions, so notifications are matched on the monitored object
+        # as well; bacpypes3's own lookup only knows (address, process id).
+        context = self._hub_cov_context(apdu)
+        if context is None:
+            await super().do_ConfirmedCOVNotificationRequest(apdu)
+            return
+        for property_value in apdu.listOfValues or ():
+            await context.put(property_value)
+        await self.response(SimpleAckPDU(context=apdu))
+
+    async def do_UnconfirmedCOVNotificationRequest(
+        self, apdu: UnconfirmedCOVNotificationRequest
+    ) -> None:
+        context = self._hub_cov_context(apdu)
+        if context is None:
+            await super().do_UnconfirmedCOVNotificationRequest(apdu)
+            return
+        for property_value in apdu.listOfValues or ():
+            await context.put(property_value)
 
     async def do_WritePropertyRequest(self, apdu: WritePropertyRequest):
         """
@@ -399,12 +476,9 @@ class BacnetHubServer:
         self._iam_last_seen: dict[tuple[int, str], float] = {}
 
     async def start(self) -> None:
+        switched = set_bacpypes_debug(self.debug_bacpypes)
         if self.debug_bacpypes:
-            for name in (
-                "bacpypes3", "bacpypes3.app", "bacpypes3.apdu",
-                "bacpypes3.pdu", "bacpypes3.service.cov"
-            ):
-                logging.getLogger(name).setLevel(logging.DEBUG)
+            _LOGGER.info("bacpypes3 debug output enabled for %s", ", ".join(switched))
 
         # Version info from manifest/installation
         try:

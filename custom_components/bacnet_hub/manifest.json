@@ -1,7 +1,7 @@
 {
   "domain": "bacnet_hub",
   "name": "BACnet Hub",
-  "version": "2.0.3-beta.167",
+  "version": "2.1.0-beta.173",
   "documentation": "https://github.com/magliaral/ha-bacnet-hub",
   "issue_tracker": "https://github.com/magliaral/ha-bacnet-hub/issues",
   "codeowners": [
@@ -16,7 +16,7 @@
   "config_flow": true,
   "single_config_entry": true,
   "requirements": [
-    "bacpypes3==0.0.106",
+    "bacpypes3==0.0.108",
     "PyYAML>=6.0.1"
   ],
   "loggers": [

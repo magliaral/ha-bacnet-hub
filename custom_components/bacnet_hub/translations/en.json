@@ -27,7 +27,11 @@
           "address": "Local BACnet/IP address (for example 192.168.31.36/24:47808)",
           "device_name": "BACnet Object Name",
           "device_description": "BACnet Device Description",
+          "write_priority": "Write priority (BACnet)",
           "debug_bacpypes": "Enable verbose bacpypes3 debug logging"
+        },
+        "data_description": {
+          "write_priority": "Priority used for writes to commandable points of all client devices. 8 = Manual Operator (overrides the controller's own program until the slot is released), 16 = lowest priority."
         }
       },
       "labels": {
@@ -39,7 +43,8 @@
       }
     },
     "error": {
-      "invalid_label_selection": "Please select at least one valid label."
+      "invalid_label_selection": "Please select at least one valid label.",
+      "invalid_write_priority": "Please choose a write priority between 8 and 16."
     }
   },
   "services": {
@@ -65,4 +70,3 @@
     }
   }
 }
-

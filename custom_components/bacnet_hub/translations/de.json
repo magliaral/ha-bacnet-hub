@@ -27,7 +27,11 @@
           "address": "Lokale BACnet/IP-Adresse (zum Beispiel 192.168.31.36/24:47808)",
           "device_name": "BACnet Objektname",
           "device_description": "BACnet Gerätebeschreibung",
+          "write_priority": "Schreibpriorität (BACnet)",
           "debug_bacpypes": "Ausführliches bacpypes3-Debug-Logging aktivieren"
+        },
+        "data_description": {
+          "write_priority": "Priorität für Schreibzugriffe auf kommandierbare Punkte aller Client-Geräte. 8 = Manual Operator (übersteuert das Programm des Controllers, bis der Slot freigegeben wird), 16 = niedrigste Priorität."
         }
       },
       "labels": {
@@ -39,7 +43,8 @@
       }
     },
     "error": {
-      "invalid_label_selection": "Bitte mindestens ein gültiges Label auswählen."
+      "invalid_label_selection": "Bitte mindestens ein gültiges Label auswählen.",
+      "invalid_write_priority": "Bitte eine Schreibpriorität zwischen 8 und 16 wählen."
     }
   },
   "services": {

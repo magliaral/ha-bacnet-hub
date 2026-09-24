@@ -32,6 +32,7 @@ from .const import (
     DEFAULT_PUBLISH_MODE,
     DOMAIN,
     KEY_CLIENT_COV_SUBSCRIBE_SEM,
+    KEY_CLIENT_COV_UNSUPPORTED,
     KEY_CLIENT_POINT_ENTITIES,
     hub_display_name,
     PUBLISH_MODE_LABELS,
@@ -345,6 +346,27 @@ def _is_managed_published_unique_id(unique_id: str) -> bool:
     if len(parts) >= 6 and parts[-3] in managed_types:
         return True
     return False
+
+
+def _cleanup_removed_entities(hass: HomeAssistant, entry: ConfigEntry) -> int:
+    """Drop registry entries of entity kinds this integration no longer creates.
+
+    2.0 replaced the per-point release buttons with the bacnet_hub.release
+    service and the per-device write-priority select with a global option;
+    their registry entries would otherwise linger as "no longer provided".
+    """
+    registry = er.async_get(hass)
+    removed = 0
+    for reg_entry in list(er.async_entries_for_config_entry(registry, entry.entry_id)):
+        unique_id = str(reg_entry.unique_id or "")
+        stale = (reg_entry.domain == "select" and unique_id.endswith("-write-priority")) or (
+            reg_entry.domain == "button" and unique_id.endswith("-release")
+        )
+        if not stale:
+            continue
+        registry.async_remove(reg_entry.entity_id)
+        removed += 1
+    return removed
 
 
 def _cleanup_orphan_published_entities(
@@ -1017,6 +1039,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     published: List[Dict[str, Any]] = merged_config.get("published") or []
     removed_stale_entities = _cleanup_orphan_published_entities(hass, entry, published)
+    removed_stale_entities += _cleanup_removed_entities(hass, entry)
     if removed_stale_entities:
         _LOGGER.info(
             "Removed %d stale BACnet entities for entry %s",
@@ -1185,9 +1208,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     data[KEY_PUBLISHED_CACHE].pop(entry.entry_id, None)
     data.setdefault("client_diag_cache", {}).pop(entry.entry_id, None)
     data.setdefault("client_point_cache", {}).pop(entry.entry_id, None)
-    data.setdefault("client_write_priority", {}).pop(entry.entry_id, None)
     data[KEY_CLIENT_IAM_CACHE].pop(entry.entry_id, None)
     data.setdefault(KEY_CLIENT_COV_SUBSCRIBE_SEM, {}).pop(entry.entry_id, None)
+    data.setdefault(KEY_CLIENT_COV_UNSUPPORTED, {}).pop(entry.entry_id, None)
     pending = event_sync_tasks.pop(entry.entry_id, None)
     if pending and not pending.done():
         pending.cancel()
@@ -1214,7 +1237,6 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     data[KEY_PUBLISHED_CACHE].pop(entry.entry_id, None)
     data.setdefault("client_diag_cache", {}).pop(entry.entry_id, None)
     data.setdefault("client_point_cache", {}).pop(entry.entry_id, None)
-    data.setdefault("client_write_priority", {}).pop(entry.entry_id, None)
     data[KEY_CLIENT_IAM_CACHE].pop(entry.entry_id, None)
 
     removed_entities, removed_devices = _hard_cleanup_entry_registries(hass, entry.entry_id)

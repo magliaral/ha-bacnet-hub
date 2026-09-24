@@ -1,335 +1,263 @@
 # BACnet Hub for Home Assistant
 
-Expose Home Assistant entities as BACnet objects on a local BACnet/IP device and import remote BACnet client points back into Home Assistant.
+Connects Home Assistant to a BACnet/IP network in both directions: it publishes
+selected Home Assistant entities as objects of a local BACnet device, and it
+imports the points of BACnet controllers on the network as Home Assistant
+entities.
 
-Built with `bacpypes3`.
+## What it does
 
-> [!IMPORTANT]
-> **Breaking change in 2.0:** the per-point **Release** `button` entities
-> (`button.bacnet_doi_..._release`) were removed and replaced by the
-> [`bacnet_hub.release` service](#bacnet_hubrelease) plus a bundled
-> [tile feature](#lovelace-tile-feature).
->
-> How to migrate:
-> - **Automations/scripts** that pressed a release button now call the
->   `bacnet_hub.release` service with the point's entity as target
->   (optional `priority`, default `8`).
-> - **Dashboards**: edit the point's Tile card and add
->   **BACnet: Release manual override** under **Features** —
->   see [Setting it up on a tile](#setting-it-up-on-a-tile).
-> - Orphaned button entries in the entity registry disappear after the next
->   reload of the integration.
+**Home Assistant → BACnet.** Entities you tag with a label are published as
+BACnet objects (analog, binary or multi-state values) of the hub's own BACnet
+device. A building management system or controller can read them and, for
+supported entities, write them back.
 
-## What This Integration Does
-
-This integration has two roles:
-
-1. Home Assistant -> BACnet (local BACnet device)
-- Publishes selected HA entities as BACnet objects.
-- Keeps BACnet present values synchronized from HA state changes.
-- Supports BACnet -> HA writeback for supported mappings.
-
-2. BACnet -> Home Assistant (remote BACnet clients)
-- Discovers remote BACnet devices via `Who-Is/I-Am`.
-- Imports supported remote points as HA entities.
-- Uses BACnet COV subscriptions for event-driven updates.
-
-## Key Features
-
-- Labels-first auto mapping (no manual mapping UI).
-- Automatic mapping lifecycle: add, refresh, remove, cleanup.
-- Event-driven sync with debounce on registry/label/area changes.
-- Deterministic entity IDs and stable unique IDs.
-- Configurable BACnet write priority (8..16) per discovered client device.
-- `bacnet_hub.release` service plus a bundled tile feature to relinquish the commanded value.
-- Built-in diagnostics for hub and discovered clients.
-- Integration services: `bacnet_hub.reload`, `bacnet_hub.release`.
+**BACnet → Home Assistant.** Controllers found on the network appear as
+devices in Home Assistant with their inputs, outputs and values as entities.
+Changes arrive event-driven through BACnet COV subscriptions; commandable
+points can be written from Home Assistant and released again.
 
 ## Requirements
 
-- Home Assistant with custom integrations enabled.
-- Network access to BACnet/IP segment.
-- Dependency (from `manifest.json`):
-  - `bacpypes3==0.0.106`
+- Home Assistant 2026.3.0 or newer.
+- A network connection to the BACnet/IP segment (IPv4). BACnet uses UDP
+  port 47808 by default; the hub needs that port on its own IP address.
+- One BACnet Hub per Home Assistant instance.
 
 ## Installation
 
-### HACS (custom repository)
+### HACS
 
-1. HACS -> Integrations -> Custom repositories.
-2. Add this repository as type `Integration`.
-3. Install `BACnet Hub`.
-4. Restart Home Assistant.
-5. Settings -> Devices & Services -> Add Integration -> `BACnet Hub`.
+1. HACS → Integrations → three-dot menu → **Custom repositories**.
+2. Add `https://github.com/magliaral/ha-bacnet-hub` with type **Integration**.
+3. Download **BACnet Hub** and restart Home Assistant.
+4. Settings → Devices & services → **Add integration** → **BACnet Hub**.
 
 ### Manual
 
-Copy `custom_components/bacnet_hub` to:
+Copy the folder `custom_components/bacnet_hub` into your configuration
+directory as `config/custom_components/bacnet_hub`, restart Home Assistant and
+add the integration as above.
 
-`config/custom_components/bacnet_hub`
+## Setup
 
-Then restart Home Assistant.
+The setup dialog has two steps.
 
-## Configuration
+**Device settings** describe the hub's own BACnet device:
 
-### Initial setup
+| Field | Meaning | Default |
+| --- | --- | --- |
+| Instance number | BACnet device instance of the hub (`0`–`4194302`). Must be unique on the network. | `8123` |
+| Local BACnet/IP address | IP address the hub binds to, as `IPv4[/prefix][:port]`, for example `192.168.31.36/24:47808`. | detected |
+| BACnet Object Name | The device's `objectName`. | `HA-BACnet-Hub` |
+| BACnet Device Description | The device's `description`. | `BACnet Hub - Home Assistant Custom Integration` |
 
-Required fields:
-- `instance` (BACnet device instance, `0..4194302`)
-- `address` (`IPv4[/prefix][:port]`, example: `192.168.31.36/24:47808`)
-- `device_name` (BACnet device `objectName`)
-- `device_description` (BACnet device `description`)
+**Labels** select what gets published. Pick at least one label; every entity
+that carries the label directly, through its device, or through the area the
+entity or device is assigned to, is published. A label `BACnet` is created for
+you if it does not exist yet.
 
-Defaults:
-- `device_name`: `HA-BACnet-Hub`
-- `device_description`: `BACnet Hub - Home Assistant Custom Integration`
+After setup the hub starts discovering BACnet devices on the network. Their
+points are imported **disabled by default**: open the device under Settings →
+Devices & services → BACnet Hub and enable the entities you want to use.
 
-### Options
+## Options
 
-Beyond the device fields above, the options flow offers:
+Settings → Devices & services → BACnet Hub → **Configure** offers the device
+settings above plus:
 
-- `debug_bacpypes` (default: off) — escalates the `bacpypes3` loggers to `DEBUG` for wire-level troubleshooting. Leave off in normal operation; the log volume is substantial.
+- **Write priority** (`8`–`16`, default `8`): the BACnet priority used for
+  every write to a commandable point of any client device. `8` is *Manual
+  Operator* and overrides the controller's own program until the slot is
+  released; `16` is the lowest priority. Changing it reloads the integration.
+- **Labels**: the labels whose entities are published.
+- **Enable verbose bacpypes3 debug logging**: writes every BACnet request,
+  response and notification to the Home Assistant log. Only for
+  troubleshooting; the log grows quickly.
 
-### Label import model
+## Publishing Home Assistant entities to BACnet
 
-The integration runs in labels mode and auto-manages mappings from selected labels.
+Published entities are kept in sync automatically: adding or removing a label,
+moving a device to another area or renaming an entity is picked up within a
+few seconds, and objects whose entity no longer matches are removed.
 
-- On setup/options, at least one label must be selected.
-- A default label is auto-created if possible:
-  - Name: `BACnet`
-  - Icon: `mdi:server-network-outline`
-  - Color: `light-green`
-- Entities can be discovered by direct entity label, by device label, or by labels assigned to the linked area (entity area or device area).
+### Object type per entity
 
-## Home Assistant -> BACnet Mapping
+- `binary_sensor`, `switch`, `light`, `lock`, `cover`, `input_boolean`,
+  `alarm_control_panel`, `device_tracker`, `button` → `binaryValue`
+- Entities with a numeric state or a unit → `analogValue`
+- Everything else → `binaryValue`
 
-### Automatic object type selection (generic entities)
+### Climate entities
 
-- Binary-like domains -> `binaryValue`:
-  - `binary_sensor`, `switch`, `light`, `lock`, `cover`, `input_boolean`, `alarm_control_panel`, `device_tracker`, `button`
-- Numeric/unit-based states -> `analogValue`
-- Fallback -> `binaryValue`
+A `climate` entity is published as several objects:
 
-### Climate mapping
+- `hvac_mode` → `binaryValue` for plain off/heat thermostats, otherwise
+  `multiStateValue` with the mode names as state text
+- `hvac_action` → `binaryValue` (read-only)
+- `current_temperature` → `analogValue`
+- `set_temperature` (the `temperature` attribute) → `analogValue`
 
-For `climate.*`, multiple BACnet mappings can be created:
+### Mirror entities
 
-- `hvac_mode`
-  - `binaryValue` for simple `off/heat`
-  - otherwise `multiStateValue` with dynamic `stateText`
-- `hvac_action` -> `binaryValue` (read-only mirror)
-- `current_temperature` -> `analogValue`
-- `set_temperature` (reads HA attribute `temperature`) -> `analogValue`
+Every published object also appears in Home Assistant as a read-only mirror
+(`sensor` or `binary_sensor`) so you can see what the BACnet side sees.
+Setpoints and modes are marked as configuration entities.
 
-### BACnet object support (publisher)
+### Writes from the BACnet side
 
-- `analogValue`
-- `binaryValue`
-- `multiStateValue`
+A controller may write a published object when the entity supports it; other
+writes are rejected with `writeAccessDenied`.
 
-Published mappings are mirrored as observer entities and split by platform:
-- `sensor` / `binary_sensor` only (non-interactive read-only observers)
-- configuration-like observers use `entity_category=config` (for example climate setpoints/modes)
+- `light`, `switch`, `fan`, `group` → turned on or off
+- `cover` → opened or closed
+- `number`, `input_number` → value set
+- `climate` → HVAC mode or target temperature set
 
-Note: This avoids confusing UI behavior where toggles/sliders can be clicked but immediately snap back.
+## Importing BACnet devices and points
 
-## BACnet -> Home Assistant Writeback (for published mappings)
+The hub answers and sends `Who-Is` on the local segment and imports the points
+of every device that responds. New devices are picked up on the fly; the
+network is rescanned every 15 minutes.
 
-Write requests are accepted only if mapping/service checks pass; otherwise BACnet write is denied (`writeAccessDenied`).
+### Supported point types
 
-Supported write targets:
+| BACnet object | Home Assistant entity |
+| --- | --- |
+| `analog-input` | `sensor` |
+| `analog-output` | `number` if commandable, otherwise `sensor` |
+| `analog-value` | `number` |
+| `binary-input` | `binary_sensor` |
+| `binary-output` | `switch` if commandable, otherwise `binary_sensor` |
+| `binary-value` | `switch` |
+| `multi-state-value` | `select` |
+| `characterstring-value` | `text` |
 
-- `light`, `switch`, `fan`, `group` -> `turn_on` / `turn_off`
-- `cover` -> `open_cover` / `close_cover`
-- `number`, `input_number` -> `set_value`
-- `climate`:
-  - HVAC mode mapping -> `set_hvac_mode`
-  - setpoint mapping -> `set_temperature`
+Outputs are commandable when the object has a `priorityArray`.
 
-## BACnet Client Discovery and Point Import
+### Live updates
 
-The integration discovers remote BACnet devices and imports supported points into HA.
+The hub subscribes to change-of-value (COV) notifications for every imported
+point, so state changes arrive immediately. Where a device supports it, the
+priority array and relinquish default are subscribed as well; on devices that
+do not, these two properties are re-read one second after every value change
+and polled every 30 seconds, so a change to the priority array that does not
+change the value itself can take up to 30 seconds to show.
 
-### Supported remote BACnet point types
+### Writing and releasing commandable points
 
-- `analog-input` (`ai`)
-- `analog-output` (`ao`)
-- `analog-value` (`av`)
-- `binary-input` (`bi`)
-- `binary-output` (`bo`)
-- `binary-value` (`bv`)
-- `multi-state-value` (`mv`)
-- `characterstring-value` (`csv`)
+Writes from Home Assistant go to the configured **Write priority**. A value
+written this way stays in the controller's priority array until it is
+released; releasing writes BACnet `Null` to that slot so the controller's own
+program takes over again.
 
-### Imported platform mapping
+Release a point with the `bacnet_hub.release` service or with the bundled tile
+feature (see below). Commandable points expose two extra state attributes:
 
-- `ai` -> `sensor` (read-only)
-- `ao` -> `number` if writable, else `sensor`
-- `av` -> `number` (writable)
-- `bi` -> `binary_sensor` (read-only)
-- `bo` -> `switch` if writable, else `binary_sensor`
-- `bv` -> `switch` (writable)
-- `mv` -> `select` (writable)
-- `csv` -> `text` (writable)
-
-Writable conditions:
-- `ao` / `bo` require `priorityArray` support.
-- `av`, `bv`, `mv`, `csv` are writable by design.
-
-Implementation detail:
-- Imported client point entities are created with `entity_registry_enabled_default = false` (disabled by default until enabled in HA).
-
-### Write priority and release (commandable points)
-
-Commandable points (`ao`, `bo`, `av`, `bv`, `mv` with a `priorityArray`) are written at a configurable BACnet priority:
-
-- Each discovered client device gets a **Write priority** `select` entity (options `8..16`, default `8`, category *Configuration*, disabled by default).
-  - `8` is *Manual Operator* — writes from HA override a controller's own program until the slot is released.
-  - `16` is the lowest priority and matches the behavior of a priority-less write.
-  - The chosen priority survives restarts.
-- Releasing a slot is done with the `bacnet_hub.release` service (see [Services](#services)) or the bundled tile feature (see [Lovelace tile feature](#lovelace-tile-feature)).
-  - **Breaking change (2.0):** the former per-point **Release** `button` entities (`button.bacnet_doi_<client>_<type>_<instance>_release`) were removed. Automations or dashboards that pressed them must call the service (or use the tile feature) instead. Orphaned button entries in the entity registry are not deleted actively; they disappear after the next reload of the integration.
-  - The release writes BACnet `Null` at the chosen priority, clearing that slot in the point's `priorityArray` so the remote controller takes over again with its own value.
-  - Without a release, a value written from HA stays latched in the priority array indefinitely.
-- Writable client point entities expose extra state attributes:
-  - `priority_array`: all 16 slots, `null` for free slots. Excluded from the recorder so the database is not flooded on every state change.
-  - `relinquish_default`: the value that applies when no slot is occupied.
-
-## Synchronization Model
-
-- Initial auto-sync runs during setup.
-- Mapping refresh is triggered by:
-  - `entity_registry_updated`
-  - `device_registry_updated`
-  - `label_registry_updated`
-  - `area_registry_updated`
-- Debounce: 2 seconds.
-- Stale/orphan published entities are automatically cleaned up.
-
-## Diagnostics
-
-### Hub diagnostics
-
-Provides diagnostic sensors (examples):
-
-- description
-- firmware revision
-- model name
-- object identifier / object name
-- system status
-- vendor identifier / vendor name
-- IP address / subnet mask / MAC address
-
-### Client diagnostics
-
-For discovered clients, diagnostic sensors include similar device and network fields.
-
-## Entity IDs and Unique IDs
-
-Published mirror entities use deterministic IDs based on hub instance + BACnet object instance:
-
-- `sensor.bacnet_doi_<hub_instance>_av_<instance>`
-- `binary_sensor.bacnet_doi_<hub_instance>_bv_<instance>`
-
-Client point entities:
-
-- `<platform>.bacnet_doi_<client_instance>_<type_slug>_<object_instance>`
-- Write priority: `select.bacnet_doi_<client_instance>_write_priority`
-
-Published unique IDs are stable and hub-scoped:
-
-- `bacnet_hub:hub:<hub_key>:<object-type>:<instance>`
+- `priority_array`: all 16 slots, `null` for free ones (not recorded in the
+  database).
+- `relinquish_default`: the value that applies when no slot is occupied.
 
 ## Services
 
-### `bacnet_hub.reload`
-
-Reload one BACnet Hub config entry.
-
-Fields:
-- `entry_id` (optional)
-  - If omitted and exactly one BACnet Hub entry exists, that entry is reloaded.
-
 ### `bacnet_hub.release`
 
-Release a priority array slot on one or more commandable client points (targeted by entity).
-
-Fields:
-- `priority` (optional, `1..16`, default `8` = *Manual Operator*)
-  - The slot that is cleared by writing BACnet `Null`.
-
-Behavior:
-- Only points that support `priorityArray` are accepted; other targets raise a validation error.
-- After the write the point is re-read immediately, so the HA state updates without waiting for the next COV notification.
-- With multiple targets, errors are collected per entity and reported bundled at the end instead of aborting on the first failure.
-
-Example:
+Releases a priority slot on one or more commandable client points. Target the
+points by entity; `priority` is optional and defaults to `8`. Only points with
+a priority array are accepted. The point is re-read right after the release,
+and with several targets all errors are reported together at the end.
 
 ```yaml
 service: bacnet_hub.release
 target:
-  entity_id: number.bacnet_doi_1234_ao_1
+  entity_id: switch.bacnet_doi_1031010_bo_1
 data:
   priority: 8
 ```
 
-## Lovelace tile feature
+### `bacnet_hub.reload`
 
-The integration ships a tile feature (`custom:bacnet-release-feature`) and serves it automatically — no manual dashboard resource setup is needed. It replaces the removed release button entities and offers itself on every entity that exposes a `priority_array` attribute, i.e. the writable client points (`number`, `switch`, `select`) of commandable objects.
+Reloads the integration. `entry_id` is optional when only one BACnet Hub is
+configured.
 
-### Setting it up on a tile
+## Release button on the dashboard
 
-1. Open the dashboard editor and edit (or add) a **Tile** card for the point, e.g. `switch.bacnet_doi_1234_bo_1`.
-2. Under **Features** click **Add feature** and pick **BACnet: Release manual override** (on a German frontend: **BACnet: Handbedienung aufheben**). The entry only shows up for entities that carry `priority_array`; for sensors or published mirrors it is not offered.
-3. Optionally set the `priority` (1–16) in the card's YAML. It defaults to `8` and must match the slot your writes land in — with the default **Write priority** of `8` nothing needs to be changed. The feature has no visual editor beyond that single option.
+The integration ships a tile feature that adds a **Release** button to a
+point's Tile card. No dashboard resource has to be added.
+
+1. Edit or add a **Tile** card for the point, for example
+   `switch.bacnet_doi_1031010_bo_1`.
+2. Under **Features** choose **BACnet: Release manual override** (German
+   frontend: **BACnet: Handbedienung aufheben**). The feature is only offered
+   for entities that have a `priority_array` attribute.
+3. The priority defaults to `8`; change it in the card's YAML only if you use
+   a different write priority.
 
 ```yaml
 type: tile
-entity: switch.bacnet_doi_1234_bo_1
+entity: switch.bacnet_doi_1031010_bo_1
 features:
   - type: toggle
   - type: custom:bacnet-release-feature
     priority: 8
 ```
 
-### Behavior
+The button is enabled while the configured slot is occupied and shown in the
+warning color, so an active manual override is easy to spot. Clicking releases
+immediately, without a confirmation dialog.
 
-- Full-width **Release** button (German frontend: **Aufheben**); only enabled while the configured slot is occupied, greyed out otherwise.
-- Warning-colored while active — a manual override is a state the operator is supposed to notice.
-- Releases immediately on click (no confirmation dialog) by calling `bacnet_hub.release` for the tile's entity.
-- The module registers itself once HA's frontend is ready and repairs any tile that rendered before that; a one-line version stamp appears in the browser console on load, and `window.__bacnetReleaseFeature.heal()` can be run from the console for support.
+## Entity IDs
+
+Entity IDs are stable and follow the BACnet addressing, which makes them easy
+to use in automations:
+
+- Imported client points:
+  `<platform>.bacnet_doi_<device instance>_<type>_<object instance>`, for
+  example `switch.bacnet_doi_1031010_bo_1` for Binary Output 1 of device
+  1031010.
+- Mirrors of published objects: `sensor.bacnet_doi_<hub instance>_av_<n>` and
+  `binary_sensor.bacnet_doi_<hub instance>_bv_<n>`.
+
+## Diagnostics
+
+The hub device and every discovered controller provide diagnostic sensors
+with the BACnet device properties (object name, description, model, firmware,
+vendor, system status) and the network settings (IP address, subnet mask, MAC
+address).
 
 ## Limitations
 
-- BACnet/IP focus (`IPv4/prefix:port` bind format).
-- Single config entry (`single_config_entry: true`).
-- Labels-first auto model; legacy/manual mappings are removed during sync.
-- Published `multiStateValue` currently has no dedicated HA mirror platform entity.
-- BACnet sends no COV for `priorityArray`/`relinquishDefault`; besides updating on writes/releases from HA and after COV `presentValue` changes, commandable points poll these properties every 30 seconds, so external changes appear with up to that much delay.
+- BACnet/IP over IPv4 only; no BBMD or foreign device registration.
+- One hub per Home Assistant instance.
+- Mappings are managed through labels only; there is no manual mapping editor.
+- Published `multiStateValue` objects have no mirror entity.
+- On devices that do not support COV for the priority array, changes to it
+  that leave the value unchanged appear with up to 30 seconds delay.
 
 ## Troubleshooting
 
-- No entities imported:
-  - Verify selected labels in options.
-  - Verify labels are attached to entity, its device, or the linked area.
-- Address bind errors (`address already in use`):
-  - Ensure only one BACnet process binds the same IP/port.
-- Direct BACnet writes rejected:
-  - Check write target is supported and corresponding HA service exists.
-- Client points not updating:
-  - Confirm remote device supports COV/read for the point.
-  - Trigger reload via `bacnet_hub.reload`.
+- **No entities are published:** check that the label is selected in the
+  options and attached to the entity, its device or its area.
+- **Imported points are missing:** they are disabled by default; enable them on
+  the device page.
+- **`address already in use` at startup:** another BACnet application on the
+  same host uses the port. Change the port in the address field or stop the
+  other application.
+- **A write from the BACnet side is rejected:** the entity type is not in the
+  list of supported write targets above.
+- **Client points do not update:** confirm the device supports COV for the
+  object, then reload with `bacnet_hub.reload`. For a closer look, enable the
+  bacpypes3 debug option, reproduce the problem, and disable it again.
 
-## Development
+## Upgrading from 1.x
 
-Unit tests live in `tests/` and run against the pinned dependencies:
-
-```bash
-pip install -r requirements_test.txt
-pytest
-```
-
-The CI workflow (`.github/workflows/validate.yml`) runs manifest/translation validation, a Python syntax check, and the test suite on every PR.
+- The per-point **Release** button entities were removed. Automations that
+  pressed them call `bacnet_hub.release` with the point as target instead;
+  dashboards use the tile feature described above.
+- The per-device **Write priority** select entities were removed. The priority
+  is now a single option in the hub's device settings.
+- Stale registry entries of both are cleaned up automatically at the next
+  start of the integration.
 
 ## License
 
