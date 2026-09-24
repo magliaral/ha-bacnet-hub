@@ -81,6 +81,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A device's Error answer to SubscribeCOVProperty (and a few other confirmed
+  services) was silently dropped, because bacpypes3 registers no Error type
+  for those services and the request appeared unanswered until the 10-second
+  timeout. The missing types are now registered at startup, so a declined
+  property subscription is reported immediately and polling starts without
+  delay.
 - A write the device answered with an Error, Reject or Abort was treated as
   success; it is now reported as an error with the device's reason.
 - Status flags with no active flag were cached as unknown.

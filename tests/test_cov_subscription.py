@@ -528,3 +528,52 @@ def test_unsupported_cov_property_cache_is_per_client_and_object_type() -> None:
     assert _cov_unsupported_key("analog-output,0", "priorityArray") not in cache
     assert _client_cov_unsupported(hass, "entry", "client_2") == set()
     assert _client_cov_unsupported(hass, "entry", "client_1") is cache
+
+
+# --- bacpypes3 error types for services it does not register ---------------------
+
+
+def test_missing_bacpypes3_error_types_are_registered_and_decode() -> None:
+    from bacpypes3.apdu import APCISequence, APDU, error_types
+    from bacpypes3.basetypes import ErrorClass, ErrorCode
+    from bacpypes3.pdu import PDU
+
+    from custom_components.bacnet_hub.client_runtime import (
+        BACPYPES3_MISSING_ERROR_SERVICES,
+        register_missing_bacpypes3_error_types,
+    )
+
+    # Importing client_runtime already registered them; a second call is a no-op.
+    assert register_missing_bacpypes3_error_types() == []
+    assert all(service in error_types for service in BACPYPES3_MISSING_ERROR_SERVICES)
+
+    # Error-PDU as a controller sends it for SubscribeCOVProperty (service 28):
+    # invoke id 7, error class property (2), error code not-cov-property (44).
+    raw = bytes([0x50, 0x07, 28, 0x91, 0x02, 0x91, 0x2C])
+    apdu = APDU.decode(PDU(raw))
+    error = APCISequence.decode(apdu)
+
+    assert isinstance(error, ErrorRejectAbortNack)
+    assert error.errorClass == ErrorClass.property
+    assert error.errorCode == ErrorCode.notCovProperty
+    assert "not-cov-property" in str(error)
+
+
+async def test_property_subscription_reports_decoded_device_error() -> None:
+    from bacpypes3.apdu import APCISequence, APDU
+    from bacpypes3.pdu import PDU
+
+    raw = bytes([0x50, 0x07, 28, 0x91, 0x02, 0x91, 0x2C])
+    device_error = APCISequence.decode(APDU.decode(PDU(raw)))
+
+    app = FakeApp(responses=[None, device_error])
+    context, _ = await _open_cov_subscription_context(
+        app, address=ADDRESS, object_identifier=OID, process_id=8123, lifetime=600
+    )
+    assert context is not None
+
+    err = await _open_cov_property_subscription(context, "priorityArray")
+
+    assert isinstance(err, ErrorRejectAbortNack)
+    assert "not-cov-property" in str(err)
+    assert context.property_subscriptions == []

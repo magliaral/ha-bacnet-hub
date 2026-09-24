@@ -8,9 +8,12 @@ from datetime import timedelta
 from typing import Any, Callable, Dict
 
 from bacpypes3.apdu import (
+    ConfirmedServiceChoice,
+    Error as BacnetError,
     ErrorRejectAbortNack,
     SubscribeCOVPropertyRequest,
     SubscribeCOVRequest,
+    error_types as _bacpypes3_error_types,
 )
 from bacpypes3.basetypes import ErrorType, PropertyIdentifier, PropertyReference
 from bacpypes3.pdu import Address
@@ -988,6 +991,45 @@ def _point_platform(point: dict[str, Any]) -> str:
 
 
 _LOGGER = logging.getLogger(__name__)
+
+# Confirmed services for which bacpypes3 (<= 0.0.108) registers no Error
+# type. An Error-PDU for one of them fails to decode ("unrecognized service
+# choice") and the request future never resolves, so a device's regular
+# Result(-) looks like silence. Seen with SubscribeCOVProperty, where a
+# controller's not-cov-property answer was lost.
+BACPYPES3_MISSING_ERROR_SERVICES: tuple[int, ...] = (
+    int(ConfirmedServiceChoice.lifeSafetyOperation),
+    int(ConfirmedServiceChoice.subscribeCOVProperty),
+    int(ConfirmedServiceChoice.getEventInformation),
+    int(ConfirmedServiceChoice.subscribeCOVPropertyMultiple),
+    int(ConfirmedServiceChoice.confirmedCOVNotificationMultiple),
+    int(ConfirmedServiceChoice.confirmedAuditNotification),
+)
+
+
+def register_missing_bacpypes3_error_types(
+    services: tuple[int, ...] = BACPYPES3_MISSING_ERROR_SERVICES,
+) -> list[int]:
+    """Register plain Error types for confirmed services bacpypes3 lacks.
+
+    Idempotent; returns the service choices added by this call.
+    """
+    added: list[int] = []
+    for service_choice in services:
+        if service_choice in _bacpypes3_error_types:
+            continue
+        _bacpypes3_error_types[service_choice] = type(
+            f"Error({ConfirmedServiceChoice(service_choice)})",
+            (BacnetError,),
+            {"service_choice": service_choice},
+        )
+        added.append(int(service_choice))
+    return added
+
+
+# Register at import so every code path that awaits a device answer sees a
+# decoded Error instead of a hang.
+register_missing_bacpypes3_error_types()
 
 
 def _merge_non_none(previous: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
