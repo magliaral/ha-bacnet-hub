@@ -139,24 +139,36 @@ Outputs are commandable when the object has a `priorityArray`.
 ### Live updates
 
 The hub subscribes to change-of-value (COV) notifications for every imported
-point, so state changes arrive immediately. Where a device supports it, the
-priority array and relinquish default are subscribed as well; on devices that
-do not, these two properties are re-read one second after every value change
-and polled every 30 seconds, so a change to the priority array that does not
-change the value itself can take up to 30 seconds to show.
+point, so value and status changes arrive immediately. On commandable points
+the priority array is subscribed as well where the device supports it; on
+devices that do not, it is re-read one second after every value change and
+polled every 30 seconds, so a change to the priority array that does not
+change the value itself can take up to 30 seconds to show. The relinquish
+default is read at import and after every write from Home Assistant.
 
 ### Point status attributes
 
-Every imported point carries the BACnet status of its object as state
-attributes, kept current through COV:
+Every imported point carries the status flags of its object in the
+`status_flags` attribute. They arrive with every COV notification, so they are
+always current:
 
-- `out_of_service`: the object's `outOfService` flag (see the
+```yaml
+status_flags:
+  in_alarm: false
+  fault: false
+  overridden: false
+  out_of_service: false
+```
+
+- `in_alarm`: the object's event state is not `normal`.
+- `fault`: the object's reliability is not `no-fault-detected`.
+- `overridden`: the value is overridden locally at the device.
+- `out_of_service`: the object is out of service (see the
   `bacnet_hub.set_out_of_service` service below).
-- `in_alarm`, `fault`, `overridden`: the object's status flags.
-- `reliability` and `event_state`: for example `no-fault-detected` and
-  `normal`; re-read whenever a status flag changes.
 
-Attributes the device does not report are omitted. Analog `number` entities
+In templates, read a flag with
+`{{ state_attr('sensor.bacnet_doi_1031010_ai_0', 'status_flags').out_of_service }}`.
+The attribute is omitted while the device has not reported the flags. Analog `number` entities
 take their minimum, maximum and step from the object's `minPresValue`,
 `maxPresValue` and `resolution` when the device provides them.
 

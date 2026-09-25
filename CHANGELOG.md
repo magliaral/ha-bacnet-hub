@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** the status attributes of imported points are combined into
+  one `status_flags` attribute with `in_alarm`, `fault`, `overridden` and
+  `out_of_service`, taken from the object's status flags. The separate
+  attributes `out_of_service`, `in_alarm`, `fault`, `overridden`,
+  `reliability` and `event_state` are gone; templates read for example
+  `state_attr(entity, 'status_flags').out_of_service`.
+- Leaner COV: out of service now comes from the status flags that arrive
+  with every value notification, so `outOfService` is no longer subscribed
+  per property. `relinquishDefault` is no longer subscribed either; it is
+  read at import and after writes. Only commandable points keep a property
+  subscription, for `priorityArray`. Reliability and event state are no
+  longer re-read when a status flag changes.
+
 ## [2.3.1] - 2026-09-24
 
 ### Added

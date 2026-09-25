@@ -54,14 +54,11 @@ from .client_runtime import (
     _safe_text,
     _sensor_device_class_from_unit,
     _status_flags_names,
-    _to_bool,
     _to_float,
     _to_int,
 )
 from .client_runtime import (
-    CLIENT_COV_PROPERTY_SUBSCRIPTIONS_ALL,
     CLIENT_COV_PROPERTY_SUBSCRIPTIONS_COMMANDABLE,
-    _async_read_point_status,
     _async_refresh_cov_subscription,
     _async_release_point,
     _async_set_point_out_of_service,
@@ -126,7 +123,6 @@ class BacnetClientPointBase:
 
         self._unsub_points_dispatcher: Callable[[], None] | None = None
         self._readback_task: asyncio.Task | None = None
-        self._status_refresh_task: asyncio.Task | None = None
 
         cache = _client_points_get(hass, entry_id, client_id).get(self._point_key, {})
         type_slug = str(cache.get("type_slug") or "point")
@@ -167,9 +163,6 @@ class BacnetClientPointBase:
         if self._readback_task is not None and not self._readback_task.done():
             self._readback_task.cancel()
         self._readback_task = None
-        if self._status_refresh_task is not None and not self._status_refresh_task.done():
-            self._status_refresh_task.cancel()
-        self._status_refresh_task = None
 
     def _get_point(self) -> dict[str, Any]:
         return dict(
@@ -366,40 +359,6 @@ class BacnetClientPointBase:
             raise HomeAssistantError(f"{self.entity_id}: {err}") from err
         _LOGGER.debug("Wrote presentValue=%r for %s", converted, self._point_key)
 
-    def _schedule_status_refresh(self) -> None:
-        """Re-read reliability/eventState shortly after a status flag changed.
-
-        COV carries statusFlags but not the properties behind them.
-        """
-        point = self._get_point()
-        try:
-            app, address, object_type, object_instance = self._resolve_write_target(point)
-        except HomeAssistantError:
-            return
-        if self._status_refresh_task is not None and not self._status_refresh_task.done():
-            return
-
-        async def _refresh() -> None:
-            await asyncio.sleep(CLIENT_WRITE_READBACK_DELAY_SECONDS)
-            try:
-                updates = await _async_read_point_status(
-                    app, address, object_type, object_instance
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                _LOGGER.debug("Status re-read failed for %s", self._point_key, exc_info=True)
-                return
-            if updates:
-                self._update_point_cache(updates)
-
-        self._status_refresh_task = create_logged_task(
-            self.hass,
-            _refresh(),
-            logger=_LOGGER,
-            message=f"status re-read for {self._point_key}",
-        )
-
 
 class BacnetClientPointEntityBase(BacnetClientPointBase):
     """Primary point entity base: adds the COV subscription runtime."""
@@ -458,9 +417,9 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
             cov_signal,
             self._handle_cov_reregister,
         )
-        # Object-wide COV carries no priorityArray/relinquishDefault. They
-        # are subscribed per property; the poll stays as fallback for devices
-        # that decline SubscribeCOVProperty (see _handle_priority_poll).
+        # Object-wide COV carries no priorityArray. It is subscribed per
+        # property; the poll stays as fallback for devices that decline
+        # SubscribeCOVProperty (see _handle_priority_poll).
         if _point_has_priority_array(self._get_point()):
             self._priority_poll_unsub = async_track_time_interval(
                 self.hass,
@@ -857,9 +816,11 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
                 message=f"COV receive loop for {self._point_key}",
             )
 
-            wanted = list(CLIENT_COV_PROPERTY_SUBSCRIPTIONS_ALL)
-            if _point_has_priority_array(point):
-                wanted.extend(CLIENT_COV_PROPERTY_SUBSCRIPTIONS_COMMANDABLE)
+            wanted = (
+                list(CLIENT_COV_PROPERTY_SUBSCRIPTIONS_COMMANDABLE)
+                if _point_has_priority_array(point)
+                else []
+            )
             unsupported = _client_cov_unsupported(self.hass, self._entry_id, self._client_id)
             active: set[str] = set()
             async with subscribe_sem:
@@ -973,9 +934,6 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
                 "presentvalue",
                 "statusflags",
                 "priorityarray",
-                "relinquishdefault",
-                "outofservice",
-                "reliability",
                 "description",
                 "objectname",
                 "statetext",
@@ -994,27 +952,12 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
                 names = _status_flags_names(value)
                 if names is None:
                     continue
-                previous = set(_status_flags_names(point.get("status_flags")) or [])
                 point["status_flags"] = names
-                if (set(names) ^ previous) & {"in-alarm", "fault"}:
-                    self._schedule_status_refresh()
             elif key == "priorityarray":
                 priority_array = _normalize_priority_array(value)
                 if priority_array is None:
                     continue
                 point["priority_array"] = priority_array
-            elif key == "relinquishdefault":
-                relinquish_default = _normalize_priority_slot(value)
-                if relinquish_default is None:
-                    continue
-                point["relinquish_default"] = relinquish_default
-            elif key == "outofservice":
-                flag = _to_bool(value)
-                if flag is None:
-                    continue
-                point["out_of_service"] = flag
-            elif key == "reliability":
-                point["reliability"] = _safe_text(value)
             elif key == "description":
                 point["description"] = _safe_text(value)
             elif key == "objectname":
