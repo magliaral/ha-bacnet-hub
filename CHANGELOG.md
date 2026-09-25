@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.4.1] - 2026-09-26
+
 ### Changed
 
 - **Breaking:** the status attributes of imported points are combined into
@@ -252,7 +254,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Releases before 2.0.0 are documented in the GitHub releases.
 
-[Unreleased]: https://github.com/magliaral/ha-bacnet-hub/compare/v2.3.1...HEAD
+[Unreleased]: https://github.com/magliaral/ha-bacnet-hub/compare/v2.4.1...HEAD
+[2.4.1]: https://github.com/magliaral/ha-bacnet-hub/compare/v2.3.1...v2.4.1
 [2.3.1]: https://github.com/magliaral/ha-bacnet-hub/compare/v2.3.0...v2.3.1
 [2.3.0]: https://github.com/magliaral/ha-bacnet-hub/compare/v2.2.0...v2.3.0
 [2.2.0]: https://github.com/magliaral/ha-bacnet-hub/compare/v2.1.0...v2.2.0
