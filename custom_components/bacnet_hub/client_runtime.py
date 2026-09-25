@@ -418,6 +418,22 @@ async def _cov_request(app: Any, request: Any, timeout: float | None = None) -> 
     return await asyncio.wait_for(app.request(request), timeout=timeout)
 
 
+async def _cov_cancel_request(app: Any, request: Any) -> ErrorRejectAbortNack | None:
+    """Send a COV cancellation; returns the device's error instead of raising.
+
+    bacpypes3 raises an Error/Reject/Abort answer (a BaseException), which
+    would escape the entity's teardown; a device that no longer knows the
+    object answers unknown-object here.
+    """
+    try:
+        response = await _cov_request(app, request)
+    except ErrorRejectAbortNack as err:
+        return err
+    if isinstance(response, ErrorRejectAbortNack):
+        return response
+    return None
+
+
 def _cov_process_identifier(hub_instance: Any) -> int:
     """Subscriber process identifier shared by all COV subscriptions of the hub.
 
@@ -1410,10 +1426,8 @@ class CovObjectSubscription(SubscriptionContextManager):
             monitoredObjectIdentifier=self.monitored_object_identifier,
             destination=self.address,
         )
-        response = await _cov_request(self.app, cancel_request)
-        if isinstance(response, ErrorRejectAbortNack):
-            return response
-        return first_error
+        response = await _cov_cancel_request(self.app, cancel_request)
+        return response if response is not None else first_error
 
 
 class CovPropertySubscription(SubscriptionContextManager):
@@ -1479,10 +1493,7 @@ class CovPropertySubscription(SubscriptionContextManager):
             monitoredPropertyIdentifier=self._property_reference(),
             destination=self.address,
         )
-        response = await _cov_request(self.app, cancel_request)
-        if isinstance(response, ErrorRejectAbortNack):
-            return response
-        return None
+        return await _cov_cancel_request(self.app, cancel_request)
 
 
 async def _open_cov_property_subscription(

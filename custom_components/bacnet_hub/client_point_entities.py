@@ -672,7 +672,10 @@ class BacnetClientPointEntityBase(BacnetClientPointBase):
             except Exception as err:
                 outcome = err
             if outcome is not None:
-                log = _LOGGER.warning if final else _LOGGER.debug
+                # unknown-object: the device dropped the object and with it
+                # the subscription, so there is nothing left to warn about.
+                gone = str(getattr(outcome, "errorCode", "")) == "unknown-object"
+                log = _LOGGER.warning if final and not gone else _LOGGER.debug
                 log(
                     "COV cancel for %s not accepted (%s); the device keeps the "
                     "subscription until its lease expires",

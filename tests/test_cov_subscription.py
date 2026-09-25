@@ -426,6 +426,31 @@ async def test_object_aexit_cancels_property_subscriptions_first() -> None:
         assert req.monitoredPropertyIdentifier is not None
 
 
+class RaisingApp(FakeApp):
+    """Like FakeApp, but raises error responses the way bacpypes3 does."""
+
+    async def request(self, apdu: Any) -> Any:
+        response = await super().request(apdu)
+        if isinstance(response, BaseException):
+            raise response
+        return response
+
+
+async def test_aexit_returns_raised_cancel_error() -> None:
+    # A device that dropped the object answers the cancel with unknown-object;
+    # bacpypes3 raises it, which must not escape the entity teardown.
+    app = RaisingApp()
+    context = await _object_context(app)
+    assert await _open_cov_property_subscription(context, "priorityArray") is None
+    app.responses = [_Rejected(), _Rejected()]
+
+    outcome = await context.__aexit__(None, None, None)
+
+    assert isinstance(outcome, ErrorRejectAbortNack)
+    assert context.property_subscriptions == []
+    assert app._hub_cov_contexts == {}
+
+
 async def test_refresh_renews_property_subscriptions_too() -> None:
     app = FakeApp()
     context = await _object_context(app)

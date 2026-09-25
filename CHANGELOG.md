@@ -21,6 +21,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   subscription, for `priorityArray`. Reliability and event state are no
   longer re-read when a status flag changes.
 
+### Fixed
+
+- Removing a point whose object the controller no longer has (for example
+  with `bacnet_hub.remove_missing_points`) no longer logs "Task exception
+  was never retrieved": the controller's *unknown object* answer to the COV
+  cancellation is handled instead of escaping the entity teardown, and it
+  is logged at debug level only.
+
 ## [2.3.1] - 2026-09-24
 
 ### Added
