@@ -75,15 +75,14 @@ CLIENT_COV_CONFIRMED_NOTIFICATIONS = True
 # instance is unknown or out of range (BACnet allows 1..4194303).
 DEFAULT_COV_PROCESS_IDENTIFIER = 8123
 COV_PROCESS_IDENTIFIER_MAX = 4194303
-# Properties subscribed per point with SubscribeCOVProperty (ASHRAE 135
-# clause 13.15) in addition to the object-wide SubscribeCOV, which delivers
-# presentValue and statusFlags. Devices that decline a property fall back
-# to polling for it.
-CLIENT_COV_PROPERTY_SUBSCRIPTIONS_ALL: tuple[str, ...] = ("outOfService",)
-CLIENT_COV_PROPERTY_SUBSCRIPTIONS_COMMANDABLE: tuple[str, ...] = (
-    "priorityArray",
-    "relinquishDefault",
-)
+# Properties subscribed per commandable point with SubscribeCOVProperty
+# (ASHRAE 135 clause 13.15) in addition to the object-wide SubscribeCOV. The
+# latter delivers presentValue and statusFlags, whose out-of-service, fault
+# and in-alarm bits stand in for outOfService, reliability and eventState.
+# relinquishDefault only shows once no slot is active, and then through
+# presentValue; it is read at import and after own writes. Devices that
+# decline priorityArray fall back to polling for it.
+CLIENT_COV_PROPERTY_SUBSCRIPTIONS_COMMANDABLE: tuple[str, ...] = ("priorityArray",)
 # Cap concurrent SubscribeCOV requests per client device. Registration runs
 # in background tasks (and lease renewals fire almost simultaneously), so
 # without a cap a device with many points would see a burst of requests.
@@ -102,9 +101,10 @@ CLIENT_COV_REQUEST_TIMEOUT_SECONDS = 10.0
 # COV stays silent when nothing changed, so the cache must be verified.
 CLIENT_WRITE_READBACK_DELAY_SECONDS = 1.0
 
-# Poll interval for priorityArray/relinquishDefault on commandable points.
-# BACnet sends no COV for these properties, so external writes that leave
-# presentValue unchanged are only visible through polling.
+# Poll interval for priorityArray/relinquishDefault on commandable points
+# whose device declines SubscribeCOVProperty for priorityArray: object-wide
+# COV does not carry it, so external writes that leave presentValue
+# unchanged are only visible through polling.
 CLIENT_PRIORITY_POLL_INTERVAL = timedelta(seconds=30)
 
 CLIENT_DIAGNOSTIC_FIELDS: list[tuple[str, str]] = list(HUB_DIAGNOSTIC_FIELDS)
@@ -188,6 +188,7 @@ def _parse_status_flags(raw: Any) -> dict[str, bool] | None:
         "in_alarm": "in-alarm" in names,
         "fault": "fault" in names,
         "overridden": "overridden" in names,
+        "out_of_service": "out-of-service" in names,
     }
 
 
@@ -415,6 +416,22 @@ async def _cov_request(app: Any, request: Any, timeout: float | None = None) -> 
     if timeout is None:
         timeout = CLIENT_COV_REQUEST_TIMEOUT_SECONDS
     return await asyncio.wait_for(app.request(request), timeout=timeout)
+
+
+async def _cov_cancel_request(app: Any, request: Any) -> ErrorRejectAbortNack | None:
+    """Send a COV cancellation; returns the device's error instead of raising.
+
+    bacpypes3 raises an Error/Reject/Abort answer (a BaseException), which
+    would escape the entity's teardown; a device that no longer knows the
+    object answers unknown-object here.
+    """
+    try:
+        response = await _cov_request(app, request)
+    except ErrorRejectAbortNack as err:
+        return err
+    if isinstance(response, ErrorRejectAbortNack):
+        return response
+    return None
 
 
 def _cov_process_identifier(hub_instance: Any) -> int:
@@ -885,22 +902,10 @@ def _coerce_present_value(point: dict[str, Any], value: Any) -> Any:
 
 
 def _point_status_attributes(point: dict[str, Any]) -> dict[str, Any]:
-    """BACnet status attributes for every point; keys the device did not
-    report are omitted."""
-    attrs: dict[str, Any] = {}
-    out_of_service = _to_bool(point.get("out_of_service"))
-    if out_of_service is not None:
-        attrs["out_of_service"] = out_of_service
+    """The object's status flags as a ``status_flags`` mapping; omitted
+    while they have not been read."""
     flags = _parse_status_flags(point.get("status_flags"))
-    if flags is not None:
-        attrs.update(flags)
-    reliability = _safe_text(point.get("reliability"))
-    if reliability:
-        attrs["reliability"] = reliability
-    event_state = _safe_text(point.get("event_state"))
-    if event_state:
-        attrs["event_state"] = event_state
-    return attrs
+    return {"status_flags": flags} if flags is not None else {}
 
 
 def _point_state_attributes(point: dict[str, Any]) -> dict[str, Any]:
@@ -1292,34 +1297,15 @@ async def _async_release_point(
 
 
 def _status_updates_from_values(values: dict[str, Any]) -> dict[str, Any]:
-    """Cache updates for the status properties; failed reads (None) are skipped."""
+    """Cache updates for statusFlags and presentValue; failed reads (None)
+    are skipped."""
     updates: dict[str, Any] = {}
-    out_of_service = _to_bool(values.get("outOfService"))
-    if out_of_service is not None:
-        updates["out_of_service"] = out_of_service
     status_flags = _status_flags_names(values.get("statusFlags"))
     if status_flags is not None:
         updates["status_flags"] = status_flags
-    reliability = _safe_text(values.get("reliability"))
-    if reliability:
-        updates["reliability"] = reliability
-    event_state = _safe_text(values.get("eventState"))
-    if event_state:
-        updates["event_state"] = event_state
     if values.get("presentValue") is not None:
         updates["present_value"] = values["presentValue"]
     return updates
-
-
-async def _async_read_point_status(
-    app: Any, address: str, object_type: str, object_instance: int
-) -> dict[str, Any]:
-    """Re-read reliability, eventState and statusFlags of a point."""
-    objid = f"{str(object_type)},{int(object_instance)}"
-    values = await _read_remote_properties(
-        app, address, objid, ["reliability", "eventState", "statusFlags"]
-    )
-    return _status_updates_from_values(values)
 
 
 async def _async_set_point_out_of_service(
@@ -1332,7 +1318,7 @@ async def _async_set_point_out_of_service(
     """Write outOfService (a plain Boolean, no priority) and re-read the point.
 
     Returns the cache updates so the caller can refresh the HA state without
-    waiting for the COV property notification.
+    waiting for the COV notification of the changed statusFlags.
     """
     await _write_client_point_property(
         app,
@@ -1344,10 +1330,7 @@ async def _async_set_point_out_of_service(
     )
     objid = f"{str(object_type)},{int(object_instance)}"
     values = await _read_remote_properties(
-        app,
-        address,
-        objid,
-        ["outOfService", "statusFlags", "presentValue", "reliability", "eventState"],
+        app, address, objid, ["statusFlags", "presentValue"]
     )
     return _status_updates_from_values(values)
 
@@ -1443,10 +1426,8 @@ class CovObjectSubscription(SubscriptionContextManager):
             monitoredObjectIdentifier=self.monitored_object_identifier,
             destination=self.address,
         )
-        response = await _cov_request(self.app, cancel_request)
-        if isinstance(response, ErrorRejectAbortNack):
-            return response
-        return first_error
+        response = await _cov_cancel_request(self.app, cancel_request)
+        return response if response is not None else first_error
 
 
 class CovPropertySubscription(SubscriptionContextManager):
@@ -1512,10 +1493,7 @@ class CovPropertySubscription(SubscriptionContextManager):
             monitoredPropertyIdentifier=self._property_reference(),
             destination=self.address,
         )
-        response = await _cov_request(self.app, cancel_request)
-        if isinstance(response, ErrorRejectAbortNack):
-            return response
-        return None
+        return await _cov_cancel_request(self.app, cancel_request)
 
 
 async def _open_cov_property_subscription(
@@ -1945,15 +1923,12 @@ async def _read_client_point_payload(
         "presentValue",
         "units",
         "statusFlags",
-        "outOfService",
-        "reliability",
         "stateText",
         "numberOfStates",
         "activeText",
         "inactiveText",
         "priorityArray",
         "relinquishDefault",
-        "eventState",
     ]
     if type_slug in {"ai", "ao", "av"}:
         props.extend(["minPresValue", "maxPresValue", "resolution"])
@@ -1995,9 +1970,6 @@ async def _read_client_point_payload(
         "present_value": values.get("presentValue"),
         "unit": _normalize_bacnet_unit(values.get("units")),
         "status_flags": _status_flags_names(values.get("statusFlags")),
-        "out_of_service": _to_bool(values.get("outOfService")),
-        "reliability": _safe_text(values.get("reliability")),
-        "event_state": _safe_text(values.get("eventState")),
         "min_pres_value": _to_float(values.get("minPresValue")),
         "max_pres_value": _to_float(values.get("maxPresValue")),
         "resolution": _to_float(values.get("resolution")),

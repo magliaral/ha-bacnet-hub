@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 
@@ -46,6 +47,7 @@ class _Rejected(ErrorRejectAbortNack):
 class FakeApp:
     def __init__(self, rpm_values: dict[str, Any] | None = None, write_result: Any = "ok") -> None:
         self.calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+        self.rpm_calls: list[tuple[Any, ...]] = []
         self.rpm_values = rpm_values or {}
         self.write_result = write_result
 
@@ -54,6 +56,7 @@ class FakeApp:
         return self.write_result
 
     async def read_property_multiple(self, *args: Any) -> dict[str, Any]:
+        self.rpm_calls.append(args)
         return dict(self.rpm_values)
 
 
@@ -75,42 +78,35 @@ def test_status_flags_names_and_parse() -> None:
     assert _status_flags_names("in-alarm") == ["in-alarm"]
     assert _status_flags_names(["fault"]) == ["fault"]
     assert _status_flags_names(None) is None
-    assert _parse_status_flags([]) == {"in_alarm": False, "fault": False, "overridden": False}
-    assert _parse_status_flags("in-alarm;overridden") == {
-        "in_alarm": True, "fault": False, "overridden": True,
+    assert _parse_status_flags([]) == {
+        "in_alarm": False, "fault": False, "overridden": False, "out_of_service": False,
     }
+    assert _parse_status_flags("in-alarm;overridden;out-of-service") == {
+        "in_alarm": True, "fault": False, "overridden": True, "out_of_service": True,
+    }
+    assert list(_parse_status_flags([])) == ["in_alarm", "fault", "overridden", "out_of_service"]
     assert _parse_status_flags(None) is None
 
 
 def test_point_state_attributes_sensor_and_switch() -> None:
-    sensor_point = {
-        "type_slug": "ai",
-        "out_of_service": Boolean(0),
-        "status_flags": ["in-alarm"],
-        "reliability": "no-fault-detected",
-        "event_state": "offnormal",
-    }
+    sensor_point = {"type_slug": "ai", "status_flags": ["in-alarm"]}
     assert _point_state_attributes(sensor_point) == {
-        "out_of_service": False,
-        "in_alarm": True,
-        "fault": False,
-        "overridden": False,
-        "reliability": "no-fault-detected",
-        "event_state": "offnormal",
+        "status_flags": {
+            "in_alarm": True, "fault": False, "overridden": False, "out_of_service": False,
+        },
     }
     switch_point = {
         "type_slug": "bo",
         "has_priority_array": True,
-        "out_of_service": True,
-        "status_flags": [],
+        "status_flags": ["out-of-service"],
         "priority_array": [None] * 16,
         "relinquish_default": 0,
     }
     attrs = _point_state_attributes(switch_point)
     assert attrs["priority_array"] == [None] * 16
     assert attrs["relinquish_default"] == 0
-    assert attrs["out_of_service"] is True
-    assert attrs["fault"] is False
+    assert attrs["status_flags"]["out_of_service"] is True
+    assert attrs["status_flags"]["fault"] is False
     assert _point_state_attributes({}) == {}
     assert "priority_array" not in _point_state_attributes({"type_slug": "ai", "priority_array": [None] * 16})
 
@@ -153,11 +149,8 @@ async def test_write_property_raises_on_marker_string() -> None:
 
 async def test_set_point_out_of_service_writes_boolean_without_priority() -> None:
     app = FakeApp(rpm_values={
-        "outOfService": Boolean(1),
         "statusFlags": StatusFlags([0, 0, 0, 1]),
         "presentValue": 21.5,
-        "reliability": "no-fault-detected",
-        "eventState": "normal",
     })
     updates = await _async_set_point_out_of_service(app, "192.168.1.10", "analog-input", 1, True)
 
@@ -165,13 +158,9 @@ async def test_set_point_out_of_service_writes_boolean_without_priority() -> Non
     assert args[:3] == ("192.168.1.10", "analog-input,1", "outOfService")
     assert isinstance(args[3], Boolean) and bool(args[3]) is True
     assert kwargs == {}
-    assert updates == {
-        "out_of_service": True,
-        "status_flags": ["out-of-service"],
-        "present_value": 21.5,
-        "reliability": "no-fault-detected",
-        "event_state": "normal",
-    }
+    assert updates == {"status_flags": ["out-of-service"], "present_value": 21.5}
+    # The read-back covers statusFlags and presentValue only.
+    assert app.rpm_calls[0][1:] == ("analog-input,1", ["statusFlags", "presentValue"])
 
 
 # --- entity + service --------------------------------------------------------------
@@ -189,14 +178,14 @@ def _seed_hass(app: FakeApp, point: dict[str, Any]) -> SimpleNamespace:
 _AI_POINT = {
     "point_key": "ai_1", "type_slug": "ai", "object_type": "analog-input", "object_instance": 1,
     "client_address": "192.168.1.10", "has_priority_array": False,
-    "present_value": 21.5, "out_of_service": False, "status_flags": [],
+    "present_value": 21.5, "status_flags": [],
 }
 
 
 async def test_entity_set_out_of_service_updates_cache_and_keeps_availability(monkeypatch) -> None:
     import custom_components.bacnet_hub.client_point_entities as entities_module
 
-    app = FakeApp(rpm_values={"outOfService": Boolean(1), "statusFlags": StatusFlags([0, 0, 0, 1])})
+    app = FakeApp(rpm_values={"statusFlags": StatusFlags([0, 0, 0, 1])})
     hass = _seed_hass(app, _AI_POINT)
     monkeypatch.setattr(entities_module, "async_dispatcher_send", lambda *a, **k: None)
     entity = BacnetClientPointEntityBase(hass, "entry1", "client_5", 5, "ai_1", entity_domain="sensor")
@@ -204,7 +193,6 @@ async def test_entity_set_out_of_service_updates_cache_and_keeps_availability(mo
     await entity.async_set_out_of_service(True)
 
     cached = _client_points_get(hass, "entry1", "client_5")["ai_1"]
-    assert cached["out_of_service"] is True
     assert cached["status_flags"] == ["out-of-service"]
     assert entity._attr_available is True
 
@@ -249,10 +237,10 @@ async def test_set_out_of_service_targets_bundles_errors() -> None:
 
 async def test_handle_points_update_sets_attributes_on_sensor_and_switch(monkeypatch) -> None:
     hass = SimpleNamespace(data={DOMAIN: {"client_point_cache": {"entry1": {"client_5": {
-        "ai_1": {**_AI_POINT, "status_flags": ["fault"], "reliability": "unreliable-other"},
+        "ai_1": {**_AI_POINT, "status_flags": ["fault"]},
         "bo_2": {"point_key": "bo_2", "type_slug": "bo", "object_type": "binary-output", "object_instance": 2,
                  "client_address": "192.168.1.10", "has_priority_array": True, "present_value": 1,
-                 "out_of_service": True, "status_flags": [], "priority_array": [None] * 16, "relinquish_default": 0},
+                 "status_flags": ["out-of-service"], "priority_array": [None] * 16, "relinquish_default": 0},
     }}}}})
     sensor = BacnetClientPointSensor(hass, "entry1", "client_5", 5, "ai_1")
     switch = BacnetClientPointSwitch(hass, "entry1", "client_5", 5, "bo_2")
@@ -261,13 +249,44 @@ async def test_handle_points_update_sets_attributes_on_sensor_and_switch(monkeyp
         entity._handle_points_update()
 
     assert sensor._attr_extra_state_attributes == {
-        "out_of_service": False, "in_alarm": False, "fault": True, "overridden": False,
-        "reliability": "unreliable-other",
+        "status_flags": {
+            "in_alarm": False, "fault": True, "overridden": False, "out_of_service": False,
+        },
     }
     assert "priority_array" not in sensor._attr_extra_state_attributes
     assert switch._attr_extra_state_attributes["priority_array"] == [None] * 16
-    assert switch._attr_extra_state_attributes["out_of_service"] is True
+    assert switch._attr_extra_state_attributes["status_flags"]["out_of_service"] is True
     assert switch._attr_available is True
+
+
+class _OneShotCovContext:
+    """Hands out queued (property, value) notifications, then cancels."""
+
+    def __init__(self, notifications: list[tuple[str, Any]]) -> None:
+        self.notifications = list(notifications)
+
+    async def get_value(self) -> tuple[str, Any]:
+        if not self.notifications:
+            raise asyncio.CancelledError
+        return self.notifications.pop(0)
+
+
+async def test_cov_status_flags_carry_out_of_service_without_reads(monkeypatch) -> None:
+    import custom_components.bacnet_hub.client_point_entities as entities_module
+
+    app = FakeApp()
+    hass = _seed_hass(app, _AI_POINT)
+    monkeypatch.setattr(entities_module, "async_dispatcher_send", lambda *a, **k: None)
+    entity = BacnetClientPointEntityBase(hass, "entry1", "client_5", 5, "ai_1", entity_domain="sensor")
+    entity._cov_context = _OneShotCovContext([("statusFlags", StatusFlags([0, 0, 0, 1]))])
+
+    with pytest.raises(asyncio.CancelledError):
+        await entity._async_cov_receive_loop()
+
+    point = _client_points_get(hass, "entry1", "client_5")["ai_1"]
+    assert point["status_flags"] == ["out-of-service"]
+    assert _point_state_attributes(point)["status_flags"]["out_of_service"] is True
+    assert app.rpm_calls == []
 
 
 def test_number_takes_limits_and_step_from_device() -> None:

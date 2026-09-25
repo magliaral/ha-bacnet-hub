@@ -40,4 +40,6 @@ Python 3.14.
   edit the version by hand.
 - Merging `dev` into `main` publishes the stable release with the base
   version from `manifest.json`.
-- Document user-facing changes in `CHANGELOG.md` under `[Unreleased]`.
+- Document user-facing changes in `CHANGELOG.md` under `[Unreleased]`. When
+  the release pull request is opened, move them into a new
+  `## [x.y.z] - YYYY-MM-DD` section; the release workflow does not do this.
